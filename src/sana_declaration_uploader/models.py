@@ -59,4 +59,10 @@ class RecipientCandidate:
     birth_date: str = ""
     postal_code: str = ""
     address: str = ""
+    notice_number: str = ""
+    related_declaration_number: str = ""
+    role: str = ""
+    person_type: str = ""
+    evidence: str = ""
+    extraction_method: str = "local"
     issues: tuple[str, ...] = field(default_factory=tuple)

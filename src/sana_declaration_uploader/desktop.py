@@ -28,6 +28,24 @@ from .models import RecipientCandidate
 
 
 _SUPPORTED_SUFFIXES = {".docx", ".pdf", ".txt"}
+_ROLE_DISPLAY = {
+    "declarant": "اظهارکننده",
+    "addressee": "مخاطب",
+    "plaintiff": "خواهان",
+    "defendant": "خوانده",
+    "appellant": "تجدیدنظرخواه",
+    "respondent": "تجدیدنظرخوانده",
+    "complainant": "شاکی",
+    "accused": "مشتکی‌عنه/متهم",
+    "petitioner": "درخواست‌کننده",
+    "claimant": "محکوم‌له",
+}
+_PERSON_TYPE_DISPLAY = {
+    "natural": "حقیقی",
+    "legal": "حقوقی",
+    "group": "گروه",
+    "unknown": "نامشخص",
+}
 
 
 class FileSelectionPage(QWizardPage):
@@ -102,12 +120,17 @@ class FileSelectionPage(QWizardPage):
 class RecipientReviewPage(QWizardPage):
     HEADERS = (
         "فایل منبع",
+        "شماره ابلاغیه",
+        "شماره اظهارنامه مرتبط",
+        "نقش",
+        "نوع شخص",
         "نام و نام خانوادگی",
         "کد ملی",
         "کد پرسنلی",
         "تاریخ تولد",
         "کدپستی",
         "آدرس",
+        "شاهد استخراج",
         "وضعیت",
     )
 
@@ -146,17 +169,22 @@ class RecipientReviewPage(QWizardPage):
         self.table.insertRow(row)
         values = (
             candidate.source_path.name if candidate else "دستی",
+            candidate.notice_number if candidate else "",
+            candidate.related_declaration_number if candidate else "",
+            _ROLE_DISPLAY.get(candidate.role, candidate.role) if candidate else "",
+            _PERSON_TYPE_DISPLAY.get(candidate.person_type, candidate.person_type) if candidate else "",
             candidate.full_name if candidate else "",
             candidate.national_id if candidate else "",
             candidate.employee_code if candidate else "",
             candidate.birth_date if candidate else "",
             candidate.postal_code if candidate else "",
             candidate.address if candidate else "",
+            candidate.evidence if candidate else "",
             self._status(candidate),
         )
         for column, value in enumerate(values):
             item = QTableWidgetItem(value)
-            if column in (0, 7):
+            if column in (0, len(self.HEADERS) - 2, len(self.HEADERS) - 1):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(row, column, item)
 
