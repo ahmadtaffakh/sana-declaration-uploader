@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sana-declaration-uploader"
+version = "0.1.0"
+description = "Single-operator, fail-closed SANA declaration upload assistant"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["python-docx>=1.1,<2"]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.50,<2"]
+
+[project.scripts]
+sana-declaration-uploader = "sana_declaration_uploader.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
