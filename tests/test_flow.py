@@ -6,8 +6,19 @@ from sana_declaration_uploader.browser import (
     AttachmentWorkflowError,
     run_attachment_workflow,
 )
-from sana_declaration_uploader.flow import UploadNotConfirmed, run_upload
-from sana_declaration_uploader.models import Attachment, DeclarationDraft, UploadResult
+from sana_declaration_uploader.flow import (
+    InvalidDeclaration,
+    UploadNotConfirmed,
+    prepare_drafts,
+    run_upload,
+)
+from sana_declaration_uploader.models import (
+    Attachment,
+    DeclarationBatch,
+    DeclarationDraft,
+    DeclarationRequest,
+    UploadResult,
+)
 
 
 class StubUploader:
@@ -41,6 +52,81 @@ class StubAttachmentPage:
 
 
 class FlowTests(unittest.TestCase):
+    def test_prepare_drafts_renders_and_validates_each_request(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            batch = DeclarationBatch(
+                source_dir=root,
+                title="بسته",
+                requests=(
+                    DeclarationRequest(
+                        source_dir=root,
+                        recipient_id="person1",
+                        fields={
+                            "recipient_id": "person1",
+                            "recipient_first_name": "علی",
+                            "recipient_last_name": "رضایی",
+                            "data_source": "manual",
+                            "recipient_national_id": "0012345678",
+                            "recipient_birth_date": "1370/01/01",
+                            "recipient_gender": "مرد",
+                            "recipient_father_name": "حسن",
+                            "job_title": "کارمند",
+                            "job_key": "1",
+                            "job_id": "1",
+                            "job_code": "1",
+                            "province": "تهران",
+                            "province_key": "2",
+                            "province_id": "2",
+                            "province_code": "2",
+                            "county": "تهران",
+                            "county_key": "3",
+                            "county_id": "3",
+                            "county_code": "3",
+                            "city": "تهران",
+                            "city_key": "4",
+                            "city_id": "4",
+                            "city_code": "4",
+                            "recipient_main_street": "خیابان اصلی",
+                            "recipient_address": "نشانی کامل",
+                            "court_unit_code": "123",
+                            "declaration_subject": "موضوع",
+                        },
+                        description_template="خطاب به {{recipient.full_name}}",
+                        parameters={},
+                    ),
+                ),
+            )
+
+            drafts = prepare_drafts(batch)
+
+            self.assertEqual(len(drafts), 1)
+            self.assertEqual(
+                drafts[0].fields["declaration_text"], "خطاب به علی رضایی"
+            )
+
+    def test_prepare_drafts_rejects_invalid_request(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            batch = DeclarationBatch(
+                source_dir=root,
+                title="بسته",
+                requests=(
+                    DeclarationRequest(
+                        source_dir=root,
+                        recipient_id="person1",
+                        fields={"data_source": "notice"},
+                        description_template="شرح ثابت",
+                        parameters={},
+                    ),
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                InvalidDeclaration, "notice_not_resolved"
+            ):
+                prepare_drafts(batch)
+
     def test_upload_requires_explicit_confirmation(self) -> None:
         with TemporaryDirectory() as directory:
             draft = DeclarationDraft(

@@ -46,3 +46,17 @@ class UploadResult:
     status: str
     tracking_code: str = ""
     message: str = ""
+
+
+@dataclass(frozen=True)
+class RecipientCandidate:
+    """Locally extracted recipient data awaiting operator review."""
+
+    source_path: Path
+    full_name: str = ""
+    national_id: str = ""
+    employee_code: str = ""
+    birth_date: str = ""
+    postal_code: str = ""
+    address: str = ""
+    issues: tuple[str, ...] = field(default_factory=tuple)

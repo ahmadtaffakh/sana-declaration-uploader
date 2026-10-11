@@ -5,6 +5,7 @@ from .models import (
     DeclarationBatch,
     DeclarationDraft,
     DeclarationRequest,
+    RecipientCandidate,
     UploadResult,
 )
 
@@ -13,6 +14,7 @@ __all__ = [
     "DeclarationBatch",
     "DeclarationDraft",
     "DeclarationRequest",
+    "RecipientCandidate",
     "UploadResult",
 ]
 __version__ = "0.1.0"
