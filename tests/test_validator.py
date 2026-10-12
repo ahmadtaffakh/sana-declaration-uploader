@@ -115,6 +115,17 @@ class ValidatorTests(unittest.TestCase):
             self.assertIn("lookup_unresolved:city_id", errors)
             self.assertNotIn("field_missing:recipient_national_id", errors)
 
+    def test_court_unit_code_is_not_required(self) -> None:
+        with TemporaryDirectory() as directory:
+            draft = DeclarationDraft(
+                source_dir=Path(directory),
+                fields={"court_unit_name": "واحد قدیمی"},
+            )
+
+            self.assertNotIn(
+                "lookup_unresolved:court_unit_code", validate_draft(draft)
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

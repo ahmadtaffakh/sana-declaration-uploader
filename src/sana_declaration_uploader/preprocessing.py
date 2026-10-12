@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import unicodedata
 
-from .lookups import LookupResolutionError, resolve_lookup_fields, suggest_court_unit
+from .lookups import LookupResolutionError, resolve_lookup_fields
 from .models import RecipientCandidate
 
 
@@ -17,6 +17,11 @@ _STREET_PREFIXES = (
     "خیابان", "خ ", "بلوار", "کوچه", "پلاک", "بخش", "دهستان", "روستا",
     "محله", "جاده", "میدان", "شهرک",
 )
+_DEFAULT_LOCATION = {
+    "province": "استان تهران",
+    "county": "شهرستان تهران",
+    "city": "تهران",
+}
 
 
 def preprocess_candidates(
@@ -32,58 +37,51 @@ def preprocess_candidate(
     province = candidate.province or labels.get("province", "")
     county = candidate.county or labels.get("county", "")
     city = candidate.city or labels.get("city", "")
-    issues = list(dict.fromkeys((*candidate.issues, *address_issues)))
-
-    job_code = candidate.job_code
-    if candidate.job_title and not job_code:
-        try:
-            job = resolve_lookup_fields(
-                {"job_title": candidate.job_title}, lookup_dir
-            )
-        except LookupResolutionError:
-            issues.append("job_lookup_unresolved")
-        else:
-            job_code = job.get("job_code", "")
-
-    resolved_locations: dict[str, str] = {}
-    location_labels = (("province", province), ("county", county), ("city", city))
-    for field, label in location_labels:
-        if not label:
-            continue
-        requested = {
-            name: value for name, value in location_labels
-            if value and name in {"province", "county", "city"}
-            and (name == "province" or name == field or name in resolved_locations)
-        }
-        try:
-            resolved_locations = resolve_lookup_fields(requested, lookup_dir)
-        except LookupResolutionError:
-            issues.append(f"{field}_lookup_unresolved")
-            break
-
-    court_fields = {
-        **resolved_locations,
-        "court_unit_name": candidate.court_unit_name,
-        "court_unit_code": candidate.court_unit_code,
+    ignored_issues = {
+        "address_location_review_required",
+        "job_lookup_unresolved",
+        "province_lookup_unresolved",
+        "county_lookup_unresolved",
+        "city_lookup_unresolved",
+        "court_unit_lookup_ambiguous",
+        "court_unit_unresolved",
     }
+    issues = [issue for issue in candidate.issues if issue not in ignored_issues]
+    issues.extend(address_issues)
+
     try:
-        court_fields = suggest_court_unit(court_fields, lookup_dir)
+        job = resolve_lookup_fields({"job_title": "آزاد"}, lookup_dir)
     except LookupResolutionError:
-        issues.append("court_unit_lookup_ambiguous")
-    if (province or county or city) and not court_fields.get("court_unit_code", ""):
-        issues.append("court_unit_unresolved")
+        job = {}
+        issues.append("job_lookup_unresolved")
+
+    requested_location = {"province": province, "county": county, "city": city}
+    location_defaulted = not all(requested_location.values())
+    if not location_defaulted:
+        try:
+            resolved_locations = resolve_lookup_fields(requested_location, lookup_dir)
+        except LookupResolutionError:
+            location_defaulted = True
+    if location_defaulted:
+        province = _DEFAULT_LOCATION["province"]
+        county = _DEFAULT_LOCATION["county"]
+        city = _DEFAULT_LOCATION["city"]
+        resolved_locations = resolve_lookup_fields(_DEFAULT_LOCATION, lookup_dir)
+        issues = [issue for issue in issues if not issue.endswith("_address_ambiguous")]
+        issues.append("location_defaulted")
 
     return replace(
         candidate,
-        job_code=job_code,
+        job_title="آزاد",
+        job_code=job.get("job_code", ""),
         province=province,
         province_code=resolved_locations.get("province_code", candidate.province_code),
         county=county,
         county_code=resolved_locations.get("county_code", candidate.county_code),
         city=city,
         city_code=resolved_locations.get("city_code", candidate.city_code),
-        court_unit_name=court_fields.get("court_unit_name", candidate.court_unit_name),
-        court_unit_code=court_fields.get("court_unit_code", candidate.court_unit_code),
+        court_unit_name="",
+        court_unit_code="",
         issues=tuple(dict.fromkeys(issues)),
     )
 

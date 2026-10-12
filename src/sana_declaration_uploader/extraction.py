@@ -323,7 +323,7 @@ def _table_candidate(
     national_id = national_id if re.fullmatch(r"[0-9]{10}", national_id) else ""
     declaration_number, declaration_date = _split_declaration_reference(reference)
     locations = _address_locations(address)
-    if national_id:
+    if not all(locations.get(field) for field in ("province", "county", "city")):
         locations = {**_DEFAULT_LOCATION, **locations}
     issues = []
     if person_type != "legal" and (not first_name or not last_name):
@@ -332,8 +332,6 @@ def _table_candidate(
         issues.append("national_id_invalid")
     if not national_id:
         issues.append("national_id_missing")
-        if not all(locations.get(field) for field in ("province", "county", "city")):
-            issues.append("address_location_review_required")
     return RecipientCandidate(
         source_path=source,
         full_name=full_name,

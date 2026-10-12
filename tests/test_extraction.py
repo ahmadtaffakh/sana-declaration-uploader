@@ -86,6 +86,34 @@ class RecipientExtractionTests(unittest.TestCase):
             self.assertEqual(candidate.city, "صدرا")
             self.assertNotIn("address_location_review_required", candidate.issues)
 
+    def test_incomplete_address_without_national_id_uses_tehran_defaults(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "address.docx"
+            document = Document()
+            table = document.add_table(rows=3, cols=5)
+            for index, value in enumerate((
+                "ردیف", "شماره و تاریخ اظهارنامه", "نام و نام خانوادگی",
+                "کد ملی", "آدرس",
+            )):
+                table.cell(0, index).text = value
+            for index, value in enumerate((
+                "1", "1405220012345678 5/6/1405", "علی رضایی",
+                "ندارد", "خیابان نمونه",
+            )):
+                table.cell(1, index).text = value
+            table.cell(2, 0).merge(table.cell(2, 4)).text = (
+                "مخاطب محترم: این متن ساختگی فقط برای بررسی پیش فرض نشانی ناقص "
+                "ایجاد شده و دارای طول کافی برای استخراج شرح اظهارنامه است."
+            )
+            document.save(path)
+
+            candidate = extract_recipient_candidates(path)[0]
+
+            self.assertEqual(candidate.province, "استان تهران")
+            self.assertEqual(candidate.county, "شهرستان تهران")
+            self.assertEqual(candidate.city, "تهران")
+            self.assertNotIn("address_location_review_required", candidate.issues)
+
     def test_extracts_labeled_legal_addressee_without_treating_body_as_name(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "legal.docx"

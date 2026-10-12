@@ -80,8 +80,3 @@ def _validate_contract_fields(
         for suffix in ("id", "code"):
             if not fields.get(f"{prefix}_{suffix}", "").strip():
                 errors.append(f"lookup_unresolved:{prefix}_{suffix}")
-
-    if fields.get("court_unit_name", "").strip() and not fields.get(
-        "court_unit_code", ""
-    ).strip():
-        errors.append("lookup_unresolved:court_unit_code")

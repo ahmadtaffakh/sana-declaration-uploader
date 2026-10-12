@@ -1,0 +1,39 @@
+{
+  "counts": {
+    "locations": 1683,
+    "court_units": 1972,
+    "unresolved_branches": 5
+  },
+  "issues": [
+    {
+      "code": "city_list_empty",
+      "parentId": "0e6dda19f55744cfa853abdd255a9a07",
+      "parentCode": "02031640",
+      "parentName": "شهرستان راوند"
+    },
+    {
+      "code": "city_list_empty",
+      "parentId": "7c4ab403d7bc4fd58f46b47709060dee",
+      "parentCode": "0601021690=",
+      "parentName": "رومشكان"
+    },
+    {
+      "code": "city_list_empty",
+      "parentId": "c47547f161744c49b1d3e0d04aec625f",
+      "parentCode": "0912",
+      "parentName": "شهرستان گلبهار"
+    },
+    {
+      "code": "city_list_empty",
+      "parentId": "8B07C70248EE4E2C8A24CCE383D20D6A",
+      "parentCode": "1905",
+      "parentName": "شهرستان سلطانيه"
+    },
+    {
+      "code": "city_list_empty",
+      "parentId": "2f5354e97ca44cebbc6a0ed93dc6b336",
+      "parentCode": "3007",
+      "parentName": "شهرستان چهارباغ"
+    }
+  ]
+}

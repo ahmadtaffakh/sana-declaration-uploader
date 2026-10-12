@@ -324,18 +324,18 @@ def _build_desktop_drafts(
     drafts = []
     for index, candidate in enumerate(candidates):
         payload = payloads.get(-1 if shared else index, {})
-        default_location = _DEFAULT_LOCATION if candidate.national_id else {}
-        lookup_fields = resolve_lookup_fields(
-            {
-                "job_title": candidate.job_title,
-                "province": candidate.province or default_location.get("province", ""),
-                "county": candidate.county or default_location.get("county", ""),
-                "city": candidate.city or default_location.get("city", ""),
-                "court_unit_name": candidate.court_unit_name,
-                "court_unit_code": candidate.court_unit_code,
-            },
-            lookup_dir,
-        )
+        lookup_fields = {
+            "job_title": "آزاد",
+            "province": candidate.province or _DEFAULT_LOCATION["province"],
+            "county": candidate.county or _DEFAULT_LOCATION["county"],
+            "city": candidate.city or _DEFAULT_LOCATION["city"],
+        }
+        try:
+            lookup_fields = resolve_lookup_fields(lookup_fields, lookup_dir)
+        except LookupResolutionError:
+            lookup_fields = resolve_lookup_fields(
+                {"job_title": "آزاد", **_DEFAULT_LOCATION}, lookup_dir
+            )
         fields = {
             **lookup_fields,
             "recipient_id": f"desktop-{index + 1}",
@@ -641,8 +641,6 @@ class PreprocessingPage(QWizardPage):
         "کد شهرستان",
         "شهر",
         "کد شهر",
-        "واحد قضایی",
-        "کد واحد قضایی",
         "وضعیت",
     )
 
@@ -650,7 +648,7 @@ class PreprocessingPage(QWizardPage):
         super().__init__()
         self.setTitle("<b>پیش‌پردازش نشانی و کدهای ثنا</b>")
         self.setSubTitle(
-            "پیشنهادهای محلی را بررسی و موارد خالی یا اشتباه را پیش از ثبت اصلاح کنید."
+            "کدهای نشانی را بررسی کنید؛ شغل همیشه آزاد و واحد قضایی خودکار است."
         )
 
         self.table = QTableWidget(0, len(self.HEADERS))
@@ -658,9 +656,9 @@ class PreprocessingPage(QWizardPage):
         _configure_table(self.table)
 
         guidance = QLabel(
-            "روش کار: برنامه عنوان شغل و اجزای نشانی را فقط با کاتالوگ محلی و "
-            "تطبیق دقیق به کد تبدیل می‌کند. خانهٔ خالی به معنی نبودن دادهٔ کافی "
-            "یا مبهم بودن نتیجه است و باید با سند یا سامانه ثنا تکمیل شود. این "
+            "روش کار: شغل همیشه «آزاد» است. اجزای نشانی فقط با کاتالوگ محلی و "
+            "تطبیق دقیق به کد تبدیل می‌شوند و نشانی ناقص یا ناشناخته به تهران، "
+            "تهران، تهران برمی‌گردد. واحد قضایی از نشانی در ثنا به‌روز می‌شود. این "
             "مرحله صرفاً پیش‌نمایش است و هیچ ثبت یا ورود خودکاری انجام نمی‌دهد."
         )
         guidance.setObjectName("Guidance")
@@ -685,15 +683,13 @@ class PreprocessingPage(QWizardPage):
                 candidate.county_code,
                 candidate.city,
                 candidate.city_code,
-                candidate.court_unit_name,
-                candidate.court_unit_code,
                 self._status(candidate),
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, candidate)
-                if column in (0, len(self.HEADERS) - 1):
+                if column in (0, 1, 2, len(self.HEADERS) - 1):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, column, item)
         self.table.resizeColumnsToContents()
@@ -719,8 +715,8 @@ class PreprocessingPage(QWizardPage):
                 county_code=value("کد شهرستان"),
                 city=value("شهر"),
                 city_code=value("کد شهر"),
-                court_unit_name=value("واحد قضایی"),
-                court_unit_code=value("کد واحد قضایی"),
+                court_unit_name="",
+                court_unit_code="",
             )
             self.table.item(row, 0).setData(Qt.ItemDataRole.UserRole, updated)
             result.append(updated)

@@ -186,7 +186,6 @@ class DeclarationPageTests(unittest.TestCase):
         draft = DeclarationDraft(
             source_dir=Path("input"),
             fields={
-                "court_unit_code": "12345",
                 "related_declaration_number": "98765",
             },
         )
@@ -200,8 +199,6 @@ class DeclarationPageTests(unittest.TestCase):
                 ("click", "#rdbSetPetition"),
                 ("click", "#chkAgreement"),
                 ("click", "#frmSetPetitions button"),
-                ("wait_for", "#txtUnitCode"),
-                ("fill", "#txtUnitCode"),
                 ("click", "#newPetition"),
                 ("wait_for", "#replayToDeclaration"),
                 ("fill", "#replayToDeclaration"),
@@ -211,14 +208,14 @@ class DeclarationPageTests(unittest.TestCase):
         )
         self.assertNotIn(("click", "#legalIranianPerson"), page.calls)
 
-    def test_missing_court_code_stops_before_browser_activity(self):
+    def test_court_code_is_not_required(self):
         page = _Page()
         draft = DeclarationDraft(source_dir=Path("input"), fields={})
 
-        with self.assertRaisesRegex(LiveBrowserError, "court_unit_code_missing"):
-            PlaywrightDeclarationPage(page).open_draft_wizard(draft)
+        PlaywrightDeclarationPage(page).open_draft_wizard(draft)
 
-        self.assertEqual(page.calls, [])
+        self.assertNotIn(("wait_for", "#txtUnitCode"), page.calls)
+        self.assertNotIn(("fill", "#txtUnitCode", ""), page.calls)
 
 
 class RecipientPageTests(unittest.TestCase):

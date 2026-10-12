@@ -36,11 +36,11 @@ class RecipientPreprocessingTests(unittest.TestCase):
             "city_address_ambiguous",
         })
 
-    def test_resolves_job_location_and_unique_court_suggestion(self) -> None:
+    def test_forces_free_job_and_does_not_suggest_court(self) -> None:
         with TemporaryDirectory() as directory:
             lookup_dir = Path(directory)
             self._write(lookup_dir / "jobs.json", [{
-                "key": "j1", "label": "کارمند", "id": "j1", "code": "J1",
+                "key": "j1", "label": "آزاد", "id": "j1", "code": "J1",
             }])
             self._write(lookup_dir / "locations.json", [
                 {"key": "p1", "label": "استان تهران", "type": "province", "parent_key": "", "id": "p1", "code": "23"},
@@ -59,12 +59,30 @@ class RecipientPreprocessingTests(unittest.TestCase):
 
             result = preprocess_candidate(candidate, lookup_dir)
 
+            self.assertEqual(result.job_title, "آزاد")
             self.assertEqual(result.job_code, "J1")
             self.assertEqual(result.province_code, "23")
             self.assertEqual(result.county_code, "2301")
             self.assertEqual(result.city_code, "2301000001")
-            self.assertEqual(result.court_unit_code, "00123")
+            self.assertEqual(result.court_unit_code, "")
             self.assertEqual(result.issues, ())
+
+    def test_unknown_location_falls_back_to_tehran(self) -> None:
+        lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
+        candidate = RecipientCandidate(
+            source_path=lookup_dir / "source.pdf",
+            full_name="شخص نمونه",
+            address="استان نمونه - شهرستان نمونه - شهر نمونه - خیابان نمونه",
+        )
+
+        result = preprocess_candidate(candidate, lookup_dir)
+
+        self.assertEqual(
+            (result.province, result.county, result.city),
+            ("استان تهران", "شهرستان تهران", "تهران"),
+        )
+        self.assertEqual(result.job_title, "آزاد")
+        self.assertIn("location_defaulted", result.issues)
 
     @staticmethod
     def _write(path: Path, value: object) -> None:

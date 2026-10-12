@@ -141,7 +141,7 @@ class RecipientWizardTests(unittest.TestCase):
             ["شخص سوم"],
         )
 
-    def test_preprocessing_edits_survive_reloading_the_same_rows(self) -> None:
+    def test_preprocessing_location_edits_survive_reloading_the_same_rows(self) -> None:
         wizard = RecipientWizard()
         page = wizard.preprocessing_page
         page.set_candidates((RecipientCandidate(
@@ -151,22 +151,14 @@ class RecipientWizardTests(unittest.TestCase):
             city="تهران",
         ),))
 
-        page.table.item(0, page.HEADERS.index("شغل")).setText("بازنشسته")
-        page.table.item(0, page.HEADERS.index("کد شغل")).setText("00003")
         page.table.item(0, page.HEADERS.index("شهر")).setText("ری")
         page.table.item(0, page.HEADERS.index("کد شهر")).setText("123")
-        page.table.item(0, page.HEADERS.index("واحد قضایی")).setText("واحد نمونه")
-        page.table.item(0, page.HEADERS.index("کد واحد قضایی")).setText("456")
 
         page.set_candidates(page.candidates())
 
         for header, expected in (
-            ("شغل", "بازنشسته"),
-            ("کد شغل", "00003"),
             ("شهر", "ری"),
             ("کد شهر", "123"),
-            ("واحد قضایی", "واحد نمونه"),
-            ("کد واحد قضایی", "456"),
         ):
             self.assertEqual(
                 page.table.item(0, page.HEADERS.index(header)).text(),
@@ -191,6 +183,11 @@ class RecipientWizardTests(unittest.TestCase):
             table.item(0, wizard.preprocessing_page.HEADERS.index("کد استان")).text(),
             "23",
         )
+        for header in ("شغل", "کد شغل"):
+            self.assertFalse(
+                table.item(0, wizard.preprocessing_page.HEADERS.index(header)).flags()
+                & Qt.ItemFlag.ItemIsEditable
+            )
         self.assertEqual(table.item(0, table.columnCount() - 1).text(), "نیازمند تکمیل")
 
     def test_clicking_a_cell_selects_its_whole_row(self) -> None:
@@ -420,7 +417,7 @@ class RecipientWizardTests(unittest.TestCase):
                 province="استان تهران",
                 county="شهرستان تهران",
                 city="تهران",
-                court_unit_name="دادگستري كل استان تهران",
+                court_unit_name="واحد قدیمی که باید نادیده گرفته شود",
             )
 
             drafts = _build_desktop_drafts(
@@ -438,8 +435,34 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertEqual(drafts[0].fields["recipient_first_name"], "نام")
             self.assertEqual(drafts[0].fields["job_code"], "00002")
             self.assertEqual(drafts[0].fields["province_code"], "23")
-            self.assertEqual(drafts[0].fields["court_unit_code"], "00159")
+            self.assertNotIn("court_unit_code", drafts[0].fields)
             self.assertEqual(drafts[0].fields["declaration_text"], "شرح")
+
+    def test_draft_forces_free_job_and_tehran_for_unknown_location(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input.pdf"
+            source.write_bytes(b"%PDF-test")
+            candidate = RecipientCandidate(
+                source_path=source,
+                full_name="نام خانوادگی",
+                first_name="نام",
+                last_name="خانوادگی",
+                job_title="کارمند",
+                province="استان ناشناخته",
+                county="شهرستان ناشناخته",
+                city="شهر ناشناخته",
+            )
+
+            draft = _build_desktop_drafts(
+                (candidate,), {-1: {}}, shared=True,
+                lookup_dir=Path(__file__).resolve().parents[1] / "lookups",
+            )[0]
+
+            self.assertEqual(draft.fields["job_title"], "آزاد")
+            self.assertEqual(draft.fields["province"], "استان تهران")
+            self.assertEqual(draft.fields["county"], "شهرستان تهران")
+            self.assertEqual(draft.fields["city"], "تهران")
 
 
 if __name__ == "__main__":

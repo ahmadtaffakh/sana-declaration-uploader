@@ -252,10 +252,6 @@ class PlaywrightDeclarationPage:
         charges, sign, or submit anything.
         """
 
-        court_code = draft.fields.get("court_unit_code", "").strip()
-        if not court_code:
-            raise LiveBrowserError("court_unit_code_missing")
-
         page = self.page
         page.locator("#menu4Container").click()
         page.locator("#rdbSetPetition").click()
@@ -265,9 +261,6 @@ class PlaywrightDeclarationPage:
                 agreement.click()
             page.locator("#frmSetPetitions button").click()
 
-        unit_code = page.locator("#txtUnitCode")
-        unit_code.wait_for(state="visible", timeout=self.timeout_ms)
-        unit_code.fill(court_code)
         page.locator("#newPetition").click()
 
         related_number = page.locator("#replayToDeclaration")
