@@ -2,30 +2,40 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+import json
+import os
 from pathlib import Path
 import sys
-from dataclasses import replace
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
+    QComboBox,
     QFileDialog,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWizard,
     QWizardPage,
 )
 
 from .extraction import DocumentExtractionError, extract_recipients
+from .live_browser import LiveBrowserError, LoginCredentials, run_login_check
 from .models import RecipientCandidate
 from .preprocessing import preprocess_candidates
 
@@ -76,12 +86,36 @@ QLabel#Guidance {
 }
 QListWidget, QTableWidget {
     background-color: #FFFFFF;
-    alternate-background-color: #F7FAFC;
+    alternate-background-color: #E9EFF5;
     border: 1px solid #CFDAE5;
     border-radius: 6px;
     gridline-color: #DCE5ED;
-    selection-background-color: #D9EAF7;
-    selection-color: #173B5E;
+    selection-background-color: #B9D7EE;
+    selection-color: #102F49;
+}
+QLineEdit, QTextEdit, QComboBox {
+    background-color: #FFFFFF;
+    border: 1px solid #B9C8D6;
+    border-radius: 5px;
+    min-height: 30px;
+    padding: 3px 7px;
+}
+QLineEdit:focus, QTextEdit:focus, QComboBox:focus {
+    border: 2px solid #2B78B5;
+}
+QGroupBox {
+    background-color: #FFFFFF;
+    border: 1px solid #CFDAE5;
+    border-radius: 7px;
+    font-weight: 600;
+    margin-top: 10px;
+    padding-top: 10px;
+}
+QGroupBox::title {
+    color: #173B5E;
+    subcontrol-origin: margin;
+    right: 12px;
+    padding: 0 5px;
 }
 QHeaderView::section {
     background-color: #E7EEF5;
@@ -116,6 +150,56 @@ QPushButton#PrimaryButton {
 }
 QPushButton#PrimaryButton:hover { background-color: #125A92; }
 """
+
+
+def _configure_table(table: QTableWidget) -> None:
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setAlternatingRowColors(True)
+    table.setWordWrap(True)
+    table.setShowGrid(False)
+    table.verticalHeader().setDefaultSectionSize(38)
+    table.horizontalHeader().setStretchLastSection(True)
+
+
+def _login_settings_path() -> Path:
+    base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    return base / "SanaDeclarationUploader" / "login.json"
+
+
+def _load_login_settings(path: Path | None = None) -> dict[str, str]:
+    target = path or _login_settings_path()
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        key: str(payload.get(key, "")).strip()
+        for key in ("national_code", "legal_identity")
+    }
+
+
+def _save_login_settings(
+    national_code: str,
+    legal_identity: str,
+    *,
+    remember: bool,
+    path: Path | None = None,
+) -> None:
+    target = path or _login_settings_path()
+    if not remember:
+        target.unlink(missing_ok=True)
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "national_code": national_code.strip(),
+        "legal_identity": legal_identity.strip(),
+    }
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 class FileSelectionPage(QWizardPage):
@@ -225,13 +309,10 @@ class RecipientReviewPage(QWizardPage):
 
         self.table = QTableWidget(0, len(self.HEADERS))
         self.table.setHorizontalHeaderLabels(self.HEADERS)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setAlternatingRowColors(True)
-        self.table.setWordWrap(True)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        _configure_table(self.table)
 
         add_button = QPushButton("افزودن شخص")
-        remove_button = QPushButton("حذف شخص")
+        remove_button = QPushButton("حذف ردیف")
         add_button.clicked.connect(lambda: self.add_candidate(None))
         remove_button.clicked.connect(self._remove_selected)
         buttons = QHBoxLayout()
@@ -353,10 +434,7 @@ class PreprocessingPage(QWizardPage):
 
         self.table = QTableWidget(0, len(self.HEADERS))
         self.table.setHorizontalHeaderLabels(self.HEADERS)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setAlternatingRowColors(True)
-        self.table.setWordWrap(True)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        _configure_table(self.table)
 
         guidance = QLabel(
             "روش کار: برنامه عنوان شغل و اجزای نشانی را فقط با کاتالوگ محلی و "
@@ -399,6 +477,32 @@ class PreprocessingPage(QWizardPage):
                 self.table.setItem(row, column, item)
         self.table.resizeColumnsToContents()
 
+    def candidates(self) -> tuple[RecipientCandidate, ...]:
+        result = []
+        for row in range(self.table.rowCount()):
+            original = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            if not isinstance(original, RecipientCandidate):
+                continue
+
+            def value(header: str) -> str:
+                item = self.table.item(row, self.HEADERS.index(header))
+                return item.text().strip() if item else ""
+
+            result.append(replace(
+                original,
+                job_title=value("شغل"),
+                job_code=value("کد شغل"),
+                province=value("استان"),
+                province_code=value("کد استان"),
+                county=value("شهرستان"),
+                county_code=value("کد شهرستان"),
+                city=value("شهر"),
+                city_code=value("کد شهر"),
+                court_unit_name=value("واحد قضایی"),
+                court_unit_code=value("کد واحد قضایی"),
+            ))
+        return tuple(result)
+
     @staticmethod
     def _status(candidate: RecipientCandidate) -> str:
         lookup_issues = (
@@ -406,6 +510,268 @@ class PreprocessingPage(QWizardPage):
             if "lookup" in issue or "unresolved" in issue or "ambiguous" in issue
         )
         return "نیازمند تکمیل" if next(lookup_issues, None) else "آماده بازبینی"
+
+
+class DeclarationContentPage(QWizardPage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setTitle("<b>شرح اظهارنامه و فایل‌های پیوست</b>")
+        self.setSubTitle(
+            "شرح و اسناد را مشترک برای همه یا جداگانه برای هر ردیف تعیین کنید."
+        )
+        self._candidates: tuple[RecipientCandidate, ...] = ()
+        self._signature: tuple[str, ...] = ()
+        self._payloads: dict[int, dict[str, object]] = {}
+        self._active_key = -1
+
+        self.shared_checkbox = QCheckBox(
+            "شرح و فایل‌های پیوست برای همهٔ اشخاص مشترک است"
+        )
+        self.shared_checkbox.setChecked(True)
+        self.recipient_combo = QComboBox()
+        self.recipient_combo.setEnabled(False)
+        self.description = QTextEdit()
+        self.description.setPlaceholderText(
+            "شرح اظهارنامه را کامل و دقیق وارد کنید. این متن قبل از ثبت قابل بازبینی است."
+        )
+        self.description.setMinimumHeight(160)
+        self.attachment_list = QListWidget()
+        self.attachment_list.setAlternatingRowColors(True)
+
+        add_button = QPushButton("افزودن پیوست‌ها")
+        remove_button = QPushButton("حذف پیوست انتخاب‌شده")
+        add_button.clicked.connect(self._choose_attachments)
+        remove_button.clicked.connect(self._remove_attachments)
+        attachment_buttons = QHBoxLayout()
+        attachment_buttons.addWidget(add_button)
+        attachment_buttons.addWidget(remove_button)
+        attachment_buttons.addStretch()
+
+        group = QGroupBox("محتوای اظهارنامه")
+        form = QFormLayout(group)
+        form.addRow("دامنهٔ محتوا:", self.recipient_combo)
+        form.addRow("شرح اظهارنامه:", self.description)
+        form.addRow("فایل‌های پیوست:", self.attachment_list)
+        form.addRow("", attachment_buttons)
+
+        guidance = QLabel(
+            "راهنما: اگر شرح و پیوست‌ها برای همه یکسان است، تیک بالا را روشن "
+            "بگذارید و فقط یک‌بار اطلاعات را وارد کنید. در حالت اختصاصی، از فهرست "
+            "«دامنهٔ محتوا» هر شخص را انتخاب و شرح و پیوست‌های همان ردیف را ثبت کنید."
+        )
+        guidance.setObjectName("Guidance")
+        guidance.setWordWrap(True)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(guidance)
+        layout.addWidget(self.shared_checkbox)
+        layout.addWidget(group)
+
+        self.shared_checkbox.toggled.connect(self._scope_changed)
+        self.recipient_combo.currentIndexChanged.connect(self._recipient_changed)
+
+    def set_candidates(self, candidates: tuple[RecipientCandidate, ...]) -> None:
+        signature = tuple(
+            f"{candidate.source_path}\0{candidate.full_name}"
+            for candidate in candidates
+        )
+        if signature == self._signature:
+            self._save_active()
+        self._candidates = candidates
+        if signature != self._signature:
+            self._signature = signature
+            self._payloads.clear()
+            self._active_key = -1
+        self._rebuild_recipient_combo()
+
+    def payloads(self) -> dict[int, dict[str, object]]:
+        self._save_active()
+        return {
+            key: {
+                "description": str(value.get("description", "")),
+                "attachments": tuple(value.get("attachments", ())),
+            }
+            for key, value in self._payloads.items()
+        }
+
+    def _scope_changed(self, shared: bool) -> None:
+        self._save_active()
+        previous = self._payloads.get(self._active_key, self._empty_payload())
+        if shared:
+            self._payloads.setdefault(-1, self._copy_payload(previous))
+            self._active_key = -1
+        else:
+            shared_payload = self._payloads.get(-1, previous)
+            for index in range(len(self._candidates)):
+                self._payloads.setdefault(index, self._copy_payload(shared_payload))
+            self._active_key = 0
+        self.recipient_combo.setEnabled(not shared)
+        self._rebuild_recipient_combo()
+
+    def _rebuild_recipient_combo(self) -> None:
+        self.recipient_combo.blockSignals(True)
+        self.recipient_combo.clear()
+        if self.shared_checkbox.isChecked():
+            self.recipient_combo.addItem("همهٔ اشخاص", -1)
+            self._active_key = -1
+        else:
+            for index, candidate in enumerate(self._candidates):
+                self.recipient_combo.addItem(candidate.full_name or f"ردیف {index + 1}", index)
+            if self.recipient_combo.count():
+                selected = max(0, self.recipient_combo.findData(self._active_key))
+                self.recipient_combo.setCurrentIndex(selected)
+                self._active_key = int(self.recipient_combo.currentData())
+        self.recipient_combo.blockSignals(False)
+        self._load_active()
+
+    def _recipient_changed(self, _index: int) -> None:
+        self._save_active()
+        data = self.recipient_combo.currentData()
+        if data is None:
+            return
+        self._active_key = int(data)
+        self._load_active()
+
+    def _save_active(self) -> None:
+        self._payloads[self._active_key] = {
+            "description": self.description.toPlainText().strip(),
+            "attachments": tuple(self._attachment_paths()),
+        }
+
+    def _load_active(self) -> None:
+        payload = self._payloads.get(self._active_key, self._empty_payload())
+        self.description.setPlainText(str(payload.get("description", "")))
+        self.attachment_list.clear()
+        for path in payload.get("attachments", ()):
+            self._add_attachment(Path(path))
+
+    def _choose_attachments(self) -> None:
+        names, _ = QFileDialog.getOpenFileNames(self, "انتخاب فایل‌های پیوست")
+        for name in names:
+            self._add_attachment(Path(name))
+
+    def _add_attachment(self, path: Path) -> None:
+        resolved = path.resolve()
+        if not resolved.is_file() or resolved in self._attachment_paths():
+            return
+        item = QListWidgetItem(resolved.name)
+        item.setToolTip(str(resolved))
+        item.setData(Qt.ItemDataRole.UserRole, str(resolved))
+        self.attachment_list.addItem(item)
+
+    def _attachment_paths(self) -> list[Path]:
+        return [
+            Path(self.attachment_list.item(index).data(Qt.ItemDataRole.UserRole))
+            for index in range(self.attachment_list.count())
+        ]
+
+    def _remove_attachments(self) -> None:
+        for item in self.attachment_list.selectedItems():
+            self.attachment_list.takeItem(self.attachment_list.row(item))
+
+    @staticmethod
+    def _empty_payload() -> dict[str, object]:
+        return {"description": "", "attachments": ()}
+
+    @staticmethod
+    def _copy_payload(payload: dict[str, object]) -> dict[str, object]:
+        return {
+            "description": str(payload.get("description", "")),
+            "attachments": tuple(payload.get("attachments", ())),
+        }
+
+
+class LoginPage(QWizardPage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setTitle("<b>ورود امن به سامانه ثنا</b>")
+        self.setSubTitle(
+            "ورود فقط پس از تأیید شما اجرا می‌شود و در این مرحله ثبتی انجام نمی‌گیرد."
+        )
+
+        saved = _load_login_settings()
+        self.national_code = QLineEdit(saved.get("national_code", ""))
+        self.password = QLineEdit()
+        self.password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.legal_identity = QLineEdit(saved.get("legal_identity", ""))
+        self.otp = QLineEdit()
+        self.otp.setEchoMode(QLineEdit.EchoMode.Password)
+        self.remember_identifiers = QCheckBox(
+            "شناسه ملی/کد ملی و شناسه شخص حقوقی در این دستگاه ذخیره شود"
+        )
+        self.remember_identifiers.setChecked(True)
+
+        form_group = QGroupBox("مشخصات ورود")
+        form = QFormLayout(form_group)
+        form.addRow("کد ملی/شناسه ورود:", self.national_code)
+        form.addRow("رمز عبور:", self.password)
+        form.addRow("شناسه شخص حقوقی:", self.legal_identity)
+        form.addRow("رمز موقت (OTP):", self.otp)
+        form.addRow("", self.remember_identifiers)
+
+        guidance = QLabel(
+            "نکته امنیتی: رمز عبور و رمز موقت هرگز در فایل JSON ذخیره نمی‌شوند. "
+            "با زدن دکمه «آزمایش ورود امن»، مرورگر باز می‌شود، ورود یک‌بار انجام "
+            "می‌شود و پس از مشاهده منوی اظهارنامه بسته خواهد شد."
+        )
+        guidance.setObjectName("Guidance")
+        guidance.setWordWrap(True)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(guidance)
+        layout.addWidget(form_group)
+        layout.addStretch()
+
+        for field in (
+            self.national_code, self.password, self.legal_identity, self.otp
+        ):
+            field.textChanged.connect(lambda: self.completeChanged.emit())
+
+    def isComplete(self) -> bool:
+        return all(
+            field.text().strip()
+            for field in (
+                self.national_code, self.password, self.legal_identity, self.otp
+            )
+        )
+
+    def validatePage(self) -> bool:
+        answer = QMessageBox.question(
+            self,
+            "تأیید ورود زنده",
+            "مرورگر باز شود و ورود به سامانه ثنا یک‌بار آزمایش شود؟\n"
+            "در این مرحله هیچ اظهارنامه‌ای ثبت یا امضا نمی‌شود.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+
+        _save_login_settings(
+            self.national_code.text(),
+            self.legal_identity.text(),
+            remember=self.remember_identifiers.isChecked(),
+        )
+        credentials = LoginCredentials(
+            national_code=self.national_code.text().strip(),
+            password=self.password.text(),
+            legal_identity=self.legal_identity.text().strip(),
+            otp=self.otp.text().strip(),
+        )
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            run_login_check(credentials)
+        except LiveBrowserError as exc:
+            QMessageBox.warning(self, "ورود ناموفق", str(exc))
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
+        QMessageBox.information(
+            self,
+            "ورود موفق",
+            "ورود با موفقیت تأیید شد. هیچ اظهارنامه‌ای ثبت نشده است.",
+        )
+        return True
 
 
 class RecipientWizard(QWizard):
@@ -419,32 +785,47 @@ class RecipientWizard(QWizard):
         self.files_page = FileSelectionPage()
         self.review_page = RecipientReviewPage()
         self.preprocessing_page = PreprocessingPage()
+        self.content_page = DeclarationContentPage()
+        self.login_page = LoginPage()
         self.files_page_id = self.addPage(self.files_page)
         self.review_page_id = self.addPage(self.review_page)
         self.preprocessing_page_id = self.addPage(self.preprocessing_page)
+        self.content_page_id = self.addPage(self.content_page)
+        self.login_page_id = self.addPage(self.login_page)
         self._loaded_paths: tuple[Path, ...] = ()
+        self._preprocess_source: tuple[RecipientCandidate, ...] = ()
         self._lookup_dir = Path(__file__).resolve().parents[2] / "lookups"
         self.currentIdChanged.connect(self._page_changed)
         self.setButtonLayout([
             QWizard.WizardButton.FinishButton,
-            QWizard.WizardButton.NextButton,
             QWizard.WizardButton.BackButton,
+            QWizard.WizardButton.NextButton,
             QWizard.WizardButton.CancelButton,
             QWizard.WizardButton.Stretch,
         ])
         self.setButtonText(QWizard.WizardButton.BackButton, "قبلی")
         self.setButtonText(QWizard.WizardButton.NextButton, "بعدی")
-        self.setButtonText(QWizard.WizardButton.FinishButton, "پایان بازبینی")
+        self.setButtonText(QWizard.WizardButton.FinishButton, "آزمایش ورود امن")
         self.setButtonText(QWizard.WizardButton.CancelButton, "انصراف")
+        self.button(QWizard.WizardButton.BackButton).setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward)
+        )
+        self.button(QWizard.WizardButton.NextButton).setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack)
+        )
         self.button(QWizard.WizardButton.NextButton).setObjectName("PrimaryButton")
         self.button(QWizard.WizardButton.FinishButton).setObjectName("PrimaryButton")
 
     def _page_changed(self, page_id: int) -> None:
         if page_id == self.preprocessing_page_id:
-            candidates = preprocess_candidates(
-                self.review_page.candidates(), self._lookup_dir
-            )
-            self.preprocessing_page.set_candidates(candidates)
+            source = self.review_page.candidates()
+            if source != self._preprocess_source:
+                candidates = preprocess_candidates(source, self._lookup_dir)
+                self.preprocessing_page.set_candidates(candidates)
+                self._preprocess_source = source
+            return
+        if page_id == self.content_page_id:
+            self.content_page.set_candidates(self.preprocessing_page.candidates())
             return
         if page_id != self.review_page_id:
             return

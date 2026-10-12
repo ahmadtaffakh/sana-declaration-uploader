@@ -1,12 +1,26 @@
 import os
+import json
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QLabel, QWizard
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QLabel,
+    QPushButton,
+    QWizard,
+)
 
-from sana_declaration_uploader.desktop import RecipientReviewPage, RecipientWizard
+from sana_declaration_uploader.desktop import (
+    DeclarationContentPage,
+    RecipientReviewPage,
+    RecipientWizard,
+    _load_login_settings,
+    _save_login_settings,
+)
 from sana_declaration_uploader.models import RecipientCandidate
 
 
@@ -31,8 +45,11 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertTrue(all(button.geometry().x() > wizard.width() / 2 for button in buttons))
         self.assertEqual(
             wizard.buttonText(QWizard.WizardButton.FinishButton),
-            "پایان بازبینی",
+            "آزمایش ورود امن",
         )
+        self.assertFalse(wizard.button(QWizard.WizardButton.BackButton).icon().isNull())
+        self.assertFalse(wizard.button(QWizard.WizardButton.NextButton).icon().isNull())
+        self.assertGreater(buttons[1].geometry().x(), buttons[2].geometry().x())
         wizard.close()
 
     def test_pages_have_bold_titles_guidance_and_organizational_style(self) -> None:
@@ -41,10 +58,17 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertTrue(wizard.files_page.title().startswith("<b>"))
         self.assertTrue(wizard.review_page.title().startswith("<b>"))
         self.assertTrue(wizard.preprocessing_page.title().startswith("<b>"))
+        self.assertTrue(wizard.content_page.title().startswith("<b>"))
+        self.assertTrue(wizard.login_page.title().startswith("<b>"))
         guidance = wizard.findChildren(QLabel, "Guidance")
-        self.assertEqual(len(guidance), 3)
+        self.assertEqual(len(guidance), 5)
         self.assertTrue(all(label.wordWrap() for label in guidance))
         self.assertIn("#1769AA", wizard.styleSheet())
+        self.assertIn("alternate-background-color: #E9EFF5", wizard.styleSheet())
+        self.assertIn(
+            "حذف ردیف",
+            [button.text() for button in wizard.review_page.findChildren(QPushButton)],
+        )
 
     def test_review_edits_are_preserved_for_preprocessing(self) -> None:
         page = RecipientReviewPage()
@@ -93,6 +117,39 @@ class RecipientWizardTests(unittest.TestCase):
             wizard.preprocessing_page.table.selectionBehavior(),
             QAbstractItemView.SelectionBehavior.SelectRows,
         )
+        self.assertTrue(wizard.review_page.table.alternatingRowColors())
+        self.assertTrue(wizard.preprocessing_page.table.alternatingRowColors())
+
+    def test_common_content_is_seeded_for_each_person_when_scope_changes(self) -> None:
+        page = DeclarationContentPage()
+        page.set_candidates((
+            RecipientCandidate(source_path=Path("one.pdf"), full_name="شخص اول"),
+            RecipientCandidate(source_path=Path("two.pdf"), full_name="شخص دوم"),
+        ))
+        page.description.setPlainText("شرح مشترک")
+
+        page.shared_checkbox.setChecked(False)
+
+        payloads = page.payloads()
+        self.assertEqual(payloads[0]["description"], "شرح مشترک")
+        self.assertEqual(payloads[1]["description"], "شرح مشترک")
+        self.assertTrue(page.recipient_combo.isEnabled())
+
+    def test_login_json_never_contains_password_or_otp(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "login.json"
+
+            _save_login_settings("national", "legal", remember=True, path=path)
+
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(raw, {
+                "national_code": "national",
+                "legal_identity": "legal",
+            })
+            self.assertEqual(_load_login_settings(path), raw)
+
+            _save_login_settings("", "", remember=False, path=path)
+            self.assertFalse(path.exists())
 
 
 if __name__ == "__main__":
