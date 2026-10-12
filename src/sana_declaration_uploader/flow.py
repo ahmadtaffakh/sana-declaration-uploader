@@ -34,14 +34,31 @@ def run_upload(
     *,
     confirmed: bool = False,
 ) -> UploadResult:
-    _require_valid_draft(draft)
+    return run_upload_batch((draft,), uploader, confirmed=confirmed)[0]
+
+
+def run_upload_batch(
+    drafts: tuple[DeclarationDraft, ...],
+    uploader: BrowserUploader,
+    *,
+    confirmed: bool = False,
+) -> tuple[UploadResult, ...]:
+    """Validate first, then upload each draft once with one shared uploader."""
+
+    if not drafts:
+        raise InvalidDeclaration("recipients_missing")
+    for draft in drafts:
+        _require_valid_draft(draft)
     if not confirmed:
         raise UploadNotConfirmed("Explicit operator confirmation is required.")
 
-    result = uploader.upload(draft)
-    if result.status != "success" or not result.tracking_code.strip():
-        raise RuntimeError("Upload did not return a verified tracking code.")
-    return result
+    results = []
+    for draft in drafts:
+        result = uploader.upload(draft)
+        if result.status != "success" or not result.tracking_code.strip():
+            raise RuntimeError("Upload did not return a verified tracking code.")
+        results.append(result)
+    return tuple(results)
 
 
 def _require_valid_draft(draft: DeclarationDraft) -> None:

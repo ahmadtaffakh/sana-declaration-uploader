@@ -135,20 +135,24 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertEqual(payloads[1]["description"], "شرح مشترک")
         self.assertTrue(page.recipient_combo.isEnabled())
 
-    def test_login_json_never_contains_password_or_otp(self) -> None:
+    def test_login_json_contains_all_fields_when_requested(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "login.json"
 
-            _save_login_settings("national", "legal", remember=True, path=path)
+            _save_login_settings(
+                "national", "password", "legal", "otp", remember=True, path=path
+            )
 
             raw = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(raw, {
                 "national_code": "national",
+                "password": "password",
                 "legal_identity": "legal",
+                "otp": "otp",
             })
             self.assertEqual(_load_login_settings(path), raw)
 
-            _save_login_settings("", "", remember=False, path=path)
+            _save_login_settings("", "", "", "", remember=False, path=path)
             self.assertFalse(path.exists())
 
 

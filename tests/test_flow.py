@@ -11,6 +11,7 @@ from sana_declaration_uploader.flow import (
     UploadNotConfirmed,
     prepare_drafts,
     run_upload,
+    run_upload_batch,
 )
 from sana_declaration_uploader.models import (
     Attachment,
@@ -29,6 +30,16 @@ class StubUploader:
     def upload(self, draft: DeclarationDraft) -> UploadResult:
         self.called = True
         return self.result
+
+
+class BatchStubUploader:
+    def __init__(self, results: list[UploadResult]) -> None:
+        self.results = iter(results)
+        self.calls: list[str] = []
+
+    def upload(self, draft: DeclarationDraft) -> UploadResult:
+        self.calls.append(draft.fields.get("name", ""))
+        return next(self.results)
 
 
 class StubAttachmentPage:
@@ -154,6 +165,54 @@ class FlowTests(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "verified tracking code"):
                 run_upload(draft, uploader, confirmed=True)
+
+    def test_batch_validates_every_draft_before_first_browser_write(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            uploader = BatchStubUploader([
+                UploadResult(status="success", tracking_code="123456"),
+            ])
+            drafts = (
+                DeclarationDraft(source_dir=root, fields={"name": "first"}),
+                DeclarationDraft(source_dir=root / "missing", fields={"name": "second"}),
+            )
+
+            with self.assertRaisesRegex(InvalidDeclaration, "source_dir_missing"):
+                run_upload_batch(drafts, uploader, confirmed=True)
+
+            self.assertEqual(uploader.calls, [])
+
+    def test_batch_uses_one_uploader_and_stops_without_retry(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            uploader = BatchStubUploader([
+                UploadResult(status="success", tracking_code="111111"),
+                UploadResult(status="failed"),
+                UploadResult(status="success", tracking_code="333333"),
+            ])
+            drafts = tuple(
+                DeclarationDraft(source_dir=root, fields={"name": name})
+                for name in ("first", "second", "third")
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "verified tracking code"):
+                run_upload_batch(drafts, uploader, confirmed=True)
+
+            self.assertEqual(uploader.calls, ["first", "second"])
+
+    def test_batch_requires_one_explicit_confirmation(self) -> None:
+        with TemporaryDirectory() as directory:
+            draft = DeclarationDraft(
+                source_dir=Path(directory), fields={"name": "first"}
+            )
+            uploader = BatchStubUploader([
+                UploadResult(status="success", tracking_code="111111"),
+            ])
+
+            with self.assertRaises(UploadNotConfirmed):
+                run_upload_batch((draft,), uploader)
+
+            self.assertEqual(uploader.calls, [])
 
     def test_attachment_workflow_runs_once_in_observed_order(self) -> None:
         with TemporaryDirectory() as directory:

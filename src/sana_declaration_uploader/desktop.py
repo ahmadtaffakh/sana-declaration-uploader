@@ -176,13 +176,15 @@ def _load_login_settings(path: Path | None = None) -> dict[str, str]:
         return {}
     return {
         key: str(payload.get(key, "")).strip()
-        for key in ("national_code", "legal_identity")
+        for key in ("national_code", "password", "legal_identity", "otp")
     }
 
 
 def _save_login_settings(
     national_code: str,
+    password: str,
     legal_identity: str,
+    otp: str,
     *,
     remember: bool,
     path: Path | None = None,
@@ -194,7 +196,9 @@ def _save_login_settings(
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "national_code": national_code.strip(),
+        "password": password,
         "legal_identity": legal_identity.strip(),
+        "otp": otp.strip(),
     }
     target.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
@@ -691,15 +695,15 @@ class LoginPage(QWizardPage):
 
         saved = _load_login_settings()
         self.national_code = QLineEdit(saved.get("national_code", ""))
-        self.password = QLineEdit()
+        self.password = QLineEdit(saved.get("password", ""))
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.legal_identity = QLineEdit(saved.get("legal_identity", ""))
-        self.otp = QLineEdit()
+        self.otp = QLineEdit(saved.get("otp", ""))
         self.otp.setEchoMode(QLineEdit.EchoMode.Password)
-        self.remember_identifiers = QCheckBox(
-            "شناسه ملی/کد ملی و شناسه شخص حقوقی در این دستگاه ذخیره شود"
+        self.remember_credentials = QCheckBox(
+            "تمام مشخصات ورود، شامل رمز عبور و OTP، در این دستگاه ذخیره شود"
         )
-        self.remember_identifiers.setChecked(True)
+        self.remember_credentials.setChecked(True)
 
         form_group = QGroupBox("مشخصات ورود")
         form = QFormLayout(form_group)
@@ -707,12 +711,12 @@ class LoginPage(QWizardPage):
         form.addRow("رمز عبور:", self.password)
         form.addRow("شناسه شخص حقوقی:", self.legal_identity)
         form.addRow("رمز موقت (OTP):", self.otp)
-        form.addRow("", self.remember_identifiers)
+        form.addRow("", self.remember_credentials)
 
         guidance = QLabel(
-            "نکته امنیتی: رمز عبور و رمز موقت هرگز در فایل JSON ذخیره نمی‌شوند. "
-            "با زدن دکمه «آزمایش ورود امن»، مرورگر باز می‌شود، ورود یک‌بار انجام "
-            "می‌شود و پس از مشاهده منوی اظهارنامه بسته خواهد شد."
+            "هشدار امنیتی: با روشن بودن تیک، همهٔ مقادیر این صفحه به‌صورت خوانا "
+            "در فایل JSON همین دستگاه ذخیره می‌شوند. OTP ممکن است در ورود بعدی "
+            "منقضی شده باشد. با برداشتن تیک، فایل ذخیره‌شده حذف می‌شود."
         )
         guidance.setObjectName("Guidance")
         guidance.setWordWrap(True)
@@ -749,8 +753,10 @@ class LoginPage(QWizardPage):
 
         _save_login_settings(
             self.national_code.text(),
+            self.password.text(),
             self.legal_identity.text(),
-            remember=self.remember_identifiers.isChecked(),
+            self.otp.text(),
+            remember=self.remember_credentials.isChecked(),
         )
         credentials = LoginCredentials(
             national_code=self.national_code.text().strip(),
