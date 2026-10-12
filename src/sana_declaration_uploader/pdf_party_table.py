@@ -21,7 +21,7 @@ _ROLE_LABELS = {
     "خواندگان": ("defendant", "wide_rows"),
     "تجدیدنظرخواه": ("appellant", "group_natural"),
     "تجدیدنظرخوانده": ("respondent", "wide_rows"),
-    "اظهارکننده": ("declarant", "natural_rows"),
+    "اظهارکننده": ("declarant", "group_natural"),
     "مخاطب": ("addressee", "wide_rows"),
     "مخاطبین": ("addressee", "wide_rows"),
     "مخاطبان": ("addressee", "wide_rows"),
@@ -137,6 +137,12 @@ def _section_anchors(
         elif text in _SECTION_LABELS:
             anchors.append((float(word["top"]), "stop", "stop"))
     anchors.sort()
+    party_seen = False
+    for index, (_top, role, _parser) in enumerate(anchors):
+        if role == "stop" and party_seen:
+            return anchors[:index + 1]
+        if role != "stop":
+            party_seen = True
     return anchors
 
 
@@ -193,7 +199,7 @@ def _group_rows(
         "names": names,
         "addresses": addresses,
         "jobs": jobs,
-        "person_type": "group",
+        "person_type": "group" if len(rows) > 1 else str(rows[0]["person_type"]),
         "evidence": "، ".join(names),
     }
 
@@ -211,14 +217,17 @@ def _wide_party_rows(
         if page_width * 0.58 < _center(word) < page_width * 0.82
         and str(word["text"]) not in _ROLE_LABELS
     ]
-    row_tops = _cluster_tops(name_words, tolerance=10)
+    row_tops = [
+        top for top in _cluster_tops(name_words, tolerance=10)
+        if _is_wide_row_start(name_words, top, page_width)
+    ]
     if not row_tops:
         return []
     rows = []
     for index, row_top in enumerate(row_tops):
         lower = start if index == 0 else (row_tops[index - 1] + row_top) / 2
         upper = end if index + 1 == len(row_tops) else (row_top + row_tops[index + 1]) / 2
-        name = _wide_name_text(words, lower, upper, page_width)
+        name = _wide_name_text(words, lower, upper, page_width, row_top)
         if not name:
             continue
         address = _cell_text(words, lower, upper, 0, page_width * 0.53)
@@ -243,6 +252,7 @@ def _wide_name_text(
     lower: float,
     upper: float,
     page_width: float,
+    row_top: float,
 ) -> str:
     selected = [
         word
@@ -250,17 +260,24 @@ def _wide_name_text(
         if lower <= float(word["top"]) < upper
         and page_width * 0.53 < _center(word) < page_width * 0.82
     ]
-    anchor_tops = [
-        float(word["top"])
-        for word in selected
-        if _center(word) > page_width * 0.58
-    ]
     selected = [
         word
         for word in selected
-        if any(abs(float(word["top"]) - top) <= 3 for top in anchor_tops)
+        if abs(float(word["top"]) - row_top) <= 10
     ]
-    return _cell_text(selected, lower, upper, page_width * 0.53, page_width * 0.82)
+    return _cell_text(selected, lower, upper, page_width * 0.58, page_width * 0.82)
+
+
+def _is_wide_row_start(
+    words: list[dict[str, object]], row_top: float, page_width: float
+) -> bool:
+    line_words = [
+        word for word in words if abs(float(word["top"]) - row_top) <= 3
+    ]
+    return (
+        len(line_words) >= 3
+        or any(float(word["x1"]) > page_width * 0.735 for word in line_words)
+    )
 
 
 def _has_notice_headers(words: list[dict[str, object]]) -> bool:

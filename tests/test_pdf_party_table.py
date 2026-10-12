@@ -73,6 +73,63 @@ class PdfPartyTableTests(unittest.TestCase):
             ],
         )
         self.assertEqual(groups[0]["jobs"], ("کارمند",))
+        self.assertEqual(groups[0]["person_type"], "natural")
+
+    def test_groups_all_declarants_in_one_candidate(self) -> None:
+        words = [
+            _word("مشخصات", 515, 565, 140),
+            _word("شغل", 343, 370, 140),
+            _word("اظهارکننده", 510, 566, 168),
+            _word("علی", 458, 482, 168),
+            _word("احمدی", 399, 435, 168),
+            _word("کارمند", 340, 370, 168),
+            _word("تهران", 220, 270, 168),
+            _word("رضا", 458, 482, 198),
+            _word("کریمی", 399, 435, 198),
+            _word("بازنشسته", 330, 370, 198),
+            _word("شیراز", 220, 270, 198),
+            _word("مخاطب", 518, 558, 240),
+            _word("شرکت", 445, 476, 240),
+            _word("نمونه", 397, 441, 240),
+            _word("موضوع", 520, 558, 280),
+        ]
+
+        groups = _extract_groups(words, 596)
+
+        self.assertEqual(groups[0]["role"], "declarant")
+        self.assertEqual(groups[0]["names"], ("علی احمدی", "رضا کریمی"))
+        self.assertEqual(groups[0]["jobs"], ("کارمند", "بازنشسته"))
+        self.assertEqual(groups[0]["person_type"], "group")
+
+    def test_ignores_wrapped_address_and_body_salutation(self) -> None:
+        words = [
+            _word("مشخصات", 515, 565, 140),
+            _word("شغل", 343, 370, 140),
+            _word("اظهارکننده", 510, 566, 168),
+            _word("علی", 458, 482, 168),
+            _word("احمدی", 399, 435, 168),
+            _word("مخاطب", 518, 558, 198),
+            _word("شرکت", 445, 476, 198),
+            _word("نمونه", 397, 441, 198),
+            _word("استان", 324, 352, 198),
+            _word("تهران", 270, 320, 198),
+            _word("کشور", 412, 438, 212),
+            _word("نبش", 330, 352, 212),
+            _word("موضوع", 520, 558, 250),
+            _word("مخاطبین", 500, 558, 300),
+            _word("متن", 430, 470, 315),
+            _word("اظهارنامه", 360, 425, 315),
+        ]
+
+        groups = _extract_groups(words, 596)
+
+        self.assertEqual(
+            [(group["role"], group["names"]) for group in groups],
+            [
+                ("declarant", ("علی احمدی",)),
+                ("addressee", ("شرکت نمونه",)),
+            ],
+        )
 
     def test_groups_appellants_and_keeps_respondents_separate(self) -> None:
         words = [

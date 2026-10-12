@@ -20,20 +20,24 @@ class LegacyLookupImportTests(unittest.TestCase):
                 '"LocationName":"شهر نمونه","LocationType":5}]\n'
                 "network log\n"
                 '[{"Id":"u1","Code":"00123","UnitName":"واحد نمونه",'
-                '"GeoLocationId":"t1"}]\n',
+                '"GeoLocationId":"t1"}]\n'
+                '[{"Id":"j1","Code":"00004","Title":"بازنشسته","State":0},'
+                '{"Id":"r1","Code":"1033","Title":"عنوان غیرشغلی","State":0}]\n',
                 encoding="utf-8",
             )
             target = root / "lookups"
 
             counts = import_legacy_lookups(source, target)
 
-            self.assertEqual(counts, {"locations": 3, "court_units": 1, "jobs": 0})
+            self.assertEqual(counts, {"locations": 3, "court_units": 1, "jobs": 1})
             locations = json.loads((target / "locations.json").read_text(encoding="utf-8"))
             county = next(item for item in locations if item["type"] == "county")
             city = next(item for item in locations if item["type"] == "city")
             self.assertEqual(county["parent_key"], "p1")
             self.assertEqual(city["parent_key"], "c1")
-            self.assertFalse((target / "jobs.json").exists())
+            jobs = json.loads((target / "jobs.json").read_text(encoding="utf-8"))
+            self.assertEqual(jobs[0]["label"], "بازنشسته")
+            self.assertEqual(jobs[0]["code"], "00004")
 
     def test_rejects_capture_without_reusable_catalog_records(self) -> None:
         with TemporaryDirectory() as directory:

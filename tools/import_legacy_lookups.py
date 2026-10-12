@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 from typing import Iterable
 
 
@@ -13,10 +14,11 @@ _LOCATION_TYPES = {2: "province", 3: "county", 5: "city"}
 
 def import_legacy_lookups(source: Path, target_dir: Path) -> dict[str, int]:
     text = source.read_text(encoding="utf-8-sig")
-    objects = tuple(_walk_objects(_decode_embedded_values(text)))
+    values = _decode_embedded_values(text)
+    objects = tuple(_walk_objects(values))
     locations = _location_entries(objects, source.name)
     courts = _court_entries(objects, source.name)
-    jobs = _job_entries(objects, source.name)
+    jobs = _job_entries(values, source.name)
     if not any((locations, courts, jobs)):
         raise ValueError("legacy_lookup_records_missing")
 
@@ -134,10 +136,10 @@ def _court_entries(
 
 
 def _job_entries(
-    objects: Iterable[dict[str, object]], source_name: str
+    values: Iterable[object], source_name: str
 ) -> list[dict[str, str]]:
     entries: dict[str, dict[str, str]] = {}
-    for item in objects:
+    for item in _walk_objects(values):
         if not all(item.get(key) not in (None, "") for key in ("Id", "JobCode", "JobTitle")):
             continue
         key = str(item["Id"])
@@ -148,6 +150,26 @@ def _job_entries(
             "code": str(item["JobCode"]).strip(),
             "source": source_name,
         }
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if not isinstance(item, dict) or set(item) != {"Id", "Code", "Title", "State"}:
+                continue
+            code = str(item.get("Code") or "").strip()
+            if not re.fullmatch(r"[0-9]{5}", code):
+                continue
+            key = str(item.get("Id") or "").strip()
+            label = str(item.get("Title") or "").strip()
+            if not key or not label:
+                continue
+            entries[key] = {
+                "key": key,
+                "label": label,
+                "id": key,
+                "code": code,
+                "source": source_name,
+            }
     return sorted(entries.values(), key=lambda item: (item["code"], item["label"]))
 
 

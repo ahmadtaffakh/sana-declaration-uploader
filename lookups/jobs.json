@@ -1,0 +1,142 @@
+[
+  {
+    "key": "d2e420be1bf14c2088a14f04e7c71bb9",
+    "label": "آزاد",
+    "id": "d2e420be1bf14c2088a14f04e7c71bb9",
+    "code": "00002",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "F963BC06550A475EA6130C8D409893F2",
+    "label": "استاد دانشگاه",
+    "id": "F963BC06550A475EA6130C8D409893F2",
+    "code": "00012",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "57861A3AA52A4A5FAE8CF06086B728F8",
+    "label": "آبدارچي",
+    "id": "57861A3AA52A4A5FAE8CF06086B728F8",
+    "code": "00101",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "F65B3B506EB94815B20AB57F7F3A0870",
+    "label": "آبميوه فروش",
+    "id": "F65B3B506EB94815B20AB57F7F3A0870",
+    "code": "00299",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "E9D3469756644B80B89E43CCFF22AC1F",
+    "label": "اپراتور",
+    "id": "E9D3469756644B80B89E43CCFF22AC1F",
+    "code": "00303",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "3CCCE0DD03014B199F5352F7B9C4825D",
+    "label": "ارزياب",
+    "id": "3CCCE0DD03014B199F5352F7B9C4825D",
+    "code": "00304",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "BC0FF3026D7D4EFEBA7BCE273E8626FC",
+    "label": "استاديار",
+    "id": "BC0FF3026D7D4EFEBA7BCE273E8626FC",
+    "code": "00306",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "D835F4A2816E4E278685A0242E6FEDBE",
+    "label": "ارتوپد",
+    "id": "D835F4A2816E4E278685A0242E6FEDBE",
+    "code": "00496",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "557D55583E3040CD9DF7B519C175D2F9",
+    "label": "آبکار",
+    "id": "557D55583E3040CD9DF7B519C175D2F9",
+    "code": "00689",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "9E26B624F6F74793B5C63B7A7325AB32",
+    "label": "استاندار",
+    "id": "9E26B624F6F74793B5C63B7A7325AB32",
+    "code": "00692",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "467F9972C26D436EBF6F858E2F1B8787",
+    "label": "استاد حق تدريسي",
+    "id": "467F9972C26D436EBF6F858E2F1B8787",
+    "code": "00860",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "8C178B96923C4BDBA0865BDCE92B9778",
+    "label": "اسقف",
+    "id": "8C178B96923C4BDBA0865BDCE92B9778",
+    "code": "00861",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "D00AB2AC57CC413D9B1FB04B569359EB",
+    "label": "آرايشگر مردانه",
+    "id": "D00AB2AC57CC413D9B1FB04B569359EB",
+    "code": "00879",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "AB76DBE216364D0A98557ABF5FD69B8C",
+    "label": "آرايشگر زنانه",
+    "id": "AB76DBE216364D0A98557ABF5FD69B8C",
+    "code": "00880",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "38203462349C459E801320F430FF132F",
+    "label": "آبکاروپليشکار",
+    "id": "38203462349C459E801320F430FF132F",
+    "code": "01329",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "07C8E310CD4346E78F0EE16AA533A673",
+    "label": "آتش نشان",
+    "id": "07C8E310CD4346E78F0EE16AA533A673",
+    "code": "01330",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "5083760A26CB4D82B88EF908EABD1F96",
+    "label": "آرشيتكت",
+    "id": "5083760A26CB4D82B88EF908EABD1F96",
+    "code": "01332",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "46ECC8D92A3F4534ABD910D82DA9E83B",
+    "label": "ابزارفروش",
+    "id": "46ECC8D92A3F4534ABD910D82DA9E83B",
+    "code": "01335",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "D6B56D244CD5456F83C0409670C18FC6",
+    "label": "اتوکش",
+    "id": "D6B56D244CD5456F83C0409670C18FC6",
+    "code": "01621",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "57F0B46816CA4B9DA349E0FDEB8B7BF4",
+    "label": "آپاراتي",
+    "id": "57F0B46816CA4B9DA349E0FDEB8B7BF4",
+    "code": "01718",
+    "source": "location payloads.json"
+  }
+]
