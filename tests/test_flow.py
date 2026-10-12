@@ -9,6 +9,7 @@ from sana_declaration_uploader.browser import (
 from sana_declaration_uploader.flow import (
     InvalidDeclaration,
     UploadNotConfirmed,
+    _build_desktop_drafts,
     prepare_drafts,
     run_upload,
     run_upload_batch,
@@ -18,6 +19,7 @@ from sana_declaration_uploader.models import (
     DeclarationBatch,
     DeclarationDraft,
     DeclarationRequest,
+    RecipientCandidate,
     UploadResult,
 )
 
@@ -63,6 +65,45 @@ class StubAttachmentPage:
 
 
 class FlowTests(unittest.TestCase):
+    def test_build_desktop_drafts_preserves_default_lookup_behavior(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "recipient.docx"
+            candidate = RecipientCandidate(
+                source_path=source_path,
+                first_name="علی",
+                last_name="رضایی",
+                person_type="natural",
+                address="",
+                province="استان نامعتبر",
+                county="",
+                city="",
+            )
+            payload = {
+                "subject": "سایر موضوعات",
+                "description": "شرح اظهارنامه",
+                "attachments": (root / "agency.pdf",),
+                "attachment_kind": "مدرک نمایندگی",
+                "attachment_number": "100",
+                "attachment_date": "1405/07/20",
+            }
+
+            draft = _build_desktop_drafts(
+                (candidate,),
+                {-1: payload},
+                shared=True,
+                lookup_dir=Path(__file__).parents[1] / "lookups",
+            )[0]
+
+            self.assertEqual(draft.fields["job_title"], "آزاد")
+            self.assertEqual(draft.fields["province"], "استان تهران")
+            self.assertEqual(draft.fields["county"], "شهرستان تهران")
+            self.assertEqual(draft.fields["city"], "تهران")
+            self.assertEqual(draft.fields["person_type"], "حقیقی")
+            self.assertEqual(draft.fields["recipient_main_street"], " ")
+            self.assertEqual(draft.fields["declaration_text"], "شرح اظهارنامه")
+            self.assertEqual(draft.attachments[0].path, root / "agency.pdf")
+
     def test_prepare_drafts_renders_and_validates_each_request(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
