@@ -117,6 +117,37 @@ class LookupTests(unittest.TestCase):
 
             self.assertEqual(result["court_unit_code"], "00001")
 
+    def test_jurisdiction_wording_selects_the_general_verified_unit(self) -> None:
+        lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
+
+        result = resolve_lookup_fields(
+            {
+                "province": "استان تهران",
+                "county": "شهرستان تهران",
+                "city": "تهران",
+                "court_unit_name": "حوزه قضايي شهرستان تهران",
+            },
+            lookup_dir,
+        )
+
+        self.assertEqual(result["court_unit_name"], "دادگستري كل استان تهران")
+        self.assertEqual(result["court_unit_code"], "00159")
+
+    def test_unknown_court_wording_without_location_still_fails(self) -> None:
+        with TemporaryDirectory() as directory:
+            lookup_dir = Path(directory)
+            self._write(
+                lookup_dir / "court_units.json",
+                [{"key": "court1", "label": "واحد نمونه", "code": "00001"}],
+            )
+
+            with self.assertRaisesRegex(
+                LookupResolutionError, "lookup_not_found:court_unit"
+            ):
+                resolve_lookup_fields(
+                    {"court_unit_name": "حوزه نامشخص"}, lookup_dir
+                )
+
     @staticmethod
     def _write(path: Path, value: object) -> None:
         path.write_text(

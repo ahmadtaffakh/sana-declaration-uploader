@@ -285,9 +285,6 @@ class PlaywrightRecipientPage:
     """Fill one observed Iranian natural-person recipient form."""
 
     REQUIRED_FIELDS = (
-        "recipient_national_id",
-        "recipient_birth_date",
-        "recipient_gender",
         "recipient_first_name",
         "recipient_last_name",
         "job_title",
@@ -329,13 +326,15 @@ class PlaywrightRecipientPage:
         add_button = page.locator("#btnAddSection")
         add_button.wait_for(state="visible", timeout=self.timeout_ms)
         add_button.click()
-        page.locator("#txtRealIrNationalityCode1").fill(
-            fields["recipient_national_id"]
-        )
-        page.locator("input[name='RealIrBirthDate']").fill(
-            fields["recipient_birth_date"]
-        )
-        self._select_gender(fields["recipient_gender"])
+        national_id = fields.get("recipient_national_id", "").strip()
+        if national_id:
+            page.locator("#txtRealIrNationalityCode1").fill(national_id)
+        birth_date = fields.get("recipient_birth_date", "").strip()
+        if birth_date:
+            page.locator("input[name='RealIrBirthDate']").fill(birth_date)
+        gender = fields.get("recipient_gender", "").strip()
+        if gender:
+            self._select_gender(gender)
         page.locator("#txtRealIrName").fill(fields["recipient_first_name"])
         page.locator("#txtRealIrFamily").fill(fields["recipient_last_name"])
         father_name = fields.get("recipient_father_name", "").strip()
@@ -382,7 +381,8 @@ class PlaywrightRecipientPage:
         ]
         if missing:
             raise LiveBrowserError(f"recipient_fields_incomplete:{','.join(missing)}")
-        if fields["recipient_gender"].strip() not in self.GENDER_SELECTORS:
+        gender = fields.get("recipient_gender", "").strip()
+        if gender and gender not in self.GENDER_SELECTORS:
             raise LiveBrowserError("recipient_gender_unsupported")
 
     def _select_gender(self, gender: str) -> None:

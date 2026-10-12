@@ -196,11 +196,35 @@ def _resolve_court(
     court_name = resolved.get("court_unit_name", "").strip()
     court_code = resolved.get("court_unit_code", "").strip()
     if court_name:
-        court = _resolve_by_label(
-            _load_entries(lookup_dir, "court_units"),
-            category="court_unit",
-            label=court_name,
-        )
+        court_entries = _load_entries(lookup_dir, "court_units")
+        try:
+            court = _resolve_by_label(
+                court_entries,
+                category="court_unit",
+                label=court_name,
+            )
+        except LookupResolutionError as exc:
+            if not str(exc).startswith("lookup_not_found:court_unit:"):
+                raise
+            if not normalize_label(court_name).startswith("حوزه قضایی"):
+                raise exc
+            location_id = next(
+                (
+                    resolved.get(field, "").strip()
+                    for field in ("city_id", "county_id", "province_id")
+                    if resolved.get(field, "").strip()
+                ),
+                "",
+            )
+            location_matches = [
+                entry for entry in court_entries
+                if entry.get("location_id") == location_id
+                and "دادگستری" in normalize_label(entry.get("label", ""))
+            ]
+            if len(location_matches) != 1:
+                raise exc
+            court = location_matches[0]
+            resolved["court_unit_name"] = court.get("label", court_name)
         if not court.get("key") or not court.get("code"):
             raise LookupResolutionError(
                 f"lookup_entry_invalid:court_unit:{court_name}"

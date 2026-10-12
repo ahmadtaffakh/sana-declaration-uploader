@@ -57,7 +57,6 @@ def _validate_contract_fields(
             errors.append("notice_not_resolved")
     elif data_source == "manual":
         for name in (
-            "recipient_national_id",
             "recipient_first_name",
             "recipient_last_name",
             "job_title",

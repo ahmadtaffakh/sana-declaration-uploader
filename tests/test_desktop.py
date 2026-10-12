@@ -20,7 +20,11 @@ from sana_declaration_uploader.desktop import (
     RecipientReviewPage,
     RecipientWizard,
     _build_desktop_drafts,
+    _load_attachment_settings,
+    _load_declaration_settings,
     _load_login_settings,
+    _save_attachment_settings,
+    _save_declaration_settings,
     _save_login_settings,
 )
 from sana_declaration_uploader.models import RecipientCandidate
@@ -53,6 +57,20 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertFalse(wizard.button(QWizard.WizardButton.NextButton).icon().isNull())
         self.assertGreater(buttons[1].geometry().x(), buttons[2].geometry().x())
         wizard.close()
+
+    def test_back_button_keeps_its_position_on_the_last_page(self) -> None:
+        positions = []
+        for page_name in ("content_page_id", "login_page_id"):
+            wizard = RecipientWizard()
+            wizard.setStartId(getattr(wizard, page_name))
+            wizard.show()
+            self.app.processEvents()
+            positions.append(
+                wizard.button(QWizard.WizardButton.BackButton).geometry().x()
+            )
+            wizard.close()
+
+        self.assertEqual(positions[0], positions[1])
 
     def test_pages_have_bold_titles_guidance_and_organizational_style(self) -> None:
         wizard = RecipientWizard()
@@ -87,6 +105,48 @@ class RecipientWizardTests(unittest.TestCase):
         candidate = page.candidates()[0]
         self.assertEqual(candidate.job_title, "بازنشسته")
         self.assertEqual(candidate.address, "نشانی اصلاح‌شده")
+
+        page.set_candidates(page.candidates())
+        self.assertEqual(
+            page.table.item(0, page.HEADERS.index("شغل")).text(),
+            "بازنشسته",
+        )
+        self.assertEqual(
+            page.table.item(0, page.HEADERS.index("آدرس")).text(),
+            "نشانی اصلاح‌شده",
+        )
+
+    def test_preprocessing_edits_survive_reloading_the_same_rows(self) -> None:
+        wizard = RecipientWizard()
+        page = wizard.preprocessing_page
+        page.set_candidates((RecipientCandidate(
+            source_path=Path("input.pdf"),
+            full_name="نام نمونه",
+            job_title="کارمند",
+            city="تهران",
+        ),))
+
+        page.table.item(0, page.HEADERS.index("شغل")).setText("بازنشسته")
+        page.table.item(0, page.HEADERS.index("کد شغل")).setText("00003")
+        page.table.item(0, page.HEADERS.index("شهر")).setText("ری")
+        page.table.item(0, page.HEADERS.index("کد شهر")).setText("123")
+        page.table.item(0, page.HEADERS.index("واحد قضایی")).setText("واحد نمونه")
+        page.table.item(0, page.HEADERS.index("کد واحد قضایی")).setText("456")
+
+        page.set_candidates(page.candidates())
+
+        for header, expected in (
+            ("شغل", "بازنشسته"),
+            ("کد شغل", "00003"),
+            ("شهر", "ری"),
+            ("کد شهر", "123"),
+            ("واحد قضایی", "واحد نمونه"),
+            ("کد واحد قضایی", "456"),
+        ):
+            self.assertEqual(
+                page.table.item(0, page.HEADERS.index(header)).text(),
+                expected,
+            )
 
     def test_preprocessing_page_shows_codes_and_review_status(self) -> None:
         wizard = RecipientWizard()
@@ -137,6 +197,44 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertEqual(payloads[1]["description"], "شرح مشترک")
         self.assertTrue(page.recipient_combo.isEnabled())
 
+    def test_declaration_fields_survive_back_navigation_and_reentry(self) -> None:
+        with TemporaryDirectory() as directory, patch(
+            "sana_declaration_uploader.desktop._save_declaration_settings"
+        ):
+            attachment = Path(directory) / "attachment.pdf"
+            attachment.write_bytes(b"%PDF-test")
+            page = DeclarationContentPage()
+            candidates = (
+                RecipientCandidate(source_path=Path("one.pdf"), full_name="شخص اول"),
+            )
+            page.set_candidates(candidates)
+            page.subject.setText("موضوع اظهارنامه")
+            page.description.setPlainText("شرح اظهارنامه")
+            page.attachment_kind.setText("سایر دلایل و مستندات")
+            page.attachment_number.setText("۱۲۳")
+            page.attachment_date.setText("۱۴۰۵/۰۷/۲۰")
+            page._add_attachment(attachment)
+
+            page.cleanupPage()
+            page.set_candidates(candidates)
+
+            self.assertEqual(page.subject.text(), "موضوع اظهارنامه")
+            self.assertEqual(page.description.toPlainText(), "شرح اظهارنامه")
+            self.assertEqual(page.attachment_kind.text(), "سایر دلایل و مستندات")
+            self.assertEqual(page.attachment_number.text(), "۱۲۳")
+            self.assertEqual(page.attachment_date.text(), "۱۴۰۵/۰۷/۲۰")
+            self.assertEqual(page.attachment_list.count(), 1)
+            self.assertEqual(page._attachment_paths(), [attachment.resolve()])
+
+            renamed_candidates = (
+                RecipientCandidate(
+                    source_path=Path("one.pdf"), full_name="نام اصلاح‌شده"
+                ),
+            )
+            page.set_candidates(renamed_candidates)
+            self.assertEqual(page.subject.text(), "موضوع اظهارنامه")
+            self.assertEqual(page.description.toPlainText(), "شرح اظهارنامه")
+
     def test_login_json_contains_all_fields_when_requested(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "login.json"
@@ -156,6 +254,86 @@ class RecipientWizardTests(unittest.TestCase):
 
             _save_login_settings("", "", "", "", remember=False, path=path)
             self.assertFalse(path.exists())
+
+    def test_attachment_defaults_are_persisted_for_the_next_run(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "attachment-defaults.json"
+
+            _save_attachment_settings(
+                "نوع دلخواه", "شماره دلخواه", "۱۴۰۵/۰۷/۲۱", path=path
+            )
+
+            self.assertEqual(_load_attachment_settings(path), {
+                "attachment_kind": "نوع دلخواه",
+                "attachment_number": "شماره دلخواه",
+                "attachment_date": "۱۴۰۵/۰۷/۲۱",
+            })
+
+    def test_declaration_defaults_are_persisted_for_the_next_run(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "declaration-defaults.json"
+
+            _save_declaration_settings(
+                "موضوع دلخواه", "شرح دلخواه", path=path
+            )
+
+            self.assertEqual(_load_declaration_settings(path), {
+                "subject": "موضوع دلخواه",
+                "description": "شرح دلخواه",
+            })
+
+    def test_declaration_fields_start_with_defaults_and_save_edits(self) -> None:
+        defaults = {
+            "subject": "سایر موضوعات",
+            "description": "شرح موضوع",
+        }
+        with (
+            patch(
+                "sana_declaration_uploader.desktop._load_declaration_settings",
+                return_value=defaults,
+            ),
+            patch(
+                "sana_declaration_uploader.desktop._save_declaration_settings"
+            ) as save,
+        ):
+            page = DeclarationContentPage()
+            self.assertEqual(page.subject.text(), "سایر موضوعات")
+            self.assertEqual(page.description.toPlainText(), "شرح موضوع")
+
+            page.subject.setText("موضوع جدید")
+            page.description.setPlainText("شرح جدید")
+            page.cleanupPage()
+
+            save.assert_called_once_with("موضوع جدید", "شرح جدید")
+
+    def test_attachment_fields_start_with_defaults_and_save_edits(self) -> None:
+        defaults = {
+            "attachment_kind": "سایر دلایل و مستندات",
+            "attachment_number": "شماره مدرک",
+            "attachment_date": "۱۴۰۵/۰۷/۲۰",
+        }
+        with (
+            patch(
+                "sana_declaration_uploader.desktop._load_attachment_settings",
+                return_value=defaults,
+            ),
+            patch(
+                "sana_declaration_uploader.desktop._save_attachment_settings"
+            ) as save,
+        ):
+            page = DeclarationContentPage()
+            self.assertEqual(page.attachment_kind.text(), defaults["attachment_kind"])
+            self.assertEqual(
+                page.attachment_number.text(), defaults["attachment_number"]
+            )
+            self.assertEqual(page.attachment_date.text(), defaults["attachment_date"])
+
+            page.attachment_kind.setText("نوع جدید")
+            page.attachment_number.setText("۴۲")
+            page.attachment_date.setText("۱۴۰۵/۰۷/۲۲")
+            page.attachment_date.editingFinished.emit()
+
+            save.assert_called_once_with("نوع جدید", "۴۲", "۱۴۰۵/۰۷/۲۲")
 
     def test_finish_invokes_registration_instead_of_login_check(self) -> None:
         wizard = RecipientWizard()

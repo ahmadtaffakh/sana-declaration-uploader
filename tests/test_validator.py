@@ -69,7 +69,6 @@ class ValidatorTests(unittest.TestCase):
                 fields={
                     "recipient_id": "r1",
                     "data_source": "manual",
-                    "recipient_national_id": "0000000000",
                     "recipient_first_name": "Test",
                     "recipient_last_name": "User",
                     "job_title": "Job",
@@ -87,6 +86,7 @@ class ValidatorTests(unittest.TestCase):
             self.assertIn("lookup_unresolved:job_id", errors)
             self.assertIn("lookup_unresolved:province_code", errors)
             self.assertIn("lookup_unresolved:city_id", errors)
+            self.assertNotIn("field_missing:recipient_national_id", errors)
 
 
 if __name__ == "__main__":

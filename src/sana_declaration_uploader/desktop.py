@@ -70,6 +70,15 @@ _PERSON_TYPE_DISPLAY = {
 _ROLE_VALUE = {label: value for value, label in _ROLE_DISPLAY.items()}
 _PERSON_TYPE_VALUE = {label: value for value, label in _PERSON_TYPE_DISPLAY.items()}
 _GENDER_DISPLAY = ("", "مرد", "زن")
+_ATTACHMENT_DEFAULTS = {
+    "attachment_kind": "سایر دلایل و مستندات",
+    "attachment_number": "شماره مدرک",
+    "attachment_date": "۱۴۰۵/۰۷/۲۰",
+}
+_DECLARATION_DEFAULTS = {
+    "subject": "سایر موضوعات",
+    "description": "شرح موضوع",
+}
 _ORGANIZATIONAL_STYLE = """
 QWizard, QWizardPage {
     background-color: #F4F7FB;
@@ -170,9 +179,87 @@ def _configure_table(table: QTableWidget) -> None:
     table.horizontalHeader().setStretchLastSection(True)
 
 
-def _login_settings_path() -> Path:
+def _settings_dir() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    return base / "SanaDeclarationUploader" / "login.json"
+    return base / "SanaDeclarationUploader"
+
+
+def _login_settings_path() -> Path:
+    return _settings_dir() / "login.json"
+
+
+def _attachment_settings_path() -> Path:
+    return _settings_dir() / "attachment-defaults.json"
+
+
+def _declaration_settings_path() -> Path:
+    return _settings_dir() / "declaration-defaults.json"
+
+
+def _load_declaration_settings(path: Path | None = None) -> dict[str, str]:
+    target = path or _declaration_settings_path()
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return dict(_DECLARATION_DEFAULTS)
+    if not isinstance(payload, dict):
+        return dict(_DECLARATION_DEFAULTS)
+    return {
+        key: str(payload.get(key, default)).strip()
+        for key, default in _DECLARATION_DEFAULTS.items()
+    }
+
+
+def _save_declaration_settings(
+    subject: str,
+    description: str,
+    *,
+    path: Path | None = None,
+) -> None:
+    target = path or _declaration_settings_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "subject": subject.strip(),
+        "description": description.strip(),
+    }
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _load_attachment_settings(path: Path | None = None) -> dict[str, str]:
+    target = path or _attachment_settings_path()
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return dict(_ATTACHMENT_DEFAULTS)
+    if not isinstance(payload, dict):
+        return dict(_ATTACHMENT_DEFAULTS)
+    return {
+        key: str(payload.get(key, default)).strip()
+        for key, default in _ATTACHMENT_DEFAULTS.items()
+    }
+
+
+def _save_attachment_settings(
+    kind: str,
+    document_number: str,
+    document_date: str,
+    *,
+    path: Path | None = None,
+) -> None:
+    target = path or _attachment_settings_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "attachment_kind": kind.strip(),
+        "attachment_number": document_number.strip(),
+        "attachment_date": document_date.strip(),
+    }
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _load_login_settings(path: Path | None = None) -> dict[str, str]:
@@ -468,7 +555,7 @@ class RecipientReviewPage(QWizardPage):
                 item = self.table.item(row, self.HEADERS.index(header))
                 return item.text().strip() if item else ""
 
-            result.append(replace(
+            updated = replace(
                 original,
                 notice_number=value("شماره ابلاغیه"),
                 related_declaration_number=value("شماره اظهارنامه مرتبط"),
@@ -487,7 +574,9 @@ class RecipientReviewPage(QWizardPage):
                 birth_date=value("تاریخ تولد"),
                 postal_code=value("کدپستی"),
                 address=value("آدرس"),
-            ))
+            )
+            self.table.item(row, 0).setData(Qt.ItemDataRole.UserRole, updated)
+            result.append(updated)
         return tuple(result)
 
     def _remove_selected(self) -> None:
@@ -583,7 +672,7 @@ class PreprocessingPage(QWizardPage):
                 item = self.table.item(row, self.HEADERS.index(header))
                 return item.text().strip() if item else ""
 
-            result.append(replace(
+            updated = replace(
                 original,
                 job_title=value("شغل"),
                 job_code=value("کد شغل"),
@@ -595,7 +684,9 @@ class PreprocessingPage(QWizardPage):
                 city_code=value("کد شهر"),
                 court_unit_name=value("واحد قضایی"),
                 court_unit_code=value("کد واحد قضایی"),
-            ))
+            )
+            self.table.item(row, 0).setData(Qt.ItemDataRole.UserRole, updated)
+            result.append(updated)
         return tuple(result)
 
     @staticmethod
@@ -618,6 +709,8 @@ class DeclarationContentPage(QWizardPage):
         self._signature: tuple[str, ...] = ()
         self._payloads: dict[int, dict[str, object]] = {}
         self._active_key = -1
+        self._attachment_defaults = _load_attachment_settings()
+        self._declaration_defaults = _load_declaration_settings()
 
         self.shared_checkbox = QCheckBox(
             "شرح و فایل‌های پیوست برای همهٔ اشخاص مشترک است"
@@ -625,20 +718,33 @@ class DeclarationContentPage(QWizardPage):
         self.shared_checkbox.setChecked(True)
         self.recipient_combo = QComboBox()
         self.recipient_combo.setEnabled(False)
-        self.subject = QLineEdit()
+        self.subject = QLineEdit(self._declaration_defaults["subject"])
         self.subject.setPlaceholderText("موضوع دقیق اظهارنامه را وارد کنید")
         self.description = QTextEdit()
+        self.description.setPlainText(self._declaration_defaults["description"])
         self.description.setPlaceholderText(
             "شرح اظهارنامه را کامل و دقیق وارد کنید. این متن قبل از ثبت قابل بازبینی است."
         )
         self.description.setMinimumHeight(160)
         self.attachment_list = QListWidget()
         self.attachment_list.setAlternatingRowColors(True)
-        self.attachment_kind = QLineEdit("سایر دلایل و مستندات")
-        self.attachment_number = QLineEdit()
+        self.attachment_kind = QLineEdit(
+            self._attachment_defaults["attachment_kind"]
+        )
+        self.attachment_number = QLineEdit(
+            self._attachment_defaults["attachment_number"]
+        )
         self.attachment_number.setPlaceholderText("شماره مدرک")
-        self.attachment_date = QLineEdit()
+        self.attachment_date = QLineEdit(
+            self._attachment_defaults["attachment_date"]
+        )
         self.attachment_date.setPlaceholderText("نمونه: ۱۴۰۵/۰۷/۲۰")
+        for editor in (
+            self.attachment_kind,
+            self.attachment_number,
+            self.attachment_date,
+        ):
+            editor.editingFinished.connect(self._save_attachment_defaults)
 
         add_button = QPushButton("افزودن پیوست‌ها")
         remove_button = QPushButton("حذف پیوست انتخاب‌شده")
@@ -679,7 +785,7 @@ class DeclarationContentPage(QWizardPage):
 
     def set_candidates(self, candidates: tuple[RecipientCandidate, ...]) -> None:
         signature = tuple(
-            f"{candidate.source_path}\0{candidate.full_name}"
+            str(candidate.source_path)
             for candidate in candidates
         )
         if signature == self._signature:
@@ -814,18 +920,42 @@ class DeclarationContentPage(QWizardPage):
                     f"نوع، شماره و تاریخ پیوست‌های {label} را کامل کنید.",
                 )
                 return False
+        self._save_declaration_defaults()
         return True
 
-    @staticmethod
-    def _empty_payload() -> dict[str, object]:
+    def cleanupPage(self) -> None:
+        self._save_active()
+        self._save_declaration_defaults()
+
+    def _empty_payload(self) -> dict[str, object]:
         return {
-            "subject": "",
-            "description": "",
+            **self._declaration_defaults,
             "attachments": (),
-            "attachment_kind": "سایر دلایل و مستندات",
-            "attachment_number": "",
-            "attachment_date": "",
+            **self._attachment_defaults,
         }
+
+    def _save_declaration_defaults(self) -> None:
+        subject = self.subject.text().strip()
+        description = self.description.toPlainText().strip()
+        if not subject or not description:
+            return
+        self._declaration_defaults = {
+            "subject": subject,
+            "description": description,
+        }
+        _save_declaration_settings(subject, description)
+
+    def _save_attachment_defaults(self) -> None:
+        self._attachment_defaults = {
+            "attachment_kind": self.attachment_kind.text().strip(),
+            "attachment_number": self.attachment_number.text().strip(),
+            "attachment_date": self.attachment_date.text().strip(),
+        }
+        _save_attachment_settings(
+            self._attachment_defaults["attachment_kind"],
+            self._attachment_defaults["attachment_number"],
+            self._attachment_defaults["attachment_date"],
+        )
 
     @staticmethod
     def _copy_payload(payload: dict[str, object]) -> dict[str, object]:
@@ -977,9 +1107,9 @@ class RecipientWizard(QWizard):
         self._lookup_dir = Path(__file__).resolve().parents[2] / "lookups"
         self.currentIdChanged.connect(self._page_changed)
         self.setButtonLayout([
-            QWizard.WizardButton.FinishButton,
             QWizard.WizardButton.BackButton,
             QWizard.WizardButton.NextButton,
+            QWizard.WizardButton.FinishButton,
             QWizard.WizardButton.CancelButton,
             QWizard.WizardButton.Stretch,
         ])

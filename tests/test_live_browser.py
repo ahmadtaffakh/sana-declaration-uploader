@@ -263,14 +263,39 @@ class RecipientPageTests(unittest.TestCase):
             [("click", "#btnNext"), ("click", "#btnNext")],
         )
 
+    def test_optional_identity_fields_are_not_filled_when_absent(self):
+        page = _Page()
+
+        PlaywrightRecipientPage(page).fill_natural_person(
+            self._draft(
+                recipient_national_id="",
+                recipient_birth_date="",
+                recipient_gender="",
+            )
+        )
+
+        self.assertFalse(any(
+            call[0:2] == ("fill", "#txtRealIrNationalityCode1")
+            for call in page.calls
+        ))
+        self.assertFalse(any(
+            call[0:2] == ("fill", "input[name='RealIrBirthDate']")
+            for call in page.calls
+        ))
+        self.assertFalse(any(
+            call[0:2] == ("click", "#rdbRealIrMale")
+            or call[0:2] == ("click", "#rdbRealIrFemale")
+            for call in page.calls
+        ))
+
     def test_missing_recipient_data_stops_before_browser_activity(self):
         page = _Page()
 
         with self.assertRaisesRegex(
-            LiveBrowserError, "recipient_fields_incomplete:recipient_birth_date"
+            LiveBrowserError, "recipient_fields_incomplete:recipient_first_name"
         ):
             PlaywrightRecipientPage(page).fill_natural_person(
-                self._draft(recipient_birth_date="")
+                self._draft(recipient_first_name="")
             )
 
         self.assertEqual(page.calls, [])
