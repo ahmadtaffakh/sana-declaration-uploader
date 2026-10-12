@@ -206,7 +206,12 @@ class RecipientWizardTests(unittest.TestCase):
         wizard.preprocessing_page.set_candidates((candidate,))
 
         table = wizard.preprocessing_page.table
-        self.assertEqual(table.item(0, 0).text(), "نمونه")
+        self.assertEqual(
+            table.item(
+                0, wizard.preprocessing_page.HEADERS.index("نام شخص")
+            ).text(),
+            "نمونه",
+        )
         self.assertEqual(
             table.item(0, wizard.preprocessing_page.HEADERS.index("کد استان")).text(),
             "23",
@@ -216,7 +221,103 @@ class RecipientWizardTests(unittest.TestCase):
                 table.item(0, wizard.preprocessing_page.HEADERS.index(header)).flags()
                 & Qt.ItemFlag.ItemIsEditable
             )
-        self.assertEqual(table.item(0, table.columnCount() - 1).text(), "نیازمند تکمیل")
+        self.assertEqual(
+            table.item(
+                0, wizard.preprocessing_page.HEADERS.index("وضعیت")
+            ).text(),
+            "نیازمند تکمیل",
+        )
+
+    def test_review_hides_deferred_columns_and_numbers_every_page(self) -> None:
+        wizard = RecipientWizard()
+
+        self.assertEqual(
+            [
+                page.title().split("—", 1)[0].replace("<b>", "").strip()
+                for page in (
+                    wizard.files_page,
+                    wizard.review_page,
+                    wizard.preprocessing_page,
+                    wizard.content_page,
+                    wizard.login_page,
+                )
+            ],
+            [f"مرحله {number} از ۵" for number in "۱۲۳۴۵"],
+        )
+        for header in (
+            "جنسیت", "کدپستی", "تاریخ تولد", "شغل", "نقش", "نوع شخص",
+        ):
+            self.assertTrue(
+                wizard.review_page.table.isColumnHidden(
+                    wizard.review_page.HEADERS.index(header)
+                )
+            )
+
+    def test_review_opens_source_and_displays_date_left_to_right(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "input.docx"
+            source.write_bytes(b"test")
+            page = RecipientReviewPage()
+            page.set_candidates((RecipientCandidate(
+                source_path=source,
+                full_name="نام نمونه",
+                related_declaration_date="1405/01/02",
+            ),))
+
+            date_item = page.table.item(
+                0, page.HEADERS.index("تاریخ اظهارنامه مرتبط")
+            )
+            self.assertEqual(date_item.text(), "1405/01/02")
+            self.assertTrue(
+                date_item.textAlignment() & Qt.AlignmentFlag.AlignLeft
+            )
+            with patch(
+                "sana_declaration_uploader.desktop.QDesktopServices.openUrl"
+            ) as open_url:
+                page.table.cellWidget(
+                    0, page.HEADERS.index("بازکردن")
+                ).click()
+
+            open_url.assert_called_once()
+
+    def test_preprocessing_edit_resolves_codes_and_row_can_be_removed(self) -> None:
+        wizard = RecipientWizard()
+        page = wizard.preprocessing_page
+        page.set_candidates((RecipientCandidate(
+            source_path=Path("input.docx"),
+            full_name="نام نمونه",
+            job_title="آزاد",
+            job_code="00002",
+        ),))
+
+        for header, value in (
+            ("استان", "خوزستان"),
+            ("شهرستان", "امیدیه"),
+            ("شهر", "امیدیه"),
+        ):
+            page.table.item(0, page.HEADERS.index(header)).setText(value)
+
+        self.assertEqual(
+            page.table.item(0, page.HEADERS.index("کد استان")).text(), "06"
+        )
+        self.assertEqual(
+            page.table.item(0, page.HEADERS.index("کد شهرستان")).text(), "0616"
+        )
+        self.assertEqual(
+            page.table.item(0, page.HEADERS.index("کد شهر")).text(),
+            "0616022111",
+        )
+        candidate = page.candidates()[0]
+        self.assertEqual(candidate.province, "استان خوزستان")
+        self.assertEqual(candidate.county, "شهرستان امیدیه")
+
+        address_item = page.table.item(0, page.HEADERS.index("آدرس"))
+        address_item.setText("نشانی اصلاح‌شده")
+        self.assertEqual(page.candidates()[0].address, "نشانی اصلاح‌شده")
+
+        page.table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+        page._remove_selected()
+        self.assertEqual(page.table.rowCount(), 0)
 
     def test_clicking_a_cell_selects_its_whole_row(self) -> None:
         wizard = RecipientWizard()
@@ -268,6 +369,43 @@ class RecipientWizardTests(unittest.TestCase):
         payloads = page.payloads()
         self.assertEqual(payloads[0]["description"], "شرح اول")
         self.assertEqual(payloads[1]["description"], "شرح دوم")
+
+    def test_descriptions_can_differ_while_attachments_stay_shared(self) -> None:
+        with TemporaryDirectory() as directory:
+            attachment = Path(directory) / "shared.pdf"
+            attachment.write_bytes(b"%PDF-test")
+            page = DeclarationContentPage()
+            page.set_candidates((
+                RecipientCandidate(
+                    source_path=Path("one.docx"),
+                    full_name="شخص اول",
+                    declaration_text="شرح اول",
+                ),
+                RecipientCandidate(
+                    source_path=Path("two.docx"),
+                    full_name="شخص دوم",
+                    declaration_text="شرح دوم",
+                ),
+            ))
+
+            self.assertFalse(page.shared_checkbox.isChecked())
+            self.assertTrue(page.shared_attachments_checkbox.isChecked())
+            page._add_attachment(attachment)
+            page.recipient_combo.setCurrentIndex(1)
+
+            self.assertEqual(page.description.toPlainText(), "شرح دوم")
+            self.assertIn("شخص دوم", page.active_recipient_label.text())
+            self.assertEqual(page.attachment_list.count(), 1)
+            page.description.setPlainText("شرح دوم اصلاح‌شده")
+            page.recipient_combo.setCurrentIndex(0)
+
+            self.assertEqual(page.description.toPlainText(), "شرح اول")
+            self.assertEqual(page.attachment_list.count(), 1)
+            payloads = page.payloads()
+            self.assertEqual(payloads[1]["description"], "شرح دوم اصلاح‌شده")
+            self.assertEqual(
+                payloads[0]["attachments"], payloads[1]["attachments"]
+            )
 
     def test_declaration_fields_survive_back_navigation_and_reentry(self) -> None:
         with TemporaryDirectory() as directory, patch(

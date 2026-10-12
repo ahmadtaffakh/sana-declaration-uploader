@@ -8,8 +8,8 @@ import os
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -46,7 +46,7 @@ from .live_browser import (
     run_live_upload_batch,
     run_login_check,
 )
-from .lookups import LookupResolutionError
+from .lookups import LookupResolutionError, resolve_lookup_fields
 from .models import DeclarationDraft, RecipientCandidate
 from .preprocessing import preprocess_candidates
 from .results import ResultPersistenceError, save_verified_result
@@ -307,10 +307,24 @@ def _split_full_name(full_name: str) -> tuple[str, str]:
     return (" ".join(parts[:-1]), parts[-1])
 
 
+def _location_display(value: str, prefix: str) -> str:
+    return value.removeprefix(f"{prefix} ").strip()
+
+
+def _location_value(value: str, prefix: str) -> str:
+    value = value.strip()
+    return f"{prefix} {value}" if value and not value.startswith(f"{prefix} ") else value
+
+
+def _open_source(path: Path) -> None:
+    if path.is_file():
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
+
+
 class FileSelectionPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
-        self.setTitle("<b>انتخاب اسناد و فایل‌های منبع</b>")
+        self.setTitle("<b>مرحله ۱ از ۵ — انتخاب اسناد و فایل‌های منبع</b>")
         self.setSubTitle(
             "فایل‌های Word، PDF متنی یا متن ساده را اضافه کنید؛ در این مرحله "
             "هیچ اطلاعاتی در سامانه ثنا ثبت نمی‌شود."
@@ -408,13 +422,14 @@ class RecipientReviewPage(QWizardPage):
         "کدپستی",
         "آدرس",
         "شاهد استخراج",
+        "بازکردن",
         "وضعیت",
         "حذف",
     )
 
     def __init__(self) -> None:
         super().__init__()
-        self.setTitle("<b>بازبینی و تکمیل مشخصات اشخاص</b>")
+        self.setTitle("<b>مرحله ۲ از ۵ — بازبینی و تکمیل مشخصات اشخاص</b>")
         self.setSubTitle(
             "خروجی استخراج قطعی تلقی نمی‌شود؛ هر ردیف را با سند اصلی تطبیق دهید."
         )
@@ -422,6 +437,10 @@ class RecipientReviewPage(QWizardPage):
         self.table = QTableWidget(0, len(self.HEADERS))
         self.table.setHorizontalHeaderLabels(self.HEADERS)
         _configure_table(self.table)
+        for header in (
+            "جنسیت", "کدپستی", "تاریخ تولد", "شغل", "نقش", "نوع شخص",
+        ):
+            self.table.setColumnHidden(self.HEADERS.index(header), True)
 
         add_button = QPushButton("افزودن شخص")
         remove_button = QPushButton("حذف ردیف")
@@ -478,6 +497,7 @@ class RecipientReviewPage(QWizardPage):
             candidate.postal_code if candidate else "",
             candidate.address if candidate else "",
             candidate.evidence if candidate else "",
+            "",
             self._status(candidate),
             "",
         )
@@ -491,14 +511,23 @@ class RecipientReviewPage(QWizardPage):
                 item.setCheckState(Qt.CheckState.Unchecked)
             if column == 1:
                 item.setData(Qt.ItemDataRole.UserRole, candidate)
-            if column in (
-                1,
-                len(self.HEADERS) - 3,
-                len(self.HEADERS) - 2,
-                len(self.HEADERS) - 1,
+            if self.HEADERS[column] in (
+                "فایل منبع", "شاهد استخراج", "بازکردن", "وضعیت", "حذف",
             ):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            if self.HEADERS[column] == "تاریخ اظهارنامه مرتبط":
+                item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                )
             self.table.setItem(row, column, item)
+        open_button = QPushButton("بازکردن")
+        if candidate:
+            open_button.clicked.connect(
+                lambda _checked=False, path=candidate.source_path: _open_source(path)
+            )
+        else:
+            open_button.setEnabled(False)
+        self.table.setCellWidget(row, self.HEADERS.index("بازکردن"), open_button)
         remove_button = QPushButton("حذف")
         remove_button.clicked.connect(
             lambda _checked=False, marker=self.table.item(row, 0):
@@ -563,6 +592,7 @@ class RecipientReviewPage(QWizardPage):
 
 class PreprocessingPage(QWizardPage):
     HEADERS = (
+        "انتخاب",
         "نام شخص",
         "شغل",
         "کد شغل",
@@ -572,12 +602,14 @@ class PreprocessingPage(QWizardPage):
         "کد شهرستان",
         "شهر",
         "کد شهر",
+        "آدرس",
         "وضعیت",
+        "حذف",
     )
 
     def __init__(self) -> None:
         super().__init__()
-        self.setTitle("<b>پیش‌پردازش نشانی و کدهای ثنا</b>")
+        self.setTitle("<b>مرحله ۳ از ۵ — پیش‌پردازش نشانی و کدهای ثنا</b>")
         self.setSubTitle(
             "کدهای نشانی را بررسی کنید؛ شغل همیشه آزاد و واحد قضایی خودکار است."
         )
@@ -585,6 +617,11 @@ class PreprocessingPage(QWizardPage):
         self.table = QTableWidget(0, len(self.HEADERS))
         self.table.setHorizontalHeaderLabels(self.HEADERS)
         _configure_table(self.table)
+        self._lookup_dir = Path(__file__).resolve().parents[2] / "lookups"
+        self.table.itemChanged.connect(self._location_changed)
+
+        remove_button = QPushButton("حذف ردیف")
+        remove_button.clicked.connect(self._remove_selected)
 
         guidance = QLabel(
             "روش کار: شغل همیشه «آزاد» است. اجزای نشانی فقط با کاتالوگ محلی و "
@@ -598,37 +635,59 @@ class PreprocessingPage(QWizardPage):
         layout = QVBoxLayout(self)
         layout.addWidget(guidance)
         layout.addWidget(self.table)
+        layout.addWidget(remove_button)
 
     def set_candidates(self, candidates: tuple[RecipientCandidate, ...]) -> None:
+        self.table.blockSignals(True)
         self.table.setRowCount(0)
         for candidate in candidates:
             row = self.table.rowCount()
             self.table.insertRow(row)
             values = (
+                "",
                 candidate.full_name,
                 candidate.job_title,
                 candidate.job_code,
-                candidate.province,
+                _location_display(candidate.province, "استان"),
                 candidate.province_code,
-                candidate.county,
+                _location_display(candidate.county, "شهرستان"),
                 candidate.county_code,
                 candidate.city,
                 candidate.city_code,
+                candidate.address,
                 self._status(candidate),
+                "",
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 0:
+                    item.setFlags(
+                        (item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                        & ~Qt.ItemFlag.ItemIsEditable
+                    )
+                    item.setCheckState(Qt.CheckState.Unchecked)
+                if self.HEADERS[column] == "نام شخص":
                     item.setData(Qt.ItemDataRole.UserRole, candidate)
-                if column in (0, 1, 2, len(self.HEADERS) - 1):
+                if self.HEADERS[column] in (
+                    "انتخاب", "نام شخص", "شغل", "کد شغل", "وضعیت", "حذف",
+                ):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, column, item)
+            remove_button = QPushButton("حذف")
+            remove_button.clicked.connect(
+                lambda _checked=False, marker=self.table.item(row, 0):
+                self.table.removeRow(marker.row())
+            )
+            self.table.setCellWidget(row, self.HEADERS.index("حذف"), remove_button)
+        self.table.blockSignals(False)
         self.table.resizeColumnsToContents()
 
     def candidates(self) -> tuple[RecipientCandidate, ...]:
         result = []
         for row in range(self.table.rowCount()):
-            original = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            original = self.table.item(
+                row, self.HEADERS.index("نام شخص")
+            ).data(Qt.ItemDataRole.UserRole)
             if not isinstance(original, RecipientCandidate):
                 continue
 
@@ -640,18 +699,73 @@ class PreprocessingPage(QWizardPage):
                 original,
                 job_title=value("شغل"),
                 job_code=value("کد شغل"),
-                province=value("استان"),
+                province=_location_value(value("استان"), "استان"),
                 province_code=value("کد استان"),
-                county=value("شهرستان"),
+                county=_location_value(value("شهرستان"), "شهرستان"),
                 county_code=value("کد شهرستان"),
                 city=value("شهر"),
                 city_code=value("کد شهر"),
+                address=value("آدرس"),
                 court_unit_name="",
                 court_unit_code="",
             )
-            self.table.item(row, 0).setData(Qt.ItemDataRole.UserRole, updated)
+            self.table.item(row, self.HEADERS.index("نام شخص")).setData(
+                Qt.ItemDataRole.UserRole, updated
+            )
             result.append(updated)
         return tuple(result)
+
+    def _location_changed(self, item: QTableWidgetItem) -> None:
+        if self.HEADERS[item.column()] not in ("استان", "شهرستان", "شهر"):
+            return
+        row = item.row()
+        labels = {
+            "province": _location_value(
+                self.table.item(row, self.HEADERS.index("استان")).text(), "استان"
+            ),
+            "county": _location_value(
+                self.table.item(row, self.HEADERS.index("شهرستان")).text(),
+                "شهرستان",
+            ),
+            "city": self.table.item(row, self.HEADERS.index("شهر")).text().strip(),
+        }
+        self.table.blockSignals(True)
+        try:
+            for header in ("کد استان", "کد شهرستان", "کد شهر"):
+                self.table.item(row, self.HEADERS.index(header)).setText("")
+            complete = True
+            for fields, code_header, prefix in (
+                (("province",), "کد استان", "province"),
+                (("province", "county"), "کد شهرستان", "county"),
+                (("province", "county", "city"), "کد شهر", "city"),
+            ):
+                if not all(labels[field] for field in fields):
+                    complete = False
+                    break
+                try:
+                    resolved = resolve_lookup_fields(
+                        {field: labels[field] for field in fields}, self._lookup_dir
+                    )
+                except LookupResolutionError:
+                    complete = False
+                    break
+                self.table.item(row, self.HEADERS.index(code_header)).setText(
+                    resolved.get(f"{prefix}_code", "")
+                )
+            self.table.item(row, self.HEADERS.index("وضعیت")).setText(
+                "آماده بازبینی" if complete else "نیازمند تکمیل"
+            )
+        finally:
+            self.table.blockSignals(False)
+
+    def _remove_selected(self) -> None:
+        rows = {
+            row for row in range(self.table.rowCount())
+            if self.table.item(row, 0).checkState() == Qt.CheckState.Checked
+        }
+        rows.update(index.row() for index in self.table.selectedIndexes())
+        for row in sorted(rows, reverse=True):
+            self.table.removeRow(row)
 
     @staticmethod
     def _status(candidate: RecipientCandidate) -> str:
@@ -665,7 +779,7 @@ class PreprocessingPage(QWizardPage):
 class DeclarationContentPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
-        self.setTitle("<b>شرح اظهارنامه و فایل‌های پیوست</b>")
+        self.setTitle("<b>مرحله ۴ از ۵ — شرح اظهارنامه و فایل‌های پیوست</b>")
         self.setSubTitle(
             "شرح و اسناد را مشترک برای همه یا جداگانه برای هر ردیف تعیین کنید."
         )
@@ -677,11 +791,18 @@ class DeclarationContentPage(QWizardPage):
         self._declaration_defaults = _load_declaration_settings()
 
         self.shared_checkbox = QCheckBox(
-            "شرح و فایل‌های پیوست برای همهٔ اشخاص مشترک است"
+            "موضوع و شرح برای همهٔ اشخاص مشترک است"
         )
         self.shared_checkbox.setChecked(True)
+        self.shared_attachments_checkbox = QCheckBox(
+            "فایل‌ها و مشخصات پیوست برای همهٔ اشخاص مشترک است"
+        )
+        self.shared_attachments_checkbox.setChecked(True)
         self.recipient_combo = QComboBox()
-        self.recipient_combo.setEnabled(False)
+        self.active_recipient_label = QLabel()
+        self.active_recipient_label.setStyleSheet(
+            "color: #1769AA; font-weight: 600; padding: 4px;"
+        )
         self.subject = QLineEdit(self._declaration_defaults["subject"])
         self.subject.setPlaceholderText("موضوع دقیق اظهارنامه را وارد کنید")
         self.description = QTextEdit()
@@ -721,7 +842,8 @@ class DeclarationContentPage(QWizardPage):
 
         group = QGroupBox("محتوای اظهارنامه")
         form = QFormLayout(group)
-        form.addRow("دامنهٔ محتوا:", self.recipient_combo)
+        form.addRow("مخاطب فعال:", self.recipient_combo)
+        form.addRow("", self.active_recipient_label)
         form.addRow("موضوع اظهارنامه:", self.subject)
         form.addRow("شرح اظهارنامه:", self.description)
         form.addRow("فایل‌های پیوست:", self.attachment_list)
@@ -742,9 +864,13 @@ class DeclarationContentPage(QWizardPage):
         layout = QVBoxLayout(self)
         layout.addWidget(guidance)
         layout.addWidget(self.shared_checkbox)
+        layout.addWidget(self.shared_attachments_checkbox)
         layout.addWidget(group)
 
-        self.shared_checkbox.toggled.connect(self._scope_changed)
+        self.shared_checkbox.toggled.connect(self._description_scope_changed)
+        self.shared_attachments_checkbox.toggled.connect(
+            self._attachment_scope_changed
+        )
         self.recipient_combo.currentIndexChanged.connect(self._recipient_changed)
 
     def set_candidates(self, candidates: tuple[RecipientCandidate, ...]) -> None:
@@ -773,18 +899,18 @@ class DeclarationContentPage(QWizardPage):
                 (str(payload["subject"]), str(payload["description"]))
                 for payload in seeded
             }
-            use_shared = len(shared_content) <= 1
+            use_shared_description = len(shared_content) <= 1
             self.shared_checkbox.blockSignals(True)
-            self.shared_checkbox.setChecked(use_shared)
+            self.shared_checkbox.setChecked(use_shared_description)
             self.shared_checkbox.blockSignals(False)
-            if seeded:
-                if use_shared:
-                    self._payloads[-1] = self._copy_payload(seeded[0])
-                else:
-                    self._payloads.update(
-                        (index, self._copy_payload(payload))
-                        for index, payload in enumerate(seeded)
-                    )
+            self.shared_attachments_checkbox.blockSignals(True)
+            self.shared_attachments_checkbox.setChecked(True)
+            self.shared_attachments_checkbox.blockSignals(False)
+            self._payloads.update(
+                (index, self._copy_payload(payload))
+                for index, payload in enumerate(seeded)
+            )
+            self._active_key = 0 if seeded else -1
         self._rebuild_recipient_combo()
 
     def payloads(self) -> dict[int, dict[str, object]]:
@@ -801,33 +927,34 @@ class DeclarationContentPage(QWizardPage):
             for key, value in self._payloads.items()
         }
 
-    def _scope_changed(self, shared: bool) -> None:
-        self._save_active()
-        previous = self._payloads.get(self._active_key, self._empty_payload())
-        if shared:
-            self._payloads.setdefault(-1, self._copy_payload(previous))
-            self._active_key = -1
-        else:
-            shared_payload = self._payloads.get(-1, previous)
-            for index in range(len(self._candidates)):
-                self._payloads.setdefault(index, self._copy_payload(shared_payload))
-            self._active_key = 0
-        self.recipient_combo.setEnabled(not shared)
-        self._rebuild_recipient_combo()
+    def _description_scope_changed(self, _shared: bool) -> None:
+        current = self._editor_payload()
+        for payload in self._payloads.values():
+            payload["subject"] = current["subject"]
+            payload["description"] = current["description"]
+        self._load_active()
+
+    def _attachment_scope_changed(self, _shared: bool) -> None:
+        current = self._editor_payload()
+        for payload in self._payloads.values():
+            for name in (
+                "attachments", "attachment_kind", "attachment_number",
+                "attachment_date",
+            ):
+                payload[name] = current[name]
+        self._load_active()
 
     def _rebuild_recipient_combo(self) -> None:
         self.recipient_combo.blockSignals(True)
         self.recipient_combo.clear()
-        if self.shared_checkbox.isChecked():
-            self.recipient_combo.addItem("همهٔ اشخاص", -1)
-            self._active_key = -1
-        else:
-            for index, candidate in enumerate(self._candidates):
-                self.recipient_combo.addItem(candidate.full_name or f"ردیف {index + 1}", index)
-            if self.recipient_combo.count():
-                selected = max(0, self.recipient_combo.findData(self._active_key))
-                self.recipient_combo.setCurrentIndex(selected)
-                self._active_key = int(self.recipient_combo.currentData())
+        for index, candidate in enumerate(self._candidates):
+            self.recipient_combo.addItem(
+                candidate.full_name or f"ردیف {index + 1}", index
+            )
+        if self.recipient_combo.count():
+            selected = max(0, self.recipient_combo.findData(self._active_key))
+            self.recipient_combo.setCurrentIndex(selected)
+            self._active_key = int(self.recipient_combo.currentData())
         self.recipient_combo.blockSignals(False)
         self._load_active()
 
@@ -840,7 +967,28 @@ class DeclarationContentPage(QWizardPage):
         self._load_active()
 
     def _save_active(self) -> None:
-        self._payloads[self._active_key] = {
+        if self._active_key < 0:
+            return
+        current = self._editor_payload()
+        self._payloads[self._active_key] = current
+        if self.shared_checkbox.isChecked():
+            for key, payload in self._payloads.items():
+                if key == self._active_key:
+                    continue
+                payload["subject"] = current["subject"]
+                payload["description"] = current["description"]
+        if self.shared_attachments_checkbox.isChecked():
+            for key, payload in self._payloads.items():
+                if key == self._active_key:
+                    continue
+                for name in (
+                    "attachments", "attachment_kind", "attachment_number",
+                    "attachment_date",
+                ):
+                    payload[name] = current[name]
+
+    def _editor_payload(self) -> dict[str, object]:
+        return {
             "subject": self.subject.text().strip(),
             "description": self.description.toPlainText().strip(),
             "attachments": tuple(self._attachment_paths()),
@@ -851,6 +999,11 @@ class DeclarationContentPage(QWizardPage):
 
     def _load_active(self) -> None:
         payload = self._payloads.get(self._active_key, self._empty_payload())
+        current_name = self.recipient_combo.currentText().strip()
+        self.active_recipient_label.setText(
+            f"در حال نمایش و ویرایش شرح: {current_name}"
+            if current_name else "مخاطبی انتخاب نشده است"
+        )
         self.subject.setText(str(payload.get("subject", "")))
         self.description.setPlainText(str(payload.get("description", "")))
         self.attachment_kind.setText(str(payload.get("attachment_kind", "")))
@@ -886,10 +1039,9 @@ class DeclarationContentPage(QWizardPage):
 
     def validatePage(self) -> bool:
         payloads = self.payloads()
-        keys = (-1,) if self.shared_checkbox.isChecked() else range(len(self._candidates))
-        for key in keys:
+        for key in range(len(self._candidates)):
             payload = payloads.get(key, {})
-            label = "همه اشخاص" if key == -1 else f"ردیف {key + 1}"
+            label = f"ردیف {key + 1}"
             if not str(payload.get("subject", "")).strip():
                 QMessageBox.warning(self, "موضوع ناقص", f"موضوع {label} وارد نشده است.")
                 return False
@@ -963,7 +1115,7 @@ class LoginPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
         self.registration_callback = None
-        self.setTitle("<b>ورود امن به سامانه ثنا</b>")
+        self.setTitle("<b>مرحله ۵ از ۵ — ورود امن به سامانه ثنا</b>")
         self.setSubTitle(
             "ورود را جداگانه آزمایش کنید یا پس از بازبینی، پردازش و ثبت را شروع کنید."
         )
@@ -1127,7 +1279,7 @@ class RecipientWizard(QWizard):
             drafts = _build_desktop_drafts(
                 candidates,
                 self.content_page.payloads(),
-                shared=self.content_page.shared_checkbox.isChecked(),
+                shared=False,
                 lookup_dir=self._lookup_dir,
             )
         except LookupResolutionError as exc:

@@ -104,6 +104,24 @@ class RecipientPreprocessingTests(unittest.TestCase):
         self.assertIn("location_lookup_unresolved", result.issues)
         self.assertNotIn("location_defaulted", result.issues)
 
+    def test_keeps_resolved_province_code_when_child_lookup_fails(self) -> None:
+        lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
+        candidate = RecipientCandidate(
+            source_path=lookup_dir / "source.pdf",
+            full_name="شخص نمونه",
+            address="نشانی کامل",
+            province="استان خوزستان",
+            county="شهرستان نامعتبر",
+            city="شهر نامعتبر",
+        )
+
+        result = preprocess_candidate(candidate, lookup_dir)
+
+        self.assertEqual(result.province_code, "06")
+        self.assertEqual(result.county_code, "")
+        self.assertEqual(result.city_code, "")
+        self.assertIn("location_lookup_unresolved", result.issues)
+
     @staticmethod
     def _write(path: Path, value: object) -> None:
         path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")

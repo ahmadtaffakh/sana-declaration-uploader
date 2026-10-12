@@ -11,6 +11,18 @@ from sana_declaration_uploader.lookups import (
 
 
 class LookupTests(unittest.TestCase):
+    def test_resolves_common_kohgiluyeh_spelling_variants(self) -> None:
+        lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
+
+        for label in (
+            "استان کهکیلویه و بویر احمد",
+            "استان کهگیلویه و بویراحمد",
+            "استان کهگلیویه و بویراحمد",
+        ):
+            with self.subTest(label=label):
+                result = resolve_lookup_fields({"province": label}, lookup_dir)
+                self.assertEqual(result["province_code"], "17")
+
     def test_resolves_exact_hierarchical_values(self) -> None:
         with TemporaryDirectory() as directory:
             lookup_dir = Path(directory)

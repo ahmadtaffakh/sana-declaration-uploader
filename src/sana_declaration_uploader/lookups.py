@@ -16,7 +16,15 @@ def normalize_label(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).translate(
         str.maketrans({"ي": "ی", "ى": "ی", "ك": "ک"})
     )
-    return " ".join(normalized.split()).casefold()
+    normalized = " ".join(normalized.split()).casefold()
+    compacted = normalized.replace(" ", "")
+    if compacted in {
+        "استانکهکیلویهوبویراحمد",
+        "استانکهگیلویهوبویراحمد",
+        "استانکهگلیویهوبویراحمد",
+    }:
+        return "استان کهکیلویه وبویراحمد"
+    return normalized
 
 
 def _load_entries(lookup_dir: Path, name: str) -> list[dict[str, str]]:

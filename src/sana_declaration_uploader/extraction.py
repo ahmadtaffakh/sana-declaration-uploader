@@ -61,6 +61,11 @@ _LEGAL_PERSON_MARKERS = (
 _DOCUMENT_NUMBER_LENGTH = r"[0-9]{8,30}"
 _DECLARATION_DATE = r"[0-9]{1,4}/[0-9]{1,2}/[0-9]{1,4}"
 _ADDRESS_SEPARATOR = r"[-‐‑‒–—،,]"
+_ADDRESS_DETAIL_PREFIXES = (
+    "خیابان", "خ ", "کوچه", "شهرک", "کوی", "بیمارستان", "ملک شهر",
+    "چهار راه", "چهارراه", "دفتر", "بلوار", "میدان", "محله", "جاده",
+    "روستا", "پلاک",
+)
 _DEFAULT_LOCATION = {
     "province": "استان تهران",
     "county": "شهرستان تهران",
@@ -318,14 +323,14 @@ def _table_candidate(
     address: str,
     reference: str,
 ) -> RecipientCandidate:
-    full_name, father_name = _split_father_name(name)
+    full_name, father_name = _split_father_name(_clean_party_name(name))
     person_type = _person_type(full_name)
     first_name, last_name = _split_natural_name(full_name, person_type)
     national_id = national_id if re.fullmatch(r"[0-9]{10}", national_id) else ""
     declaration_number, declaration_date = _split_declaration_reference(reference)
     locations = _address_locations(address)
     if not all(locations.get(field) for field in ("province", "county", "city")):
-        locations = {**_DEFAULT_LOCATION, **locations}
+        locations = dict(_DEFAULT_LOCATION)
     issues = []
     if person_type != "legal" and (not first_name or not last_name):
         issues.append("name_parts_review_required")
@@ -364,8 +369,8 @@ def _split_father_name(value: str) -> tuple[str, str]:
 def _split_natural_name(value: str, person_type: str) -> tuple[str, str]:
     if person_type == "legal":
         return "", ""
-    parts = value.split(maxsplit=1)
-    return (parts[0], parts[1]) if len(parts) == 2 else (value.strip(), "")
+    parts = value.split()
+    return (" ".join(parts[:-1]), parts[-1]) if len(parts) >= 2 else (value.strip(), "")
 
 
 def _split_declaration_reference(value: str) -> tuple[str, str]:
@@ -380,14 +385,21 @@ def _split_declaration_reference(value: str) -> tuple[str, str]:
 def _address_locations(address: str) -> dict[str, str]:
     normalized = _normalize_cell(address)
     result = {}
-    for field, label in (("province", "استان"), ("county", "شهرستان")):
-        match = re.search(
-            rf"(?:^|{_ADDRESS_SEPARATOR})\s*{label}\s+"
-            rf"([^{_ADDRESS_SEPARATOR[1:-1]}]+)",
-            normalized,
-        )
-        if match:
-            result[field] = f"{label} {match.group(1).strip()}"
+    province_match = re.search(
+        rf"(?:^|{_ADDRESS_SEPARATOR})\s*استان\s+(.+?)"
+        rf"(?=\s+شهرستان\b|\s+شهر\b|{_ADDRESS_SEPARATOR}|$)",
+        normalized,
+    )
+    if province_match:
+        result["province"] = f"استان {province_match.group(1).strip()}"
+    detail_pattern = "|".join(re.escape(value) for value in _ADDRESS_DETAIL_PREFIXES)
+    county_match = re.search(
+        rf"(?:^|{_ADDRESS_SEPARATOR}|\s)شهرستان\s+(.+?)"
+        rf"(?=\s+شهر\b|\s+(?:{detail_pattern})|{_ADDRESS_SEPARATOR}|$)",
+        normalized,
+    )
+    if county_match:
+        result["county"] = f"شهرستان {county_match.group(1).strip()}"
     city_match = re.search(
         rf"(?:^|{_ADDRESS_SEPARATOR})\s*شهر\s+"
         rf"([^{_ADDRESS_SEPARATOR[1:-1]}]+)",
@@ -396,13 +408,17 @@ def _address_locations(address: str) -> dict[str, str]:
     if city_match:
         result["city"] = city_match.group(1).strip()
     elif result.get("county"):
-        county_match = re.search(
+        following_county = re.search(
             rf"شهرستان\s+[^{_ADDRESS_SEPARATOR[1:-1]}]+"
             rf"{_ADDRESS_SEPARATOR}\s*([^{_ADDRESS_SEPARATOR[1:-1]}]+)",
             normalized,
         )
-        if county_match:
-            result["city"] = county_match.group(1).strip()
+        if following_county and not following_county.group(1).strip().startswith(
+            _ADDRESS_DETAIL_PREFIXES
+        ):
+            result["city"] = following_county.group(1).strip()
+        else:
+            result["city"] = result["county"].removeprefix("شهرستان ")
     segments = [
         segment.strip(" .")
         for segment in re.split(rf"\s*{_ADDRESS_SEPARATOR}\s*", normalized)
@@ -412,16 +428,14 @@ def _address_locations(address: str) -> dict[str, str]:
         if segments[0] == "تهران":
             result.update(_DEFAULT_LOCATION)
         elif len(segments) >= 2 and not segments[1].startswith(
-            ("خیابان", "خ ", "کوچه", "شهرک")
+            _ADDRESS_DETAIL_PREFIXES
         ):
             result["province"] = f"استان {segments[0]}"
             result["county"] = f"شهرستان {segments[1]}"
             result["city"] = (
                 segments[2]
                 if len(segments) >= 3
-                and not segments[2].startswith(
-                    ("خیابان", "خ ", "کوچه", "شهرک")
-                )
+                and not segments[2].startswith(_ADDRESS_DETAIL_PREFIXES)
                 else segments[1]
             )
     return result
@@ -654,6 +668,11 @@ def _party_candidate(
 
 
 def _clean_party_name(value: str) -> str:
+    titled_suffix = re.search(
+        rf"(?:^|{_ADDRESS_SEPARATOR})\s*(?:آقای|خانم)\s+(.+)$", value
+    )
+    if titled_suffix:
+        value = titled_suffix.group(1)
     value = re.sub(r"^\s*(?:\d+\s*[.\-)ـ]\s*)?", "", value)
     value = re.sub(r"^\s*(?:آقای|خانم)\s+", "", value)
     return " ".join(value.strip(" \t\r\n:：-ـ.،,؛/|").split())

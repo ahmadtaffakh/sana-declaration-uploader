@@ -43,6 +43,7 @@ def preprocess_candidate(
         "province_lookup_unresolved",
         "county_lookup_unresolved",
         "city_lookup_unresolved",
+        "location_lookup_unresolved",
         "court_unit_lookup_ambiguous",
         "court_unit_unresolved",
     }
@@ -60,11 +61,20 @@ def preprocess_candidate(
         requested_location.values()
     )
     if not location_defaulted:
-        try:
-            resolved_locations = resolve_lookup_fields(requested_location, lookup_dir)
-        except LookupResolutionError:
-            resolved_locations = {}
-            issues.append("location_lookup_unresolved")
+        resolved_locations = {}
+        for fields in (
+            ("province",),
+            ("province", "county"),
+            ("province", "county", "city"),
+        ):
+            try:
+                resolved_locations.update(resolve_lookup_fields(
+                    {field: requested_location[field] for field in fields},
+                    lookup_dir,
+                ))
+            except LookupResolutionError:
+                issues.append("location_lookup_unresolved")
+                break
     if location_defaulted:
         province = _DEFAULT_LOCATION["province"]
         county = _DEFAULT_LOCATION["county"]

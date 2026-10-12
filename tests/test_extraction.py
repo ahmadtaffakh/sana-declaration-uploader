@@ -14,6 +14,38 @@ from sana_declaration_uploader.extraction import (
 
 
 class RecipientExtractionTests(unittest.TestCase):
+    def test_cleans_organization_prefix_and_keeps_multiword_given_name(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "declarations.docx"
+            document = Document()
+            table = document.add_table(rows=3, cols=5)
+            for index, value in enumerate((
+                "ردیف", "شماره و تاریخ اظهارنامه", "نام و نام خانوادگی",
+                "کد ملی", "آدرس",
+            )):
+                table.cell(0, index).text = value
+            for index, value in enumerate((
+                "1", "1405220012345678 1405/01/02",
+                "مرکز نمونه درمان بخش- آقای روح اله فکوری", "ندارد",
+                "استان لرستان شهرستان خرم آباد کوی نمونه بیمارستان نمونه",
+            )):
+                table.cell(1, index).text = value
+            table.cell(2, 0).merge(table.cell(2, 4)).text = (
+                "مخاطب محترم: این متن ساختگی فقط برای بررسی پاک‌سازی نام و "
+                "نشانی بدون جداکننده تهیه شده و طول کافی دارد."
+            )
+            document.save(path)
+
+            candidate = extract_recipient_candidates(path)[0]
+
+            self.assertEqual(candidate.full_name, "روح اله فکوری")
+            self.assertEqual(candidate.first_name, "روح اله")
+            self.assertEqual(candidate.last_name, "فکوری")
+            self.assertEqual(candidate.province, "استان لرستان")
+            self.assertEqual(candidate.county, "شهرستان خرم آباد")
+            self.assertEqual(candidate.city, "خرم آباد")
+            self.assertEqual(candidate.related_declaration_date, "1405/01/02")
+
     def test_extracts_each_declaration_table_row_with_shared_description(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "declarations.docx"
