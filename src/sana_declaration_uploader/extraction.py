@@ -60,6 +60,7 @@ _LEGAL_PERSON_MARKERS = (
 )
 _DOCUMENT_NUMBER_LENGTH = r"[0-9]{8,30}"
 _DECLARATION_DATE = r"[0-9]{1,4}/[0-9]{1,2}/[0-9]{1,4}"
+_ADDRESS_SEPARATOR = r"[-‐‑‒–—،,]"
 _DEFAULT_LOCATION = {
     "province": "استان تهران",
     "county": "شهرستان تهران",
@@ -380,35 +381,49 @@ def _address_locations(address: str) -> dict[str, str]:
     normalized = _normalize_cell(address)
     result = {}
     for field, label in (("province", "استان"), ("county", "شهرستان")):
-        match = re.search(rf"(?:^|[-،,])\s*{label}\s+([^\-،,]+)", normalized)
+        match = re.search(
+            rf"(?:^|{_ADDRESS_SEPARATOR})\s*{label}\s+"
+            rf"([^{_ADDRESS_SEPARATOR[1:-1]}]+)",
+            normalized,
+        )
         if match:
             result[field] = f"{label} {match.group(1).strip()}"
     city_match = re.search(
-        r"(?:^|[-،,])\s*شهر\s+([^\-،,]+)", normalized
+        rf"(?:^|{_ADDRESS_SEPARATOR})\s*شهر\s+"
+        rf"([^{_ADDRESS_SEPARATOR[1:-1]}]+)",
+        normalized,
     )
     if city_match:
         result["city"] = city_match.group(1).strip()
     elif result.get("county"):
         county_match = re.search(
-            r"شهرستان\s+[^\-،,]+[-،,]\s*([^\-،,]+)", normalized
+            rf"شهرستان\s+[^{_ADDRESS_SEPARATOR[1:-1]}]+"
+            rf"{_ADDRESS_SEPARATOR}\s*([^{_ADDRESS_SEPARATOR[1:-1]}]+)",
+            normalized,
         )
         if county_match:
             result["city"] = county_match.group(1).strip()
     segments = [
         segment.strip(" .")
-        for segment in re.split(r"\s*[-،,]\s*", normalized)
+        for segment in re.split(rf"\s*{_ADDRESS_SEPARATOR}\s*", normalized)
         if segment.strip(" .")
     ]
     if not result.get("province") and segments:
         if segments[0] == "تهران":
             result.update(_DEFAULT_LOCATION)
-        elif len(segments) >= 3 and not any(
-            segments[index].startswith(("خیابان", "خ ", "کوچه", "شهرک"))
-            for index in (1, 2)
+        elif len(segments) >= 2 and not segments[1].startswith(
+            ("خیابان", "خ ", "کوچه", "شهرک")
         ):
             result["province"] = f"استان {segments[0]}"
             result["county"] = f"شهرستان {segments[1]}"
-            result["city"] = segments[2]
+            result["city"] = (
+                segments[2]
+                if len(segments) >= 3
+                and not segments[2].startswith(
+                    ("خیابان", "خ ", "کوچه", "شهرک")
+                )
+                else segments[1]
+            )
     return result
 
 

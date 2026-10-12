@@ -67,12 +67,12 @@ class RecipientPreprocessingTests(unittest.TestCase):
             self.assertEqual(result.court_unit_code, "")
             self.assertEqual(result.issues, ())
 
-    def test_unknown_location_falls_back_to_tehran(self) -> None:
+    def test_incomplete_location_falls_back_to_tehran(self) -> None:
         lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
         candidate = RecipientCandidate(
             source_path=lookup_dir / "source.pdf",
             full_name="شخص نمونه",
-            address="استان نمونه - شهرستان نمونه - شهر نمونه - خیابان نمونه",
+            address="خیابان نمونه",
         )
 
         result = preprocess_candidate(candidate, lookup_dir)
@@ -83,6 +83,26 @@ class RecipientPreprocessingTests(unittest.TestCase):
         )
         self.assertEqual(result.job_title, "آزاد")
         self.assertIn("location_defaulted", result.issues)
+
+    def test_preserves_extracted_location_when_lookup_is_unresolved(self) -> None:
+        lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
+        candidate = RecipientCandidate(
+            source_path=lookup_dir / "source.pdf",
+            full_name="شخص نمونه",
+            address="استان نمونه - شهرستان نمونه - شهر نمونه - خیابان نمونه",
+            province="استان نمونه",
+            county="شهرستان نمونه",
+            city="نمونه",
+        )
+
+        result = preprocess_candidate(candidate, lookup_dir)
+
+        self.assertEqual(
+            (result.province, result.county, result.city),
+            ("استان نمونه", "شهرستان نمونه", "نمونه"),
+        )
+        self.assertIn("location_lookup_unresolved", result.issues)
+        self.assertNotIn("location_defaulted", result.issues)
 
     @staticmethod
     def _write(path: Path, value: object) -> None:

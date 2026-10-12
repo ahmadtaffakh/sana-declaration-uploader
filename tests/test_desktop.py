@@ -141,6 +141,34 @@ class RecipientWizardTests(unittest.TestCase):
             ["شخص سوم"],
         )
 
+    def test_returning_to_file_page_reloads_removed_rows(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "input.docx"
+            source.write_bytes(b"test")
+            candidates = (
+                RecipientCandidate(source_path=source, full_name="شخص اول"),
+                RecipientCandidate(source_path=source, full_name="شخص دوم"),
+            )
+            wizard = RecipientWizard()
+            wizard.files_page._add_paths((source,))
+            wizard._loaded_paths = (source.resolve(),)
+            wizard._preprocess_source = candidates
+            wizard.review_page.set_candidates(candidates[1:])
+
+            wizard._page_changed(wizard.files_page_id)
+            with patch(
+                "sana_declaration_uploader.desktop.extract_recipients",
+                return_value=candidates,
+            ) as extract:
+                wizard._page_changed(wizard.review_page_id)
+
+            extract.assert_called_once_with([source.resolve()])
+            self.assertEqual(
+                [candidate.full_name for candidate in wizard.review_page.candidates()],
+                ["شخص اول", "شخص دوم"],
+            )
+            self.assertEqual(wizard._preprocess_source, ())
+
     def test_preprocessing_location_edits_survive_reloading_the_same_rows(self) -> None:
         wizard = RecipientWizard()
         page = wizard.preprocessing_page

@@ -56,12 +56,15 @@ def preprocess_candidate(
         issues.append("job_lookup_unresolved")
 
     requested_location = {"province": province, "county": county, "city": city}
-    location_defaulted = not all(requested_location.values())
+    location_defaulted = not candidate.address.strip() or not all(
+        requested_location.values()
+    )
     if not location_defaulted:
         try:
             resolved_locations = resolve_lookup_fields(requested_location, lookup_dir)
         except LookupResolutionError:
-            location_defaulted = True
+            resolved_locations = {}
+            issues.append("location_lookup_unresolved")
     if location_defaulted:
         province = _DEFAULT_LOCATION["province"]
         county = _DEFAULT_LOCATION["county"]

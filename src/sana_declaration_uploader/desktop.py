@@ -1206,6 +1206,10 @@ class RecipientWizard(QWizard):
         return True
 
     def _page_changed(self, page_id: int) -> None:
+        if page_id == self.files_page_id:
+            self._loaded_paths = ()
+            self._preprocess_source = ()
+            return
         if page_id == self.preprocessing_page_id:
             source = self.review_page.candidates()
             if source != self._preprocess_source:
