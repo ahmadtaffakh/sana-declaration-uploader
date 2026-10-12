@@ -6,6 +6,7 @@ import unittest
 from sana_declaration_uploader.catalog_capture import (
     capture_catalogs_from_page,
     normalize_capture_payload,
+    promote_captured_catalogs,
 )
 from sana_declaration_uploader.live_browser import LiveBrowserError
 
@@ -82,6 +83,52 @@ class CatalogCaptureTests(unittest.TestCase):
             self.assertEqual(locations[2]["id"], "t1")
             self.assertEqual(courts[0]["location_id"], "t1")
             self.assertEqual(report["counts"]["unresolved_branches"], 0)
+
+    def test_promotes_valid_rows_and_excludes_reported_branch(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture_dir = root / "capture"
+            lookup_dir = root / "lookups"
+            capture_dir.mkdir()
+            lookup_dir.mkdir()
+            locations, courts = normalize_capture_payload(self.PAYLOAD)
+            excluded = locations[-1]
+            courts.append({
+                "key": "00160:c1",
+                "label": "واحد شهرستان",
+                "code": "00160",
+                "location_id": "c1",
+                "source": "authenticated SANA address selection",
+            })
+            (capture_dir / "locations.captured.json").write_text(
+                json.dumps(locations, ensure_ascii=False), encoding="utf-8"
+            )
+            (capture_dir / "court_units.captured.json").write_text(
+                json.dumps(courts, ensure_ascii=False), encoding="utf-8"
+            )
+            (capture_dir / "capture_report.json").write_text(
+                json.dumps({
+                    "counts": {"locations": 3, "court_units": 2},
+                    "issues": [{"parentId": excluded["id"]}],
+                }, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            existing_courts = [{"key": "old", "label": "واحد قبلی", "code": "00001"}]
+            (lookup_dir / "court_units.json").write_text(
+                json.dumps(existing_courts, ensure_ascii=False), encoding="utf-8"
+            )
+
+            counts = promote_captured_catalogs(capture_dir, lookup_dir)
+
+            self.assertEqual(counts, {
+                "locations": 2,
+                "court_units": 1,
+                "excluded_branches": 1,
+            })
+            self.assertEqual(
+                json.loads((lookup_dir / "court_units.json").read_text(encoding="utf-8")),
+                existing_courts,
+            )
 
 
 if __name__ == "__main__":

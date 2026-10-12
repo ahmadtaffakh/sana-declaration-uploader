@@ -319,6 +319,67 @@ def run_interactive_catalog_capture(
             browser.close()
 
 
+def promote_captured_catalogs(
+    capture_dir: Path, lookup_dir: Path
+) -> dict[str, int]:
+    """Promote verified rows while excluding unresolved capture branches."""
+
+    try:
+        locations = json.loads(
+            (capture_dir / "locations.captured.json").read_text(encoding="utf-8")
+        )
+        courts = json.loads(
+            (capture_dir / "court_units.captured.json").read_text(encoding="utf-8")
+        )
+        report = json.loads(
+            (capture_dir / "capture_report.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise LiveBrowserError("lookup_catalog_capture_files_invalid") from exc
+    if not isinstance(locations, list) or not isinstance(courts, list):
+        raise LiveBrowserError("lookup_catalog_capture_files_invalid")
+    if not isinstance(report, Mapping) or not isinstance(report.get("issues"), list):
+        raise LiveBrowserError("lookup_catalog_capture_report_invalid")
+    counts = report.get("counts")
+    if not isinstance(counts, Mapping) or (
+        counts.get("locations") != len(locations)
+        or counts.get("court_units") != len(courts)
+    ):
+        raise LiveBrowserError("lookup_catalog_capture_count_mismatch")
+
+    excluded_ids = {
+        _text(issue.get("parentId"))
+        for issue in report["issues"]
+        if isinstance(issue, Mapping) and _text(issue.get("parentId"))
+    }
+    promoted_locations = [
+        entry for entry in locations
+        if isinstance(entry, Mapping) and _text(entry.get("id")) not in excluded_ids
+    ]
+    promoted_ids = {_text(entry.get("id")) for entry in promoted_locations}
+    if not promoted_locations or any(
+        not _valid_promoted_location(entry, promoted_ids)
+        for entry in promoted_locations
+    ):
+        raise LiveBrowserError("lookup_catalog_promotion_location_invalid")
+    try:
+        preserved_courts = json.loads(
+            (lookup_dir / "court_units.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise LiveBrowserError("lookup_catalog_existing_courts_invalid") from exc
+    if not isinstance(preserved_courts, list) or not preserved_courts:
+        raise LiveBrowserError("lookup_catalog_existing_courts_invalid")
+
+    lookup_dir.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(lookup_dir / "locations.json", promoted_locations)
+    return {
+        "locations": len(promoted_locations),
+        "court_units": len(preserved_courts),
+        "excluded_branches": len(excluded_ids),
+    }
+
+
 def _location_label(name: str, entry_type: str) -> str:
     if entry_type == "province" and not name.startswith("استان "):
         return f"استان {name}"
@@ -338,8 +399,28 @@ def _integer(value: object) -> int | None:
         return None
 
 
+def _valid_promoted_location(
+    entry: Mapping[object, object], known_ids: set[str]
+) -> bool:
+    entry_type = _text(entry.get("type"))
+    code = _text(entry.get("code"))
+    identity = _text(entry.get("id"))
+    parent = _text(entry.get("parent_key"))
+    return (
+        entry_type in {"province", "county", "city"}
+        and bool(identity and code.isdigit() and _text(entry.get("label")))
+        and (entry_type == "province" and not parent or parent in known_ids)
+    )
+
+
 def _write_json(path: Path, value: object) -> None:
     path.write_text(
         json.dumps(value, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def _write_json_atomic(path: Path, value: object) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    _write_json(temporary, value)
+    temporary.replace(path)
