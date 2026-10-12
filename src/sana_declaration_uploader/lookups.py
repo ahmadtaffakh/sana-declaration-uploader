@@ -24,6 +24,12 @@ def normalize_label(value: str) -> str:
         "استانکهگلیویهوبویراحمد",
     }:
         return "استان کهکیلویه وبویراحمد"
+    aliases = {
+        "رامهرز": "رامهرمز",
+        "اسلامابادغرب": "اسلام آبادغرب",
+    }
+    if compacted in aliases:
+        return aliases[compacted]
     return normalized
 
 
@@ -57,9 +63,15 @@ def _resolve_by_label(
     parent_key: str | None = None,
 ) -> dict[str, str]:
     expected = normalize_label(label)
+    ignore_spaces = category in {"province", "county", "city", "village"}
+    if ignore_spaces:
+        expected = expected.replace(" ", "")
     matches = []
     for entry in entries:
-        if normalize_label(entry.get("label", "")) != expected:
+        candidate = normalize_label(entry.get("label", ""))
+        if ignore_spaces:
+            candidate = candidate.replace(" ", "")
+        if candidate != expected:
             continue
         if entry_type is not None and entry.get("type") != entry_type:
             continue
@@ -97,6 +109,61 @@ def resolve_lookup_fields(
     resolved = _resolve_job(dict(fields), lookup_dir)
     resolved = _resolve_locations(resolved, lookup_dir)
     return _resolve_court(resolved, lookup_dir)
+
+
+def resolve_city_hierarchy(
+    province_label: str, city_label: str, lookup_dir: Path
+) -> dict[str, str]:
+    """Resolve a city and its unique county inside one verified province."""
+
+    locations = _load_entries(lookup_dir, "locations")
+    province = _resolve_by_label(
+        locations,
+        category="province",
+        label=province_label,
+        entry_type="province",
+    )
+    counties = {
+        entry["key"]: entry
+        for entry in locations
+        if entry.get("type") == "county"
+        and entry.get("parent_key") == province.get("key")
+        and entry.get("key")
+    }
+    city = _resolve_by_label(
+        [
+            entry for entry in locations
+            if entry.get("type") == "city"
+            and entry.get("parent_key") in counties
+        ],
+        category="city",
+        label=city_label,
+        entry_type="city",
+    )
+    county = counties[city["parent_key"]]
+    for field, entry in (
+        ("province", province),
+        ("county", county),
+        ("city", city),
+    ):
+        if not all(entry.get(key) for key in ("key", "id", "code", "label")):
+            raise LookupResolutionError(
+                f"lookup_entry_invalid:{field}:{entry.get('label', '')}"
+            )
+    return {
+        "province": province["label"],
+        "province_key": province["key"],
+        "province_id": province["id"],
+        "province_code": province["code"],
+        "county": county["label"],
+        "county_key": county["key"],
+        "county_id": county["id"],
+        "county_code": county["code"],
+        "city": city["label"],
+        "city_key": city["key"],
+        "city_id": city["id"],
+        "city_code": city["code"],
+    }
 
 
 def suggest_court_unit(

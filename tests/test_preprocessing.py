@@ -122,6 +122,62 @@ class RecipientPreprocessingTests(unittest.TestCase):
         self.assertEqual(result.city_code, "")
         self.assertIn("location_lookup_unresolved", result.issues)
 
+    def test_invalid_city_uses_resolved_county_name_as_city(self) -> None:
+        lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
+        for county, invalid_city, expected_city in (
+            ("شهرستان ایلام", "امتداد خ پاسداران", "ایلام"),
+            ("شهرستان کرمانشاه", "تعاون", "کرمانشاه"),
+        ):
+            with self.subTest(county=county):
+                result = preprocess_candidate(RecipientCandidate(
+                    source_path=lookup_dir / "source.pdf",
+                    full_name="شخص نمونه",
+                    address="نشانی کامل",
+                    province=(
+                        "استان ایلام" if expected_city == "ایلام"
+                        else "استان کرمانشاه"
+                    ),
+                    county=county,
+                    city=invalid_city,
+                ), lookup_dir)
+
+                self.assertEqual(result.city, expected_city)
+                self.assertTrue(result.city_code)
+                self.assertNotIn("location_lookup_unresolved", result.issues)
+
+    def test_city_name_resolves_its_county_and_known_spelling_variants(self) -> None:
+        lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
+        cases = (
+            (
+                "استان کهگیلویه و بویر احمد", "دوگنبدان",
+                "شهرستان گچساران", "دوگنبدان", "1703", "1703021515",
+            ),
+            (
+                "استان خوزستان", "رامهرز",
+                "شهرستان رامهرمز", "رامهرمز", "0610", "0610021287",
+            ),
+            (
+                "استان کرمانشاه", "اسلام اباد غرب",
+                "شهرستان اسلام آبادغرب", "اسلام آبادغرب", "0501", "0501031256",
+            ),
+        )
+        for province, city, county, expected_city, county_code, city_code in cases:
+            with self.subTest(city=city):
+                result = preprocess_candidate(RecipientCandidate(
+                    source_path=lookup_dir / "source.docx",
+                    full_name="شخص نمونه",
+                    address=f"{province}-{city}",
+                    province=province,
+                    county=f"شهرستان {city}",
+                    city=city,
+                ), lookup_dir)
+
+                self.assertEqual(result.county, county)
+                self.assertEqual(result.city, expected_city)
+                self.assertEqual(result.county_code, county_code)
+                self.assertEqual(result.city_code, city_code)
+                self.assertNotIn("location_lookup_unresolved", result.issues)
+
     @staticmethod
     def _write(path: Path, value: object) -> None:
         path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")

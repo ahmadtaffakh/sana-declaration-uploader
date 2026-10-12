@@ -7,7 +7,11 @@ from pathlib import Path
 import re
 import unicodedata
 
-from .lookups import LookupResolutionError, resolve_lookup_fields
+from .lookups import (
+    LookupResolutionError,
+    resolve_city_hierarchy,
+    resolve_lookup_fields,
+)
 from .models import RecipientCandidate
 
 
@@ -73,6 +77,36 @@ def preprocess_candidate(
                     lookup_dir,
                 ))
             except LookupResolutionError:
+                try:
+                    inferred = resolve_city_hierarchy(province, city, lookup_dir)
+                except LookupResolutionError:
+                    pass
+                else:
+                    province = inferred["province"]
+                    county = inferred["county"]
+                    city = inferred["city"]
+                    requested_location.update(
+                        province=province, county=county, city=city
+                    )
+                    resolved_locations.update(inferred)
+                    break
+                if fields[-1] == "city":
+                    county_city = county.removeprefix("شهرستان ").strip()
+                    try:
+                        resolved_locations.update(resolve_lookup_fields(
+                            {
+                                "province": province,
+                                "county": county,
+                                "city": county_city,
+                            },
+                            lookup_dir,
+                        ))
+                    except LookupResolutionError:
+                        pass
+                    else:
+                        city = county_city
+                        requested_location["city"] = city
+                        continue
                 issues.append("location_lookup_unresolved")
                 break
     if location_defaulted:

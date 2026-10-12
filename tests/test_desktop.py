@@ -91,6 +91,20 @@ class RecipientWizardTests(unittest.TestCase):
             [button.text() for button in wizard.review_page.findChildren(QPushButton)],
         )
 
+    def test_file_page_shows_loaded_file_count(self) -> None:
+        with TemporaryDirectory() as directory:
+            first = Path(directory) / "one.docx"
+            second = Path(directory) / "two.docx"
+            first.write_bytes(b"test")
+            second.write_bytes(b"test")
+            page = RecipientWizard().files_page
+
+            page._add_paths((first, second))
+
+            self.assertEqual(
+                page.file_count_label.text(), "تعداد فایل‌های بارگذاری‌شده: 2"
+            )
+
     def test_review_edits_are_preserved_for_preprocessing(self) -> None:
         page = RecipientReviewPage()
         page.set_candidates((RecipientCandidate(
@@ -271,6 +285,12 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertTrue(
                 date_item.textAlignment() & Qt.AlignmentFlag.AlignLeft
             )
+            self.assertEqual(
+                page.table.cellWidget(
+                    0, page.HEADERS.index("تاریخ اظهارنامه مرتبط")
+                ).layoutDirection(),
+                Qt.LayoutDirection.LeftToRight,
+            )
             with patch(
                 "sana_declaration_uploader.desktop.QDesktopServices.openUrl"
             ) as open_url:
@@ -284,7 +304,7 @@ class RecipientWizardTests(unittest.TestCase):
         wizard = RecipientWizard()
         page = wizard.preprocessing_page
         page.set_candidates((RecipientCandidate(
-            source_path=Path("input.docx"),
+            source_path=Path(__file__),
             full_name="نام نمونه",
             job_title="آزاد",
             job_code="00002",
@@ -314,6 +334,14 @@ class RecipientWizardTests(unittest.TestCase):
         address_item = page.table.item(0, page.HEADERS.index("آدرس"))
         address_item.setText("نشانی اصلاح‌شده")
         self.assertEqual(page.candidates()[0].address, "نشانی اصلاح‌شده")
+
+        with patch(
+            "sana_declaration_uploader.desktop.QDesktopServices.openUrl"
+        ) as open_url:
+            page.table.cellWidget(
+                0, page.HEADERS.index("بازکردن")
+            ).click()
+        open_url.assert_called_once()
 
         page.table.item(0, 0).setCheckState(Qt.CheckState.Checked)
         page._remove_selected()
@@ -347,6 +375,27 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertEqual(payloads[0]["description"], "شرح مشترک")
         self.assertEqual(payloads[1]["description"], "شرح مشترک")
         self.assertTrue(page.recipient_combo.isEnabled())
+
+    def test_content_page_uses_compact_right_side_fields_and_tall_description(self) -> None:
+        page = DeclarationContentPage()
+        page.resize(1200, 900)
+        page.show()
+        self.app.processEvents()
+
+        recipient_panel = page.recipient_combo.parentWidget()
+        description_panel = page.description.parentWidget()
+        attachment_panel = page.attachment_kind.parentWidget()
+
+        self.assertIs(page.subject.parentWidget(), recipient_panel)
+        self.assertGreater(recipient_panel.x(), description_panel.x())
+        self.assertGreaterEqual(
+            description_panel.width(), recipient_panel.width() * 2
+        )
+        self.assertEqual(page.description.minimumHeight(), 480)
+        self.assertIs(page.attachment_number.parentWidget(), attachment_panel)
+        self.assertIs(page.attachment_date.parentWidget(), attachment_panel)
+        self.assertLessEqual(attachment_panel.width(), page.width() // 3)
+        self.assertGreater(attachment_panel.x(), page.width() // 2)
 
     def test_extracted_descriptions_seed_separate_recipient_content(self) -> None:
         page = DeclarationContentPage()

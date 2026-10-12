@@ -5,6 +5,7 @@ import unittest
 
 from sana_declaration_uploader.lookups import (
     LookupResolutionError,
+    resolve_city_hierarchy,
     resolve_lookup_fields,
     suggest_court_unit,
 )
@@ -22,6 +23,27 @@ class LookupTests(unittest.TestCase):
             with self.subTest(label=label):
                 result = resolve_lookup_fields({"province": label}, lookup_dir)
                 self.assertEqual(result["province_code"], "17")
+
+    def test_location_matching_ignores_extra_spaces(self) -> None:
+        lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
+
+        result = resolve_lookup_fields({
+            "province": "استان خوزستان",
+            "county": "شهرستان بندر ماهشهر",
+        }, lookup_dir)
+
+        self.assertEqual(result["county_code"], "0605")
+
+    def test_resolves_city_and_its_unique_county_inside_province(self) -> None:
+        lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
+
+        result = resolve_city_hierarchy(
+            "استان کهگیلویه و بویر احمد", "دوگنبدان", lookup_dir
+        )
+
+        self.assertEqual(result["county"], "شهرستان گچساران")
+        self.assertEqual(result["county_code"], "1703")
+        self.assertEqual(result["city_code"], "1703021515")
 
     def test_resolves_exact_hierarchical_values(self) -> None:
         with TemporaryDirectory() as directory:

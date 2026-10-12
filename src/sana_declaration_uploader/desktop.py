@@ -13,6 +13,7 @@ from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QBoxLayout,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWizard,
     QWizardPage,
+    QWidget,
 )
 
 from .extraction import DocumentExtractionError, extract_recipients
@@ -332,6 +334,7 @@ class FileSelectionPage(QWizardPage):
         self.setAcceptDrops(True)
 
         self.file_list = QListWidget()
+        self.file_count_label = QLabel("تعداد فایل‌های بارگذاری‌شده: ۰")
         add_button = QPushButton("افزودن فایل‌ها")
         remove_button = QPushButton("حذف انتخاب‌شده")
         add_button.clicked.connect(self._choose_files)
@@ -353,6 +356,7 @@ class FileSelectionPage(QWizardPage):
         layout.addWidget(guidance)
         layout.addWidget(QLabel("فایل‌ها را اینجا رها کنید یا با دکمه زیر انتخاب کنید:"))
         layout.addWidget(self.file_list)
+        layout.addWidget(self.file_count_label)
         layout.addLayout(buttons)
 
     def selected_paths(self) -> list[Path]:
@@ -393,12 +397,19 @@ class FileSelectionPage(QWizardPage):
             item.setData(Qt.ItemDataRole.UserRole, str(resolved))
             self.file_list.addItem(item)
             existing.add(str(resolved))
+        self._update_file_count()
         self.completeChanged.emit()
 
     def _remove_selected(self) -> None:
         for item in self.file_list.selectedItems():
             self.file_list.takeItem(self.file_list.row(item))
+        self._update_file_count()
         self.completeChanged.emit()
+
+    def _update_file_count(self) -> None:
+        self.file_count_label.setText(
+            f"تعداد فایل‌های بارگذاری‌شده: {self.file_list.count()}"
+        )
 
 
 class RecipientReviewPage(QWizardPage):
@@ -520,6 +531,12 @@ class RecipientReviewPage(QWizardPage):
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
                 )
             self.table.setItem(row, column, item)
+        date_editor = QLineEdit(values[self.HEADERS.index("تاریخ اظهارنامه مرتبط")])
+        date_editor.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        date_editor.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.table.setCellWidget(
+            row, self.HEADERS.index("تاریخ اظهارنامه مرتبط"), date_editor
+        )
         open_button = QPushButton("بازکردن")
         if candidate:
             open_button.clicked.connect(
@@ -543,7 +560,11 @@ class RecipientReviewPage(QWizardPage):
                 original = RecipientCandidate(source_path=Path("manual"))
 
             def value(header: str) -> str:
-                item = self.table.item(row, self.HEADERS.index(header))
+                column = self.HEADERS.index(header)
+                editor = self.table.cellWidget(row, column)
+                if isinstance(editor, QLineEdit):
+                    return editor.text().strip()
+                item = self.table.item(row, column)
                 return item.text().strip() if item else ""
 
             updated = replace(
@@ -593,6 +614,7 @@ class RecipientReviewPage(QWizardPage):
 class PreprocessingPage(QWizardPage):
     HEADERS = (
         "انتخاب",
+        "فایل منبع",
         "نام شخص",
         "شغل",
         "کد شغل",
@@ -603,6 +625,7 @@ class PreprocessingPage(QWizardPage):
         "شهر",
         "کد شهر",
         "آدرس",
+        "بازکردن",
         "وضعیت",
         "حذف",
     )
@@ -645,6 +668,7 @@ class PreprocessingPage(QWizardPage):
             self.table.insertRow(row)
             values = (
                 "",
+                candidate.source_path.name,
                 candidate.full_name,
                 candidate.job_title,
                 candidate.job_code,
@@ -655,6 +679,7 @@ class PreprocessingPage(QWizardPage):
                 candidate.city,
                 candidate.city_code,
                 candidate.address,
+                "",
                 self._status(candidate),
                 "",
             )
@@ -669,10 +694,18 @@ class PreprocessingPage(QWizardPage):
                 if self.HEADERS[column] == "نام شخص":
                     item.setData(Qt.ItemDataRole.UserRole, candidate)
                 if self.HEADERS[column] in (
-                    "انتخاب", "نام شخص", "شغل", "کد شغل", "وضعیت", "حذف",
+                    "انتخاب", "فایل منبع", "نام شخص", "شغل", "کد شغل",
+                    "بازکردن", "وضعیت", "حذف",
                 ):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, column, item)
+            open_button = QPushButton("بازکردن")
+            open_button.clicked.connect(
+                lambda _checked=False, path=candidate.source_path: _open_source(path)
+            )
+            self.table.setCellWidget(
+                row, self.HEADERS.index("بازکردن"), open_button
+            )
             remove_button = QPushButton("حذف")
             remove_button.clicked.connect(
                 lambda _checked=False, marker=self.table.item(row, 0):
@@ -747,8 +780,29 @@ class PreprocessingPage(QWizardPage):
                         {field: labels[field] for field in fields}, self._lookup_dir
                     )
                 except LookupResolutionError:
-                    complete = False
-                    break
+                    if prefix == "city":
+                        county_city = labels["county"].removeprefix(
+                            "شهرستان "
+                        ).strip()
+                        try:
+                            resolved = resolve_lookup_fields(
+                                {
+                                    "province": labels["province"],
+                                    "county": labels["county"],
+                                    "city": county_city,
+                                },
+                                self._lookup_dir,
+                            )
+                        except LookupResolutionError:
+                            complete = False
+                            break
+                        labels["city"] = county_city
+                        self.table.item(
+                            row, self.HEADERS.index("شهر")
+                        ).setText(county_city)
+                    else:
+                        complete = False
+                        break
                 self.table.item(row, self.HEADERS.index(code_header)).setText(
                     resolved.get(f"{prefix}_code", "")
                 )
@@ -810,7 +864,7 @@ class DeclarationContentPage(QWizardPage):
         self.description.setPlaceholderText(
             "شرح اظهارنامه را کامل و دقیق وارد کنید. این متن قبل از ثبت قابل بازبینی است."
         )
-        self.description.setMinimumHeight(160)
+        self.description.setMinimumHeight(480)
         self.attachment_list = QListWidget()
         self.attachment_list.setAlternatingRowColors(True)
         self.attachment_kind = QLineEdit(
@@ -841,16 +895,43 @@ class DeclarationContentPage(QWizardPage):
         attachment_buttons.addStretch()
 
         group = QGroupBox("محتوای اظهارنامه")
-        form = QFormLayout(group)
-        form.addRow("مخاطب فعال:", self.recipient_combo)
-        form.addRow("", self.active_recipient_label)
-        form.addRow("موضوع اظهارنامه:", self.subject)
-        form.addRow("شرح اظهارنامه:", self.description)
-        form.addRow("فایل‌های پیوست:", self.attachment_list)
-        form.addRow("نوع پیوست‌ها:", self.attachment_kind)
-        form.addRow("شماره پیوست‌ها:", self.attachment_number)
-        form.addRow("تاریخ پیوست‌ها:", self.attachment_date)
-        form.addRow("", attachment_buttons)
+        group_layout = QVBoxLayout(group)
+
+        recipient_fields = QWidget()
+        recipient_form = QFormLayout(recipient_fields)
+        recipient_form.setContentsMargins(0, 0, 0, 0)
+        recipient_form.addRow("مخاطب فعال:", self.recipient_combo)
+        recipient_form.addRow("", self.active_recipient_label)
+        recipient_form.addRow("موضوع اظهارنامه:", self.subject)
+
+        description_field = QWidget()
+        description_layout = QVBoxLayout(description_field)
+        description_layout.setContentsMargins(0, 0, 0, 0)
+        description_layout.addWidget(QLabel("شرح اظهارنامه:"))
+        description_layout.addWidget(self.description)
+
+        content_row = QHBoxLayout()
+        content_row.setDirection(QBoxLayout.Direction.RightToLeft)
+        content_row.addWidget(recipient_fields, 1)
+        content_row.addWidget(description_field, 3)
+        group_layout.addLayout(content_row)
+
+        group_layout.addWidget(QLabel("فایل‌های پیوست:"))
+        group_layout.addWidget(self.attachment_list)
+
+        attachment_fields = QWidget()
+        attachment_form = QFormLayout(attachment_fields)
+        attachment_form.setContentsMargins(0, 0, 0, 0)
+        attachment_form.addRow("نوع پیوست‌ها:", self.attachment_kind)
+        attachment_form.addRow("شماره پیوست‌ها:", self.attachment_number)
+        attachment_form.addRow("تاریخ پیوست‌ها:", self.attachment_date)
+
+        attachment_fields_row = QHBoxLayout()
+        attachment_fields_row.setDirection(QBoxLayout.Direction.RightToLeft)
+        attachment_fields_row.addWidget(attachment_fields, 1)
+        attachment_fields_row.addStretch(3)
+        group_layout.addLayout(attachment_fields_row)
+        group_layout.addLayout(attachment_buttons)
 
         guidance = QLabel(
             "راهنما: اگر شرح و پیوست‌ها برای همه یکسان است، تیک بالا را روشن "
