@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from sana_declaration_uploader.live_browser import (
     LiveBrowserError,
@@ -31,6 +31,9 @@ class _Locator:
     def fill(self, value):
         self.page.calls.append(("fill", self.selector, value))
 
+    def press(self, key):
+        self.page.calls.append(("press", self.selector, key))
+
     def click(self):
         self.page.calls.append(("click", self.selector))
         if self.selector == "#frmCheckOTP button":
@@ -38,6 +41,13 @@ class _Locator:
 
     def wait_for(self, **kwargs):
         self.page.calls.append(("wait_for", self.selector, kwargs["state"]))
+
+    def locator(self, selector):
+        return _Locator(self.page, f"{self.selector} >> {selector}")
+
+    def get_attribute(self, name):
+        self.page.calls.append(("get_attribute", self.selector, name))
+        return ""
 
     def is_visible(self):
         if self.selector == "#menu4Container":
@@ -72,6 +82,11 @@ class _Page:
             name: values["label"]
             for name, values in payload.items()
         }
+
+    def wait_for_function(self, _script, **kwargs):
+        self.calls.append(
+            ("wait_for_function", kwargs["timeout"], kwargs.get("arg"))
+        )
 
 
 class LiveBrowserLoginTests(unittest.TestCase):
@@ -201,7 +216,20 @@ class DeclarationPageTests(unittest.TestCase):
                 ("click", "#frmSetPetitions button"),
                 ("wait_for", "#txtUnitCode"),
                 ("fill", "#txtUnitCode"),
+                ("press", "#txtUnitCode"),
+                ("wait_for_function", 60000),
                 ("click", "#newPetition"),
+                (
+                    "wait_for",
+                    "//div[contains(@class, 'main-step')]"
+                    "//h5[normalize-space()='ثبت و اصلاح اظهارنامه']",
+                ),
+                (
+                    "click",
+                    "//div[contains(@class, 'main-step')]"
+                    "//h5[normalize-space()='ثبت و اصلاح اظهارنامه']",
+                ),
+                ("click", "#rdbReplayToDeclaration"),
                 ("wait_for", "#replayToDeclaration"),
                 ("fill", "#replayToDeclaration"),
                 ("click", "#btnNext"),
@@ -221,6 +249,45 @@ class DeclarationPageTests(unittest.TestCase):
             page.calls.index(("fill", "#txtUnitCode", "00006")),
             page.calls.index(("click", "#newPetition")),
         )
+        self.assertNotIn(("click", "#rdbReplayToDeclaration"), page.calls)
+        self.assertFalse(
+            any(call[0:2] == ("fill", "#replayToDeclaration") for call in page.calls)
+        )
+
+    def test_stops_before_opening_wizard_when_ministry_unit_is_not_resolved(self):
+        page = _Page()
+        page.wait_for_function = Mock(side_effect=TimeoutError)
+        draft = DeclarationDraft(source_dir=Path("input"), fields={})
+
+        with self.assertRaisesRegex(
+            LiveBrowserError, "ministry_court_unit_not_resolved"
+        ):
+            PlaywrightDeclarationPage(page).open_draft_wizard(draft)
+
+        self.assertNotIn(("click", "#newPetition"), page.calls)
+
+    def test_stops_when_declaration_edit_step_does_not_become_visible(self):
+        page = _Page()
+        original_locator = page.locator
+        edit_step = Mock()
+        edit_step.wait_for.side_effect = TimeoutError
+        page.locator = lambda selector: (
+            edit_step
+            if selector
+            == (
+                "//div[contains(@class, 'main-step')]"
+                "//h5[normalize-space()='ثبت و اصلاح اظهارنامه']"
+            )
+            else original_locator(selector)
+        )
+        draft = DeclarationDraft(source_dir=Path("input"), fields={})
+
+        with self.assertRaisesRegex(
+            LiveBrowserError, "declaration_edit_step_not_unique"
+        ):
+            PlaywrightDeclarationPage(page).open_draft_wizard(draft)
+
+        edit_step.click.assert_not_called()
 
 
 class RecipientPageTests(unittest.TestCase):
@@ -262,8 +329,40 @@ class RecipientPageTests(unittest.TestCase):
         self.assertIn(("click", "#rdbRealIrMale"), page.calls)
         self.assertEqual(
             [call for call in page.calls if call[0:2] == ("click", "#btnNext")],
-            [("click", "#btnNext"), ("click", "#btnNext")],
+            [
+                ("click", "#btnNext"),
+                ("click", "#btnNext"),
+            ],
         )
+        subject_step = (
+            "//*[@ng-repeat='step in navCtrl.currentStep.innerSteps']"
+            "[.//*[contains(concat(' ', normalize-space(@class), ' '), ' step ') "
+            "and normalize-space()='موضوع اظهارنامه']]"
+        )
+        self.assertIn(("click", subject_step), page.calls)
+        self.assertIn(
+            ("wait_for_function", 60000, "موضوع اظهارنامه"), page.calls
+        )
+        self.assertIn(("wait_for", "#btnAddSection", "visible"), page.calls)
+
+    def test_stops_when_subject_step_is_not_available(self):
+        page = _Page()
+        original_locator = page.locator
+        subject_step = Mock()
+        subject_step.count.return_value = 1
+        subject_step.locator.return_value.get_attribute.return_value = "lock"
+        page.locator = lambda selector: (
+            subject_step
+            if "normalize-space()='موضوع اظهارنامه'" in selector
+            else original_locator(selector)
+        )
+
+        with self.assertRaisesRegex(
+            LiveBrowserError, "form_step_not_available:موضوع اظهارنامه"
+        ):
+            PlaywrightRecipientPage(page).fill_natural_person(self._draft())
+
+        subject_step.click.assert_not_called()
 
     def test_optional_identity_fields_are_not_filled_when_absent(self):
         page = _Page()

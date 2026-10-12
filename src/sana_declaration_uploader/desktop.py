@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import traceback
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent
@@ -1235,10 +1236,20 @@ class LoginPage(QWizardPage):
         test_row.addWidget(test_button)
         test_row.addStretch()
 
+        self.python_output = QTextEdit()
+        self.python_output.setReadOnly(True)
+        self.python_output.setMinimumHeight(150)
+        self.python_output.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.python_output.setPlaceholderText(
+            "خروجی پردازش و جزئیات خطا در این بخش نمایش داده می‌شود."
+        )
+
         layout = QVBoxLayout(self)
         layout.addWidget(guidance)
         layout.addWidget(form_group)
         layout.addLayout(test_row)
+        layout.addWidget(QLabel("خروجی Python (قابل انتخاب و کپی):"))
+        layout.addWidget(self.python_output)
         layout.addStretch()
 
         for field in (
@@ -1352,8 +1363,12 @@ class RecipientWizard(QWizard):
         self.button(QWizard.WizardButton.FinishButton).setObjectName("PrimaryButton")
 
     def _register_declarations(self, credentials: LoginCredentials) -> bool:
+        output = self.login_page.python_output
+        output.clear()
+        output.append("شروع آماده‌سازی اظهارنامه‌ها...")
         candidates = self.preprocessing_page.candidates()
         if not candidates:
+            output.append("خطا: هیچ مخاطبی برای پردازش وجود ندارد.")
             QMessageBox.warning(self, "مخاطب وجود ندارد", "حداقل یک ردیف لازم است.")
             return False
         try:
@@ -1364,8 +1379,11 @@ class RecipientWizard(QWizard):
                 lookup_dir=self._lookup_dir,
             )
         except LookupResolutionError as exc:
+            output.append(f"خطای کدهای ثنا: {exc}")
             QMessageBox.warning(self, "کدهای ثنا ناقص", str(exc))
             return False
+
+        output.append(f"تعداد اظهارنامه‌های آماده: {len(drafts)}")
 
         answer = QMessageBox.question(
             self,
@@ -1377,6 +1395,7 @@ class RecipientWizard(QWizard):
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
+            output.append("عملیات توسط کاربر لغو شد.")
             return False
 
         first_login = True
@@ -1416,6 +1435,7 @@ class RecipientWizard(QWizard):
             ) == QMessageBox.StandardButton.Yes
 
         try:
+            output.append("شروع عملیات مرورگر...")
             results = run_live_upload_batch(
                 drafts,
                 credentials_provider,
@@ -1432,6 +1452,7 @@ class RecipientWizard(QWizard):
                     failures.append(
                         f"ردیف {index} ({name}): {result.message or result.status}"
                     )
+                    output.append(failures[-1])
                     continue
                 try:
                     save_verified_result(
@@ -1441,9 +1462,16 @@ class RecipientWizard(QWizard):
                     )
                 except ResultPersistenceError as exc:
                     failures.append(f"ردیف {index}: {exc}")
+                    output.append(failures[-1])
                 else:
                     successful += 1
+                    output.append(
+                        f"ردیف {index}: ثبت موفق با کد رهگیری "
+                        f"{result.tracking_code}"
+                    )
         except (LiveBrowserError, ValueError) as exc:
+            output.append("\n--- traceback ---")
+            output.append(traceback.format_exc())
             QMessageBox.critical(self, "ثبت متوقف شد", str(exc))
             return False
 
@@ -1461,6 +1489,7 @@ class RecipientWizard(QWizard):
             "ثبت کامل شد",
             f"تعداد {successful} اظهارنامه با کد رهگیری معتبر ثبت شد.",
         )
+        output.append(f"پردازش کامل شد. موفق: {successful}")
         return True
 
     def _page_changed(self, page_id: int) -> None:

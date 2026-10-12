@@ -29,7 +29,7 @@ from sana_declaration_uploader.desktop import (
     _save_declaration_settings,
     _save_login_settings,
 )
-from sana_declaration_uploader.live_browser import LoginCredentials
+from sana_declaration_uploader.live_browser import LiveBrowserError, LoginCredentials
 from sana_declaration_uploader.models import (
     DeclarationDraft,
     RecipientCandidate,
@@ -95,6 +95,17 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertIn(
             "حذف ردیف",
             [button.text() for button in wizard.review_page.findChildren(QPushButton)],
+        )
+
+    def test_last_page_has_read_only_copyable_python_output(self) -> None:
+        wizard = RecipientWizard()
+        output = wizard.login_page.python_output
+
+        output.setPlainText("traceback sample")
+        self.assertTrue(output.isReadOnly())
+        self.assertEqual(output.toPlainText(), "traceback sample")
+        self.assertTrue(
+            output.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse
         )
 
     def test_file_page_shows_loaded_file_count(self) -> None:
@@ -660,6 +671,51 @@ class RecipientWizardTests(unittest.TestCase):
         )
         self.assertIn("ناموفق: 1", warning.call_args.args[2])
         self.assertIn("recipient_person_type_not_supported", warning.call_args.args[2])
+        self.assertIn("ردیف 1: ثبت موفق", wizard.login_page.python_output.toPlainText())
+        self.assertIn(
+            "recipient_person_type_not_supported",
+            wizard.login_page.python_output.toPlainText(),
+        )
+
+    def test_registration_writes_chained_traceback_to_python_output(self) -> None:
+        wizard = RecipientWizard()
+        candidate = RecipientCandidate(source_path=Path("one.docx"), full_name="نمونه")
+        draft = DeclarationDraft(source_dir=Path("one"), fields={})
+
+        def fail_upload(*_args, **_kwargs):
+            try:
+                raise TimeoutError("browser timed out")
+            except TimeoutError as exc:
+                raise LiveBrowserError("site_response_ambiguous") from exc
+
+        with (
+            patch.object(
+                wizard.preprocessing_page, "candidates", return_value=(candidate,)
+            ),
+            patch.object(wizard.content_page, "payloads", return_value={}),
+            patch(
+                "sana_declaration_uploader.desktop._build_desktop_drafts",
+                return_value=(draft,),
+            ),
+            patch.object(
+                QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+            ),
+            patch(
+                "sana_declaration_uploader.desktop.run_live_upload_batch",
+                side_effect=fail_upload,
+            ),
+            patch.object(QMessageBox, "critical"),
+        ):
+            completed = wizard._register_declarations(
+                LoginCredentials("national", "password", "identity", "otp")
+            )
+
+        output = wizard.login_page.python_output.toPlainText()
+        self.assertFalse(completed)
+        self.assertIn("TimeoutError: browser timed out", output)
+        self.assertIn("LiveBrowserError: site_response_ambiguous", output)
+        self.assertNotIn("password", output)
+        self.assertNotIn("otp", output)
 
     def test_reviewed_rows_build_registration_drafts_with_exact_lookups(self) -> None:
         with TemporaryDirectory() as directory:

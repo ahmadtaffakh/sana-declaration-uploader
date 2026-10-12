@@ -265,12 +265,38 @@ class PlaywrightDeclarationPage:
         court_unit_code = page.locator("#txtUnitCode")
         court_unit_code.wait_for(state="visible", timeout=self.timeout_ms)
         court_unit_code.fill(MINISTRY_COURT_UNIT_CODE)
+        court_unit_code.press("Tab")
+        try:
+            page.wait_for_function(
+                """() => {
+                    const name = document.querySelector('#txtUnitName');
+                    const button = document.querySelector('#newPetition');
+                    return Boolean(name?.value?.trim())
+                        && button
+                        && !button.disabled
+                        && !button.classList.contains('disabled');
+                }""",
+                timeout=self.timeout_ms,
+            )
+        except Exception as exc:
+            raise LiveBrowserError("ministry_court_unit_not_resolved") from exc
         page.locator("#newPetition").click()
 
-        related_number = page.locator("#replayToDeclaration")
-        related_number.wait_for(state="visible", timeout=self.timeout_ms)
+        edit_step = page.locator(
+            "//div[contains(@class, 'main-step')]"
+            "//h5[normalize-space()='ثبت و اصلاح اظهارنامه']"
+        )
+        try:
+            edit_step.wait_for(state="visible", timeout=self.timeout_ms)
+        except Exception as exc:
+            raise LiveBrowserError("declaration_edit_step_not_unique") from exc
+        edit_step.click()
+
         value = draft.fields.get("related_declaration_number", "").strip()
         if value:
+            page.locator("#rdbReplayToDeclaration").click()
+            related_number = page.locator("#replayToDeclaration")
+            related_number.wait_for(state="visible", timeout=self.timeout_ms)
             related_number.fill(value)
         page.locator("#btnNext").click()
         page.locator("#legalIranianPerson").wait_for(
@@ -366,6 +392,12 @@ class PlaywrightRecipientPage:
                 "textarea[ng-model='viewModel.currentPetitionPerson.HomeAddress']"
             ).fill(address)
         page.locator("#btnNext").click()
+        _open_form_step(
+            page,
+            "موضوع اظهارنامه",
+            "#btnAddSection",
+            self.timeout_ms,
+        )
 
     def validate(self, draft: DeclarationDraft) -> None:
         fields = draft.fields
@@ -393,7 +425,6 @@ class PlaywrightRecipientPage:
             raise LiveBrowserError("recipient_gender_unsupported")
         self.page.locator(selector).click()
 
-
 _SELECT_RECIPIENT_LOOKUPS = """payload => {
     const containers = document.querySelectorAll('.ui-select-container');
     const selections = [
@@ -417,6 +448,63 @@ _SELECT_RECIPIENT_LOOKUPS = """payload => {
     }
     return result;
 }"""
+
+
+def _open_form_step(
+    page: object,
+    title: str,
+    ready_selector: str,
+    timeout_ms: int,
+) -> None:
+    step = page.locator(
+        "//*[@ng-repeat='step in navCtrl.currentStep.innerSteps']"
+        "[.//*[contains(concat(' ', normalize-space(@class), ' '), ' step ') "
+        f"and normalize-space()='{title}']]"
+    )
+    try:
+        step.wait_for(state="visible", timeout=timeout_ms)
+    except Exception as exc:
+        raise LiveBrowserError(f"form_step_not_unique:{title}") from exc
+    if step.count() != 1:
+        raise LiveBrowserError(f"form_step_not_unique:{title}")
+
+    try:
+        status_classes = (
+            step.locator("[jud-static-include] > div").get_attribute("class") or ""
+        ).split()
+    except Exception as exc:
+        raise LiveBrowserError(f"form_step_status_not_resolved:{title}") from exc
+    if {"done", "disable", "lock"}.intersection(status_classes):
+        raise LiveBrowserError(f"form_step_not_available:{title}")
+
+    try:
+        step.click()
+        page.wait_for_function(
+            r"""title => {
+                const normalize = value => (value || '')
+                    .replace(/\u0643/g, '\u06a9')
+                    .replace(/[\u064a\u0649]/g, '\u06cc')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                return [...document.querySelectorAll(
+                    '[ng-repeat="step in navCtrl.currentStep.innerSteps"]'
+                )].some(item => {
+                    const label = item.querySelector('.step.ng-binding');
+                    const status = item.querySelector(
+                        '[jud-static-include] > div'
+                    );
+                    return normalize(label?.textContent) === normalize(title)
+                        && status?.classList.contains('hover');
+                });
+            }""",
+            arg=title,
+            timeout=timeout_ms,
+        )
+        page.locator(ready_selector).wait_for(
+            state="visible", timeout=timeout_ms
+        )
+    except Exception as exc:
+        raise LiveBrowserError(f"form_step_navigation_failed:{title}") from exc
 
 
 def _lookup_payload(
