@@ -14,6 +14,7 @@ from .validator import validate_draft
 
 LOGIN_URL = "https://person.adliran.ir/LegalPerson/Index"
 OTP_SELECTOR = "#otpPassowrd, #otpPassword, #otp, input[placeholder*='کد']"
+MINISTRY_COURT_UNIT_CODE = "00006"
 REQUIRED_CREDENTIALS = (
     "personNationalCode",
     "personUserPassword",
@@ -261,6 +262,9 @@ class PlaywrightDeclarationPage:
                 agreement.click()
             page.locator("#frmSetPetitions button").click()
 
+        court_unit_code = page.locator("#txtUnitCode")
+        court_unit_code.wait_for(state="visible", timeout=self.timeout_ms)
+        court_unit_code.fill(MINISTRY_COURT_UNIT_CODE)
         page.locator("#newPetition").click()
 
         related_number = page.locator("#replayToDeclaration")
@@ -581,13 +585,22 @@ def upload_authenticated_batch(
     """Upload drafts once on one reusable page, reauthenticating between items."""
 
     draft_list = tuple(drafts)
-    for draft in draft_list:
-        _validate_live_draft(draft)
+    results: list[UploadResult | None] = [None] * len(draft_list)
+    valid_drafts: list[tuple[int, DeclarationDraft]] = []
+    for index, draft in enumerate(draft_list):
+        try:
+            _validate_live_draft(draft)
+        except LiveBrowserError as exc:
+            results[index] = UploadResult(status="failed", message=str(exc))
+        else:
+            valid_drafts.append((index, draft))
 
-    results: list[UploadResult] = []
     session = ReusableLoginSession(page, timeout_ms=timeout_ms)
 
-    def upload_one(draft: DeclarationDraft, current_page: object) -> None:
+    def upload_one(
+        item: tuple[int, DeclarationDraft], current_page: object
+    ) -> None:
+        index, draft = item
         try:
             result = PlaywrightDeclarationUploader(
                 current_page,
@@ -598,10 +611,10 @@ def upload_authenticated_batch(
             raise
         except Exception as exc:
             raise LiveBrowserError("site_response_ambiguous") from exc
-        results.append(result)
+        results[index] = result
 
-    run_authenticated_batch(draft_list, session, credentials_provider, upload_one)
-    return tuple(results)
+    run_authenticated_batch(valid_drafts, session, credentials_provider, upload_one)
+    return tuple(result for result in results if result is not None)
 
 
 def _validate_live_draft(draft: DeclarationDraft) -> None:

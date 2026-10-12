@@ -199,6 +199,8 @@ class DeclarationPageTests(unittest.TestCase):
                 ("click", "#rdbSetPetition"),
                 ("click", "#chkAgreement"),
                 ("click", "#frmSetPetitions button"),
+                ("wait_for", "#txtUnitCode"),
+                ("fill", "#txtUnitCode"),
                 ("click", "#newPetition"),
                 ("wait_for", "#replayToDeclaration"),
                 ("fill", "#replayToDeclaration"),
@@ -208,14 +210,17 @@ class DeclarationPageTests(unittest.TestCase):
         )
         self.assertNotIn(("click", "#legalIranianPerson"), page.calls)
 
-    def test_court_code_is_not_required(self):
+    def test_enters_ministry_court_unit_code_before_opening_wizard(self):
         page = _Page()
         draft = DeclarationDraft(source_dir=Path("input"), fields={})
 
         PlaywrightDeclarationPage(page).open_draft_wizard(draft)
 
-        self.assertNotIn(("wait_for", "#txtUnitCode"), page.calls)
-        self.assertNotIn(("fill", "#txtUnitCode", ""), page.calls)
+        self.assertIn(("fill", "#txtUnitCode", "00006"), page.calls)
+        self.assertLess(
+            page.calls.index(("fill", "#txtUnitCode", "00006")),
+            page.calls.index(("click", "#newPetition")),
+        )
 
 
 class RecipientPageTests(unittest.TestCase):
@@ -399,27 +404,32 @@ class DeclarationUploaderTests(unittest.TestCase):
         self.assertEqual(results, expected)
         self.assertEqual([call.args[0] for call in upload.call_args_list], list(drafts))
 
-    def test_batch_prevalidates_all_drafts_before_login(self):
+    def test_batch_skips_invalid_draft_and_processes_valid_rows(self):
         page = _Page()
+        page.authenticated = True
         drafts = (
             DeclarationDraft(source_dir=Path("one"), fields={}),
             DeclarationDraft(source_dir=Path("two"), fields={}),
         )
-        provider_calls = []
+        uploaded = UploadResult(status="success", tracking_code="111111111111")
 
         with patch(
             "sana_declaration_uploader.live_browser._validate_live_draft",
-            side_effect=(None, LiveBrowserError("draft_invalid")),
-        ), self.assertRaisesRegex(LiveBrowserError, "draft_invalid"):
-            upload_authenticated_batch(
+            side_effect=(LiveBrowserError("draft_invalid"), None),
+        ), patch.object(
+            PlaywrightDeclarationUploader, "upload", return_value=uploaded
+        ) as upload:
+            results = upload_authenticated_batch(
                 page,
                 drafts,
-                lambda: provider_calls.append(True),
+                lambda: None,
                 lambda _draft: True,
             )
 
-        self.assertEqual(provider_calls, [])
-        self.assertEqual(page.calls, [])
+        self.assertEqual(results[0].status, "failed")
+        self.assertEqual(results[0].message, "draft_invalid")
+        self.assertEqual(results[1], uploaded)
+        upload.assert_called_once_with(drafts[1])
 
 
 class SubmissionPageTests(unittest.TestCase):

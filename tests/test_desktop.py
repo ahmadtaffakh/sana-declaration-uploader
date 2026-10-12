@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QLabel,
+    QMessageBox,
     QPushButton,
     QWizard,
 )
@@ -28,7 +29,12 @@ from sana_declaration_uploader.desktop import (
     _save_declaration_settings,
     _save_login_settings,
 )
-from sana_declaration_uploader.models import RecipientCandidate
+from sana_declaration_uploader.live_browser import LoginCredentials
+from sana_declaration_uploader.models import (
+    DeclarationDraft,
+    RecipientCandidate,
+    UploadResult,
+)
 
 
 class RecipientWizardTests(unittest.TestCase):
@@ -613,6 +619,47 @@ class RecipientWizardTests(unittest.TestCase):
             "آزمایش ورود بدون ثبت",
             [button.text() for button in page.findChildren(QPushButton)],
         )
+
+    def test_registration_saves_successes_and_reports_failed_rows(self) -> None:
+        wizard = RecipientWizard()
+        candidates = (
+            RecipientCandidate(source_path=Path("one.docx"), full_name="شخص اول"),
+            RecipientCandidate(source_path=Path("two.docx"), full_name="شخص دوم"),
+        )
+        drafts = (
+            DeclarationDraft(source_dir=Path("one"), fields={
+                "recipient_first_name": "شخص", "recipient_last_name": "اول",
+            }),
+            DeclarationDraft(source_dir=Path("two"), fields={
+                "recipient_first_name": "شخص", "recipient_last_name": "دوم",
+            }),
+        )
+        results = (
+            UploadResult(status="success", tracking_code="111111111111"),
+            UploadResult(status="failed", message="recipient_person_type_not_supported"),
+        )
+
+        with (
+            patch.object(wizard.preprocessing_page, "candidates", return_value=candidates),
+            patch.object(wizard.content_page, "payloads", return_value={}),
+            patch("sana_declaration_uploader.desktop._build_desktop_drafts", return_value=drafts),
+            patch.object(
+                QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+            ),
+            patch("sana_declaration_uploader.desktop.run_live_upload_batch", return_value=results),
+            patch("sana_declaration_uploader.desktop.save_verified_result") as save,
+            patch.object(QMessageBox, "warning") as warning,
+        ):
+            completed = wizard._register_declarations(
+                LoginCredentials("national", "password", "identity", "otp")
+            )
+
+        self.assertTrue(completed)
+        save.assert_called_once_with(
+            drafts[0], results[0], filename="result-001.json"
+        )
+        self.assertIn("ناموفق: 1", warning.call_args.args[2])
+        self.assertIn("recipient_person_type_not_supported", warning.call_args.args[2])
 
     def test_reviewed_rows_build_registration_drafts_with_exact_lookups(self) -> None:
         with TemporaryDirectory() as directory:

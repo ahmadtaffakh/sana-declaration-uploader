@@ -1421,20 +1421,45 @@ class RecipientWizard(QWizard):
                 credentials_provider,
                 final_confirmation,
             )
+            successful = 0
+            failures = []
             for index, (draft, result) in enumerate(zip(drafts, results), start=1):
-                save_verified_result(
-                    draft,
-                    result,
-                    filename=f"result-{index:03d}.json",
-                )
-        except (LiveBrowserError, ResultPersistenceError, ValueError) as exc:
+                if result.status != "success":
+                    name = " ".join(filter(None, (
+                        draft.fields.get("recipient_first_name", ""),
+                        draft.fields.get("recipient_last_name", ""),
+                    ))) or "بدون نام"
+                    failures.append(
+                        f"ردیف {index} ({name}): {result.message or result.status}"
+                    )
+                    continue
+                try:
+                    save_verified_result(
+                        draft,
+                        result,
+                        filename=f"result-{index:03d}.json",
+                    )
+                except ResultPersistenceError as exc:
+                    failures.append(f"ردیف {index}: {exc}")
+                else:
+                    successful += 1
+        except (LiveBrowserError, ValueError) as exc:
             QMessageBox.critical(self, "ثبت متوقف شد", str(exc))
             return False
+
+        if failures:
+            QMessageBox.warning(
+                self,
+                "پردازش با خطا پایان یافت",
+                f"موفق: {successful}\nناموفق: {len(failures)}\n\n"
+                + "\n".join(failures),
+            )
+            return successful > 0
 
         QMessageBox.information(
             self,
             "ثبت کامل شد",
-            f"تعداد {len(results)} اظهارنامه با کد رهگیری معتبر ثبت شد.",
+            f"تعداد {successful} اظهارنامه با کد رهگیری معتبر ثبت شد.",
         )
         return True
 
