@@ -86,6 +86,7 @@ def extract_recipients(paths: list[Path]) -> tuple[RecipientCandidate, ...]:
             if (
                 not candidate.full_name
                 and notice_number in groups_with_parties
+                and "party_table_unparsed" not in candidate.issues
             ):
                 continue
             issues = candidate.issues
@@ -101,7 +102,7 @@ def extract_recipients(paths: list[Path]) -> tuple[RecipientCandidate, ...]:
                     issues=issues,
                 )
             )
-    return tuple(result)
+    return _merge_unique_notice_duplicates(tuple(result))
 
 
 def extract_recipient(path: Path) -> RecipientCandidate:
@@ -183,17 +184,35 @@ def _pdf_table_parties(source: Path) -> tuple[RecipientCandidate, ...]:
     candidates = []
     for group in extract_pdf_party_groups(source):
         names = tuple(str(name) for name in group["names"] if str(name).strip())
+        group_issues = tuple(str(issue) for issue in group.get("issues", ()))
         if not names:
+            if group_issues:
+                candidates.append(
+                    RecipientCandidate(
+                        source_path=source,
+                        role=str(group["role"]),
+                        person_type=str(group["person_type"]),
+                        evidence=str(group["evidence"]),
+                        extraction_method="local_pdf_table",
+                        issues=group_issues,
+                    )
+                )
             continue
         addresses = tuple(
             str(address) for address in group["addresses"] if str(address).strip()
         )
+        national_ids = tuple(
+            str(value) for value in group.get("national_ids", ()) if str(value).strip()
+        )
         grouped = len(names) > 1
-        issues = ("grouped_parties_requires_review",) if grouped else ()
+        issues = group_issues
+        if grouped and "grouped_parties_requires_review" not in issues:
+            issues = (*issues, "grouped_parties_requires_review")
         candidates.append(
             RecipientCandidate(
                 source_path=source,
                 full_name="، ".join(names),
+                national_id=national_ids[0] if len(national_ids) == 1 else "",
                 address=" | ".join(addresses),
                 role=str(group["role"]),
                 person_type=str(group["person_type"]),
@@ -203,6 +222,76 @@ def _pdf_table_parties(source: Path) -> tuple[RecipientCandidate, ...]:
             )
         )
     return tuple(candidates)
+
+
+def _merge_unique_notice_duplicates(
+    candidates: tuple[RecipientCandidate, ...],
+) -> tuple[RecipientCandidate, ...]:
+    """Enrich one uniquely matched party across files in the same notice."""
+
+    merged = list(candidates)
+    removed: set[int] = set()
+    for index, candidate in enumerate(merged):
+        if index in removed or not candidate.notice_number or not candidate.full_name:
+            continue
+        key = _name_key(candidate.full_name)
+        matching_indexes = [
+            position
+            for position, item in enumerate(merged)
+            if position not in removed
+            and position != index
+            and item.notice_number == candidate.notice_number
+            and item.source_path != candidate.source_path
+            and _name_key(item.full_name) == key
+            and not {candidate.role, item.role}.isdisjoint({"addressee"})
+        ]
+        if len(matching_indexes) != 1:
+            continue
+        other_index = matching_indexes[0]
+        if other_index < index:
+            continue
+        other = merged[other_index]
+        primary_index, detail_index = (
+            (other_index, index)
+            if candidate.role == "addressee" and other.role != "addressee"
+            else (index, other_index)
+        )
+        primary = merged[primary_index]
+        detail = merged[detail_index]
+        identity_available = any(
+            (
+                primary.national_id or detail.national_id,
+                primary.employee_code or detail.employee_code,
+                primary.address or detail.address,
+                primary.postal_code or detail.postal_code,
+            )
+        )
+        issues = tuple(dict.fromkeys((*primary.issues, *detail.issues)))
+        if identity_available:
+            issues = tuple(
+                issue for issue in issues if issue != "identity_details_missing"
+            )
+        merged[primary_index] = replace(
+            primary,
+            national_id=primary.national_id or detail.national_id,
+            employee_code=primary.employee_code or detail.employee_code,
+            birth_date=primary.birth_date or detail.birth_date,
+            postal_code=primary.postal_code or detail.postal_code,
+            address=primary.address or detail.address,
+            evidence=primary.evidence or detail.evidence,
+            issues=issues,
+        )
+        removed.add(detail_index)
+    return tuple(item for index, item in enumerate(merged) if index not in removed)
+
+
+def _name_key(value: str) -> str:
+    normalized = " ".join(_normalize_text(value).split()).casefold()
+    for marker in _LEGAL_PERSON_MARKERS:
+        prefix = marker.casefold() + " "
+        if normalized.startswith(prefix):
+            return normalized[len(prefix):]
+    return normalized
 
 
 def _normalize_text(text: str) -> str:

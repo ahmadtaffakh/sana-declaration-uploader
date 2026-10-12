@@ -1,6 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from docx import Document
 
@@ -142,6 +143,77 @@ class RecipientExtractionTests(unittest.TestCase):
             party = next(candidate for candidate in candidates if candidate.full_name)
             self.assertEqual(party.related_declaration_number, "")
             self.assertIn("related_declaration_ambiguous", party.issues)
+
+    def test_structured_but_unparsed_pdf_does_not_fall_back_to_narrative(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "unknown.pdf"
+            path.write_bytes(b"placeholder")
+            table_result = ({
+                "role": "",
+                "names": (),
+                "addresses": (),
+                "person_type": "unknown",
+                "evidence": "جدول اشخاص شناسایی شد اما قابل استخراج نبود.",
+                "issues": ("party_table_unparsed",),
+            },)
+            with (
+                patch(
+                    "sana_declaration_uploader.extraction._read_text",
+                    return_value="مخاطبین: شرکت اشتباه در متن شرح",
+                ),
+                patch(
+                    "sana_declaration_uploader.extraction.extract_pdf_party_groups",
+                    return_value=table_result,
+                ),
+            ):
+                candidates = extract_recipient_candidates(path)
+
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0].full_name, "")
+            self.assertIn("party_table_unparsed", candidates[0].issues)
+
+    def test_unique_notice_addressee_enriches_matching_party_without_duplicate(self) -> None:
+        with TemporaryDirectory() as directory:
+            source_dir = Path(directory) / "1405-07-19__140550100018568161__attachments-1"
+            source_dir.mkdir()
+            appeal = source_dir / "appeal.pdf"
+            notice = source_dir / "notice.pdf"
+            appeal.write_bytes(b"appeal")
+            notice.write_bytes(b"notice")
+
+            def table_groups(path: Path):
+                if path.name == "appeal.pdf":
+                    return ({
+                        "role": "respondent",
+                        "names": ("شرکت نمونه",),
+                        "addresses": ("",),
+                        "person_type": "legal",
+                        "evidence": "شرکت نمونه",
+                    },)
+                return ({
+                    "role": "addressee",
+                    "names": ("نمونه",),
+                    "addresses": ("",),
+                    "national_ids": ("12345678901",),
+                    "person_type": "legal",
+                    "evidence": "نمونه",
+                },)
+
+            with (
+                patch(
+                    "sana_declaration_uploader.extraction._read_text",
+                    return_value="",
+                ),
+                patch(
+                    "sana_declaration_uploader.extraction.extract_pdf_party_groups",
+                    side_effect=table_groups,
+                ),
+            ):
+                candidates = extract_recipients([appeal, notice])
+
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0].role, "respondent")
+            self.assertEqual(candidates[0].national_id, "12345678901")
 
     def test_empty_source_list_is_rejected(self) -> None:
         with self.assertRaisesRegex(DocumentExtractionError, "source_files_missing"):

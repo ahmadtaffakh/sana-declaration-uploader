@@ -46,13 +46,81 @@ _PERSON_TYPE_DISPLAY = {
     "group": "گروه",
     "unknown": "نامشخص",
 }
+_ORGANIZATIONAL_STYLE = """
+QWizard, QWizardPage {
+    background-color: #F4F7FB;
+    color: #1F2937;
+    font-family: "Segoe UI", "Tahoma";
+    font-size: 10pt;
+}
+QLabel#qt_wizard_title {
+    color: #173B5E;
+    font-size: 15pt;
+    font-weight: 700;
+}
+QLabel#qt_wizard_subtitle {
+    color: #526579;
+    font-size: 10pt;
+}
+QLabel#Guidance {
+    background-color: #EAF2F8;
+    border: 1px solid #C8D9E8;
+    border-radius: 6px;
+    color: #234765;
+    padding: 10px 12px;
+}
+QListWidget, QTableWidget {
+    background-color: #FFFFFF;
+    alternate-background-color: #F7FAFC;
+    border: 1px solid #CFDAE5;
+    border-radius: 6px;
+    gridline-color: #DCE5ED;
+    selection-background-color: #D9EAF7;
+    selection-color: #173B5E;
+}
+QHeaderView::section {
+    background-color: #E7EEF5;
+    color: #173B5E;
+    border: 0;
+    border-left: 1px solid #CFDAE5;
+    border-bottom: 1px solid #BCCBDA;
+    padding: 8px;
+    font-weight: 600;
+}
+QPushButton {
+    min-height: 32px;
+    min-width: 92px;
+    background-color: #FFFFFF;
+    border: 1px solid #AFC0D0;
+    border-radius: 5px;
+    color: #173B5E;
+    padding: 2px 14px;
+}
+QPushButton:hover { background-color: #EDF4FA; }
+QPushButton:pressed { background-color: #DCEAF5; }
+QPushButton:disabled {
+    background-color: #EEF1F4;
+    border-color: #D7DEE5;
+    color: #94A0AC;
+}
+QPushButton#PrimaryButton {
+    background-color: #1769AA;
+    border-color: #1769AA;
+    color: #FFFFFF;
+    font-weight: 600;
+}
+QPushButton#PrimaryButton:hover { background-color: #125A92; }
+"""
 
 
 class FileSelectionPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
-        self.setTitle("انتخاب اسناد")
-        self.setSubTitle("فایل‌های Word، PDF متنی یا متن ساده را انتخاب کنید.")
+        self.setTitle("<b>انتخاب اسناد و فایل‌های منبع</b>")
+        self.setSubTitle(
+            "فایل‌های Word، PDF متنی یا متن ساده را اضافه کنید؛ در این مرحله "
+            "هیچ اطلاعاتی در سامانه ثنا ثبت نمی‌شود."
+        )
         self.setAcceptDrops(True)
 
         self.file_list = QListWidget()
@@ -67,7 +135,15 @@ class FileSelectionPage(QWizardPage):
         buttons.addStretch()
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("فایل‌ها را اینجا رها کنید یا از دکمه زیر انتخاب کنید."))
+        guidance = QLabel(
+            "راهنما: فایل یا فایل‌های مربوط به یک پرونده را هم‌زمان اضافه کنید. "
+            "برنامه مشخصات اشخاص، نقش آنها و شماره‌های مرتبط را استخراج می‌کند. "
+            "در مرحله بعد فرصت دارید همه مقادیر را قبل از ادامه بررسی و اصلاح کنید."
+        )
+        guidance.setObjectName("Guidance")
+        guidance.setWordWrap(True)
+        layout.addWidget(guidance)
+        layout.addWidget(QLabel("فایل‌ها را اینجا رها کنید یا با دکمه زیر انتخاب کنید:"))
         layout.addWidget(self.file_list)
         layout.addLayout(buttons)
 
@@ -136,8 +212,10 @@ class RecipientReviewPage(QWizardPage):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setTitle("بازبینی اشخاص")
-        self.setSubTitle("مقادیر استخراج‌شده پیشنهادی هستند؛ آنها را بررسی و اصلاح کنید.")
+        self.setTitle("<b>بازبینی و تکمیل مشخصات اشخاص</b>")
+        self.setSubTitle(
+            "خروجی استخراج قطعی تلقی نمی‌شود؛ هر ردیف را با سند اصلی تطبیق دهید."
+        )
 
         self.table = QTableWidget(0, len(self.HEADERS))
         self.table.setHorizontalHeaderLabels(self.HEADERS)
@@ -155,6 +233,15 @@ class RecipientReviewPage(QWizardPage):
         buttons.addStretch()
 
         layout = QVBoxLayout(self)
+        guidance = QLabel(
+            "روش کار: ۱) نام و نقش هر شخص را کنترل کنید. ۲) خانه‌های خالی یا اشتباه "
+            "را مستقیم در جدول اصلاح کنید. ۳) اگر یک ردیف به پرونده شما مربوط نیست، "
+            "آن را انتخاب و حذف کنید. وضعیت «نیازمند اصلاح» یعنی دست‌کم یک مقدار "
+            "ضروری ناقص یا مشکوک است. پایان بازبینی به معنی ثبت نهایی در ثنا نیست."
+        )
+        guidance.setObjectName("Guidance")
+        guidance.setWordWrap(True)
+        layout.addWidget(guidance)
         layout.addWidget(self.table)
         layout.addLayout(buttons)
 
@@ -207,13 +294,27 @@ class RecipientWizard(QWizard):
         super().__init__()
         self.setWindowTitle("دستیار ثبت اظهارنامه ثنا")
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
+        self.setStyleSheet(_ORGANIZATIONAL_STYLE)
         self.resize(1180, 680)
         self.files_page = FileSelectionPage()
         self.review_page = RecipientReviewPage()
         self.addPage(self.files_page)
         self.addPage(self.review_page)
         self.currentIdChanged.connect(self._page_changed)
-        self.button(QWizard.WizardButton.FinishButton).setText("پایان بازبینی")
+        self.setButtonLayout([
+            QWizard.WizardButton.FinishButton,
+            QWizard.WizardButton.NextButton,
+            QWizard.WizardButton.BackButton,
+            QWizard.WizardButton.CancelButton,
+            QWizard.WizardButton.Stretch,
+        ])
+        self.setButtonText(QWizard.WizardButton.BackButton, "قبلی")
+        self.setButtonText(QWizard.WizardButton.NextButton, "بعدی")
+        self.setButtonText(QWizard.WizardButton.FinishButton, "پایان بازبینی")
+        self.setButtonText(QWizard.WizardButton.CancelButton, "انصراف")
+        self.button(QWizard.WizardButton.NextButton).setObjectName("PrimaryButton")
+        self.button(QWizard.WizardButton.FinishButton).setObjectName("PrimaryButton")
 
     def _page_changed(self, page_id: int) -> None:
         if page_id != 1:
