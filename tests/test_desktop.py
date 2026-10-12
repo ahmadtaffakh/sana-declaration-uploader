@@ -4,7 +4,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QLabel, QWizard
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QLabel, QWizard
 
 from sana_declaration_uploader.desktop import RecipientReviewPage, RecipientWizard
 from sana_declaration_uploader.models import RecipientCandidate
@@ -81,6 +81,18 @@ class RecipientWizardTests(unittest.TestCase):
             "23",
         )
         self.assertEqual(table.item(0, table.columnCount() - 1).text(), "نیازمند تکمیل")
+
+    def test_clicking_a_cell_selects_its_whole_row(self) -> None:
+        wizard = RecipientWizard()
+
+        self.assertEqual(
+            wizard.review_page.table.selectionBehavior(),
+            QAbstractItemView.SelectionBehavior.SelectRows,
+        )
+        self.assertEqual(
+            wizard.preprocessing_page.table.selectionBehavior(),
+            QAbstractItemView.SelectionBehavior.SelectRows,
+        )
 
 
 if __name__ == "__main__":

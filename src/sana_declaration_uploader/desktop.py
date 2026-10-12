@@ -9,6 +9,7 @@ from dataclasses import replace
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QFileDialog,
     QHBoxLayout,
@@ -224,6 +225,7 @@ class RecipientReviewPage(QWizardPage):
 
         self.table = QTableWidget(0, len(self.HEADERS))
         self.table.setHorizontalHeaderLabels(self.HEADERS)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.setWordWrap(True)
         self.table.horizontalHeader().setStretchLastSection(True)
@@ -351,6 +353,7 @@ class PreprocessingPage(QWizardPage):
 
         self.table = QTableWidget(0, len(self.HEADERS))
         self.table.setHorizontalHeaderLabels(self.HEADERS)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.setWordWrap(True)
         self.table.horizontalHeader().setStretchLastSection(True)
