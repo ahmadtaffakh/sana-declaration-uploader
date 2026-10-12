@@ -156,6 +156,7 @@ def _extract_document(
     birth_date = _find_value(normalized, r"تاریخ\s*تولد")
     postal_code = _find_digits(normalized, r"کد\s*پستی", 10)
     address = _find_value(normalized, r"(?:نشانی|آدرس)", maximum=500)
+    job_title = _find_value(normalized, r"شغل")
 
     issues = []
     if not full_name:
@@ -173,6 +174,7 @@ def _extract_document(
         birth_date=birth_date,
         postal_code=postal_code,
         address=address,
+        job_title=job_title,
         notice_number=notice_number,
         related_declaration_number=declaration_number,
         issues=tuple(issues),
@@ -204,6 +206,9 @@ def _pdf_table_parties(source: Path) -> tuple[RecipientCandidate, ...]:
         national_ids = tuple(
             str(value) for value in group.get("national_ids", ()) if str(value).strip()
         )
+        jobs = tuple(
+            str(value) for value in group.get("jobs", ()) if str(value).strip()
+        )
         grouped = len(names) > 1
         issues = group_issues
         if grouped and "grouped_parties_requires_review" not in issues:
@@ -214,6 +219,7 @@ def _pdf_table_parties(source: Path) -> tuple[RecipientCandidate, ...]:
                 full_name="، ".join(names),
                 national_id=national_ids[0] if len(national_ids) == 1 else "",
                 address=" | ".join(addresses),
+                job_title="، ".join(dict.fromkeys(jobs)),
                 role=str(group["role"]),
                 person_type=str(group["person_type"]),
                 evidence=str(group["evidence"]),
@@ -367,6 +373,7 @@ def _party_candidate(
     )
     postal_code = _find_digits(evidence, r"کد\s*پستی", 10)
     address = _find_inline_value(evidence, r"(?:نشانی|آدرس)", maximum=500)
+    job_title = _find_inline_value(evidence, r"شغل", maximum=120)
     issues = []
     if national_id and not _valid_national_id(national_id):
         issues.append("national_id_invalid")
@@ -379,6 +386,7 @@ def _party_candidate(
         employee_code=employee_code,
         postal_code=postal_code,
         address=address,
+        job_title=job_title,
         role=role,
         person_type=_person_type(name),
         evidence=evidence,

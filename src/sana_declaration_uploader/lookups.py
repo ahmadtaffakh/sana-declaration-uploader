@@ -91,6 +91,45 @@ def resolve_lookup_fields(
     return _resolve_court(resolved, lookup_dir)
 
 
+def suggest_court_unit(
+    fields: Mapping[str, str], lookup_dir: Path
+) -> dict[str, str]:
+    """Suggest one court only when one catalog entry matches the location ID."""
+
+    resolved = dict(fields)
+    if resolved.get("court_unit_name", "").strip() or resolved.get(
+        "court_unit_code", ""
+    ).strip():
+        return _resolve_court(resolved, lookup_dir)
+    location_id = next(
+        (
+            resolved.get(field, "").strip()
+            for field in ("city_id", "county_id", "province_id")
+            if resolved.get(field, "").strip()
+        ),
+        "",
+    )
+    if not location_id:
+        return resolved
+    matches = [
+        entry for entry in _load_entries(lookup_dir, "court_units")
+        if entry.get("location_id") == location_id
+    ]
+    if not matches:
+        return resolved
+    if len(matches) > 1:
+        raise LookupResolutionError(f"lookup_ambiguous:court_unit:{location_id}")
+    court = matches[0]
+    if not court.get("key") or not court.get("code") or not court.get("label"):
+        raise LookupResolutionError(f"lookup_entry_invalid:court_unit:{location_id}")
+    resolved.update(
+        court_unit_key=court["key"],
+        court_unit_name=court["label"],
+        court_unit_code=court["code"],
+    )
+    return resolved
+
+
 def _resolve_job(resolved: dict[str, str], lookup_dir: Path) -> dict[str, str]:
     job_title = resolved.get("job_title", "").strip()
     if not job_title:

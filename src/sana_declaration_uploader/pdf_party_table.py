@@ -166,11 +166,15 @@ def _natural_party_rows(
         )
         if name:
             address = _cell_text(words, lower, upper, 0, page_width * 0.53)
+            job = _cell_text(
+                words, lower, upper, page_width * 0.53, page_width * 0.625
+            )
             rows.append(
                 {
                     "role": role,
                     "names": (name,),
                     "addresses": (address,),
+                    "jobs": (job,),
                     "person_type": "natural",
                     "evidence": name,
                 }
@@ -183,10 +187,12 @@ def _group_rows(
 ) -> dict[str, object]:
     names = tuple(str(row["names"][0]) for row in rows)
     addresses = tuple(str(row["addresses"][0]) for row in rows)
+    jobs = tuple(str(row["jobs"][0]) for row in rows)
     return {
         "role": role,
         "names": names,
         "addresses": addresses,
+        "jobs": jobs,
         "person_type": "group",
         "evidence": "، ".join(names),
     }
@@ -216,11 +222,15 @@ def _wide_party_rows(
         if not name:
             continue
         address = _cell_text(words, lower, upper, 0, page_width * 0.53)
+        job = _cell_text(
+            words, lower, upper, page_width * 0.53, page_width * 0.625
+        )
         rows.append(
             {
                 "role": role,
                 "names": (name,),
                 "addresses": (address,),
+                "jobs": (job,),
                 "person_type": "legal" if any(m in name for m in _LEGAL_MARKERS) else "unknown",
                 "evidence": name,
             }
@@ -291,6 +301,7 @@ def _extract_notice_groups(
         "role": "addressee",
         "names": (name,),
         "addresses": ("",),
+        "jobs": ("",),
         "national_ids": (national_id,),
         "person_type": "legal" if any(m in name for m in _LEGAL_MARKERS) else "unknown",
         "evidence": name,
@@ -302,6 +313,7 @@ def _unparsed_table() -> dict[str, object]:
         "role": "",
         "names": (),
         "addresses": (),
+        "jobs": (),
         "person_type": "unknown",
         "evidence": "جدول اشخاص شناسایی شد اما قابل استخراج نبود.",
         "issues": ("party_table_unparsed",),

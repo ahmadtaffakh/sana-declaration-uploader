@@ -1,0 +1,434 @@
+[
+  {
+    "key": "6952F0DBEB7D4FB2B2164ED3E2B102FA",
+    "label": "تهران",
+    "type": "city",
+    "parent_key": "FD8715C74ACE4FE398915A3F6F875B93",
+    "id": "6952F0DBEB7D4FB2B2164ED3E2B102FA",
+    "code": "2301021576",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "FD8715C74ACE4FE398915A3F6F875B93",
+    "label": "شهرستان تهران",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "FD8715C74ACE4FE398915A3F6F875B93",
+    "code": "2301",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "DAE9FBD0789843C883619145921949C7",
+    "label": "شهرستان دماوند",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "DAE9FBD0789843C883619145921949C7",
+    "code": "2302",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "CF45C74DB65E49EABF96076CF54A293A",
+    "label": "شهرستان ري",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "CF45C74DB65E49EABF96076CF54A293A",
+    "code": "2303",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "A871D77BB41E42D9BBBE3A14BEBA7BE4",
+    "label": "شهرستان شميرانات",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "A871D77BB41E42D9BBBE3A14BEBA7BE4",
+    "code": "2304",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "A61E46D4C22A4FB290511C24A79244B5",
+    "label": "شهرستان ورامين",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "A61E46D4C22A4FB290511C24A79244B5",
+    "code": "2306",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "F68A50827DA547829F4725A92850BE39",
+    "label": "شهرستان شهريار",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "F68A50827DA547829F4725A92850BE39",
+    "code": "2309",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "35267A4ABCA544418204AD682B10F81F",
+    "label": "شهرستان اسلامشهر",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "35267A4ABCA544418204AD682B10F81F",
+    "code": "2310",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "5D04CE274E9F4413A30A05554FBACC5B",
+    "label": "شهرستان رباطكريم",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "5D04CE274E9F4413A30A05554FBACC5B",
+    "code": "2312",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "3A233206BB8549638C736DC69F74C436",
+    "label": "شهرستان پاكدشت",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "3A233206BB8549638C736DC69F74C436",
+    "code": "2313",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "0A64929963664704BE675AA52E2C71B4",
+    "label": "شهرستان فيروزكوه",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "0A64929963664704BE675AA52E2C71B4",
+    "code": "2314",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "83AF7D0407C54DDD9F77ED74560DABBE",
+    "label": "شهرستان قدس",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "83AF7D0407C54DDD9F77ED74560DABBE",
+    "code": "2316",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "CA7CBC97B28C4826A59A26ED9E93B8EC",
+    "label": "شهرستان ملارد",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "CA7CBC97B28C4826A59A26ED9E93B8EC",
+    "code": "2317",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "6ABD62F227194B7FB28983135871556D",
+    "label": "شهرستان پيشوا",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "6ABD62F227194B7FB28983135871556D",
+    "code": "2318",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "4E0F985A7B7243B28D33598FCDC55BB3",
+    "label": "شهرستان بهارستان",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "4E0F985A7B7243B28D33598FCDC55BB3",
+    "code": "2319",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "3997E5F5DA3C4AA2B10B7169DB2767DE",
+    "label": "شهرستان پرديس",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "3997E5F5DA3C4AA2B10B7169DB2767DE",
+    "code": "2320",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "BB13FD541A024155A2971A41434F28F8",
+    "label": "شهرستان قرچك",
+    "type": "county",
+    "parent_key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "id": "BB13FD541A024155A2971A41434F28F8",
+    "code": "2321",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "BF0240D0CD6D4EFBA0051AC54865938D",
+    "label": "استان مركزي",
+    "type": "province",
+    "parent_key": "",
+    "id": "BF0240D0CD6D4EFBA0051AC54865938D",
+    "code": "00",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "18688924F27C4D5FADB9CD3E40BADD1C",
+    "label": "استان گيلان",
+    "type": "province",
+    "parent_key": "",
+    "id": "18688924F27C4D5FADB9CD3E40BADD1C",
+    "code": "01",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "2B64C3E967B24F35968D6A0017E484D8",
+    "label": "استان مازندران",
+    "type": "province",
+    "parent_key": "",
+    "id": "2B64C3E967B24F35968D6A0017E484D8",
+    "code": "02",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "DE24A69DB93F415EA9A233404520F0E2",
+    "label": "استان آذربايجان شرقي",
+    "type": "province",
+    "parent_key": "",
+    "id": "DE24A69DB93F415EA9A233404520F0E2",
+    "code": "03",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "A3433FD4BA69420FBB191517E445C130",
+    "label": "استان آذربايجان غربي",
+    "type": "province",
+    "parent_key": "",
+    "id": "A3433FD4BA69420FBB191517E445C130",
+    "code": "04",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "6643BEA8EDD947AF9CD68F3C8EAEB790",
+    "label": "استان كرمانشاه",
+    "type": "province",
+    "parent_key": "",
+    "id": "6643BEA8EDD947AF9CD68F3C8EAEB790",
+    "code": "05",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "2D5F938AD5734DA0B687AB87D2BD6261",
+    "label": "استان خوزستان",
+    "type": "province",
+    "parent_key": "",
+    "id": "2D5F938AD5734DA0B687AB87D2BD6261",
+    "code": "06",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "60E0B8BEBE7A4A72A7AD0ABE56932B6C",
+    "label": "استان فارس",
+    "type": "province",
+    "parent_key": "",
+    "id": "60E0B8BEBE7A4A72A7AD0ABE56932B6C",
+    "code": "07",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "3B0F1A1A34C349AC9F2DB4FBB289D2BE",
+    "label": "استان كرمان",
+    "type": "province",
+    "parent_key": "",
+    "id": "3B0F1A1A34C349AC9F2DB4FBB289D2BE",
+    "code": "08",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "03F682AC36DD4B528BD881F1B907CE6A",
+    "label": "استان خراسان رضوي",
+    "type": "province",
+    "parent_key": "",
+    "id": "03F682AC36DD4B528BD881F1B907CE6A",
+    "code": "09",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "6BBB67989611404AA81985BDE9F26DEE",
+    "label": "استان اصفهان",
+    "type": "province",
+    "parent_key": "",
+    "id": "6BBB67989611404AA81985BDE9F26DEE",
+    "code": "10",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "55D0E1C30C28446BB47D0FA715B07370",
+    "label": "استان سيستان وبلوچستان",
+    "type": "province",
+    "parent_key": "",
+    "id": "55D0E1C30C28446BB47D0FA715B07370",
+    "code": "11",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "2A591B7AB3D14D7886FC8B7F96DF5010",
+    "label": "استان كردستان",
+    "type": "province",
+    "parent_key": "",
+    "id": "2A591B7AB3D14D7886FC8B7F96DF5010",
+    "code": "12",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "C527AC3CF422430B9C755A2F3A0C7190",
+    "label": "استان همدان",
+    "type": "province",
+    "parent_key": "",
+    "id": "C527AC3CF422430B9C755A2F3A0C7190",
+    "code": "13",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "A2CC7B16A4D844A19280836BEBFFD4FA",
+    "label": "استان چهارمحال وبختياري",
+    "type": "province",
+    "parent_key": "",
+    "id": "A2CC7B16A4D844A19280836BEBFFD4FA",
+    "code": "14",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "5005BA0708DB4B3D9F95D8F515548058",
+    "label": "استان لرستان",
+    "type": "province",
+    "parent_key": "",
+    "id": "5005BA0708DB4B3D9F95D8F515548058",
+    "code": "15",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "53CF89223E6B4556812303734E27EA2F",
+    "label": "استان ايلام",
+    "type": "province",
+    "parent_key": "",
+    "id": "53CF89223E6B4556812303734E27EA2F",
+    "code": "16",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "35BE8A2CAF2847DA9104852B3C24C594",
+    "label": "استان كهكيلويه وبويراحمد",
+    "type": "province",
+    "parent_key": "",
+    "id": "35BE8A2CAF2847DA9104852B3C24C594",
+    "code": "17",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "54DDD175DFBE4D93B6F2F70AF70B3AE6",
+    "label": "استان بوشهر",
+    "type": "province",
+    "parent_key": "",
+    "id": "54DDD175DFBE4D93B6F2F70AF70B3AE6",
+    "code": "18",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "3EEF873EF48C40D19103B4DC57C4E1DE",
+    "label": "استان زنجان",
+    "type": "province",
+    "parent_key": "",
+    "id": "3EEF873EF48C40D19103B4DC57C4E1DE",
+    "code": "19",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "5053B3525AF447DCA35A69ED6C9A775F",
+    "label": "استان سمنان",
+    "type": "province",
+    "parent_key": "",
+    "id": "5053B3525AF447DCA35A69ED6C9A775F",
+    "code": "20",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "B33D27160FFC4106BA7DE374BD3FD527",
+    "label": "استان يزد",
+    "type": "province",
+    "parent_key": "",
+    "id": "B33D27160FFC4106BA7DE374BD3FD527",
+    "code": "21",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "19E3A134B429484AB1893B77FFA5B8F0",
+    "label": "استان هرمزگان",
+    "type": "province",
+    "parent_key": "",
+    "id": "19E3A134B429484AB1893B77FFA5B8F0",
+    "code": "22",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "label": "استان تهران",
+    "type": "province",
+    "parent_key": "",
+    "id": "BE1E0813A1C540568F5C51F1BE7ADFDA",
+    "code": "23",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "32631CBCDD474B36A318CF7072B0389E",
+    "label": "استان اردبيل",
+    "type": "province",
+    "parent_key": "",
+    "id": "32631CBCDD474B36A318CF7072B0389E",
+    "code": "24",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "BEFFA9E2FB0B440C882B4BEC66E823AB",
+    "label": "استان قم",
+    "type": "province",
+    "parent_key": "",
+    "id": "BEFFA9E2FB0B440C882B4BEC66E823AB",
+    "code": "25",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "BA2474D173584D3F9E8274EA3463854A",
+    "label": "استان قزوين",
+    "type": "province",
+    "parent_key": "",
+    "id": "BA2474D173584D3F9E8274EA3463854A",
+    "code": "26",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "C6BD5F5C19E248ED8CA2DBC3485AD80E",
+    "label": "استان گلستان",
+    "type": "province",
+    "parent_key": "",
+    "id": "C6BD5F5C19E248ED8CA2DBC3485AD80E",
+    "code": "27",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "E68C40791D0D4B1090950622CC787B65",
+    "label": "استان خراسان شمالي",
+    "type": "province",
+    "parent_key": "",
+    "id": "E68C40791D0D4B1090950622CC787B65",
+    "code": "28",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "C4DFDFFE7E92488FBD2BF8C927F15B7C",
+    "label": "استان خراسان جنوبي",
+    "type": "province",
+    "parent_key": "",
+    "id": "C4DFDFFE7E92488FBD2BF8C927F15B7C",
+    "code": "29",
+    "source": "location payloads.json"
+  },
+  {
+    "key": "0E8C4753FE684E60AE590690356E4C05",
+    "label": "استان البرز",
+    "type": "province",
+    "parent_key": "",
+    "id": "0E8C4753FE684E60AE590690356E4C05",
+    "code": "30",
+    "source": "location payloads.json"
+  }
+]

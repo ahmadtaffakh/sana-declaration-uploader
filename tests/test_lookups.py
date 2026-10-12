@@ -6,6 +6,7 @@ import unittest
 from sana_declaration_uploader.lookups import (
     LookupResolutionError,
     resolve_lookup_fields,
+    suggest_court_unit,
 )
 
 
@@ -98,6 +99,23 @@ class LookupTests(unittest.TestCase):
 
             self.assertEqual(result["court_unit_name"], "واحد نمونه")
             self.assertEqual(result["court_unit_key"], "court1")
+
+    def test_suggests_court_only_for_one_exact_location_match(self) -> None:
+        with TemporaryDirectory() as directory:
+            lookup_dir = Path(directory)
+            self._write(
+                lookup_dir / "court_units.json",
+                [{
+                    "key": "court1",
+                    "label": "واحد نمونه",
+                    "code": "00001",
+                    "location_id": "city1",
+                }],
+            )
+
+            result = suggest_court_unit({"city_id": "city1"}, lookup_dir)
+
+            self.assertEqual(result["court_unit_code"], "00001")
 
     @staticmethod
     def _write(path: Path, value: object) -> None:

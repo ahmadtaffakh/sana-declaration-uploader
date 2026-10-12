@@ -49,6 +49,7 @@ class PdfPartyTableTests(unittest.TestCase):
             _word("علی", 458, 482, 168),
             _word("احمدی", 399, 435, 168),
             _word("پور", 399, 435, 175),
+            _word("کارمند", 340, 370, 168),
             _word("تهران", 220, 270, 168),
             _word("مخاطب", 518, 558, 198),
             _word("شرکت", 405, 440, 198),
@@ -71,6 +72,7 @@ class PdfPartyTableTests(unittest.TestCase):
                 ("addressee", ("اداره آزمایشی",)),
             ],
         )
+        self.assertEqual(groups[0]["jobs"], ("کارمند",))
 
     def test_groups_appellants_and_keeps_respondents_separate(self) -> None:
         words = [

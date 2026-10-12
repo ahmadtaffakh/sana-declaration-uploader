@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from dataclasses import replace
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from .extraction import DocumentExtractionError, extract_recipients
 from .models import RecipientCandidate
+from .preprocessing import preprocess_candidates
 
 
 _SUPPORTED_SUFFIXES = {".docx", ".pdf", ".txt"}
@@ -46,6 +48,8 @@ _PERSON_TYPE_DISPLAY = {
     "group": "گروه",
     "unknown": "نامشخص",
 }
+_ROLE_VALUE = {label: value for value, label in _ROLE_DISPLAY.items()}
+_PERSON_TYPE_VALUE = {label: value for value, label in _PERSON_TYPE_DISPLAY.items()}
 _ORGANIZATIONAL_STYLE = """
 QWizard, QWizardPage {
     background-color: #F4F7FB;
@@ -201,6 +205,7 @@ class RecipientReviewPage(QWizardPage):
         "نقش",
         "نوع شخص",
         "نام و نام خانوادگی",
+        "شغل",
         "کد ملی",
         "کد پرسنلی",
         "تاریخ تولد",
@@ -261,6 +266,7 @@ class RecipientReviewPage(QWizardPage):
             _ROLE_DISPLAY.get(candidate.role, candidate.role) if candidate else "",
             _PERSON_TYPE_DISPLAY.get(candidate.person_type, candidate.person_type) if candidate else "",
             candidate.full_name if candidate else "",
+            candidate.job_title if candidate else "",
             candidate.national_id if candidate else "",
             candidate.employee_code if candidate else "",
             candidate.birth_date if candidate else "",
@@ -271,9 +277,40 @@ class RecipientReviewPage(QWizardPage):
         )
         for column, value in enumerate(values):
             item = QTableWidgetItem(value)
+            if column == 0:
+                item.setData(Qt.ItemDataRole.UserRole, candidate)
             if column in (0, len(self.HEADERS) - 2, len(self.HEADERS) - 1):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(row, column, item)
+
+    def candidates(self) -> tuple[RecipientCandidate, ...]:
+        result = []
+        for row in range(self.table.rowCount()):
+            original = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            if not isinstance(original, RecipientCandidate):
+                original = RecipientCandidate(source_path=Path("manual"))
+
+            def value(header: str) -> str:
+                item = self.table.item(row, self.HEADERS.index(header))
+                return item.text().strip() if item else ""
+
+            result.append(replace(
+                original,
+                notice_number=value("شماره ابلاغیه"),
+                related_declaration_number=value("شماره اظهارنامه مرتبط"),
+                role=_ROLE_VALUE.get(value("نقش"), value("نقش")),
+                person_type=_PERSON_TYPE_VALUE.get(
+                    value("نوع شخص"), value("نوع شخص")
+                ),
+                full_name=value("نام و نام خانوادگی"),
+                job_title=value("شغل"),
+                national_id=value("کد ملی"),
+                employee_code=value("کد پرسنلی"),
+                birth_date=value("تاریخ تولد"),
+                postal_code=value("کدپستی"),
+                address=value("آدرس"),
+            ))
+        return tuple(result)
 
     def _remove_selected(self) -> None:
         rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)
@@ -289,6 +326,85 @@ class RecipientReviewPage(QWizardPage):
         return "نیازمند تأیید"
 
 
+class PreprocessingPage(QWizardPage):
+    HEADERS = (
+        "نام شخص",
+        "شغل",
+        "کد شغل",
+        "استان",
+        "کد استان",
+        "شهرستان",
+        "کد شهرستان",
+        "شهر",
+        "کد شهر",
+        "واحد قضایی",
+        "کد واحد قضایی",
+        "وضعیت",
+    )
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setTitle("<b>پیش‌پردازش نشانی و کدهای ثنا</b>")
+        self.setSubTitle(
+            "پیشنهادهای محلی را بررسی و موارد خالی یا اشتباه را پیش از ثبت اصلاح کنید."
+        )
+
+        self.table = QTableWidget(0, len(self.HEADERS))
+        self.table.setHorizontalHeaderLabels(self.HEADERS)
+        self.table.setAlternatingRowColors(True)
+        self.table.setWordWrap(True)
+        self.table.horizontalHeader().setStretchLastSection(True)
+
+        guidance = QLabel(
+            "روش کار: برنامه عنوان شغل و اجزای نشانی را فقط با کاتالوگ محلی و "
+            "تطبیق دقیق به کد تبدیل می‌کند. خانهٔ خالی به معنی نبودن دادهٔ کافی "
+            "یا مبهم بودن نتیجه است و باید با سند یا سامانه ثنا تکمیل شود. این "
+            "مرحله صرفاً پیش‌نمایش است و هیچ ثبت یا ورود خودکاری انجام نمی‌دهد."
+        )
+        guidance.setObjectName("Guidance")
+        guidance.setWordWrap(True)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(guidance)
+        layout.addWidget(self.table)
+
+    def set_candidates(self, candidates: tuple[RecipientCandidate, ...]) -> None:
+        self.table.setRowCount(0)
+        for candidate in candidates:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            values = (
+                candidate.full_name,
+                candidate.job_title,
+                candidate.job_code,
+                candidate.province,
+                candidate.province_code,
+                candidate.county,
+                candidate.county_code,
+                candidate.city,
+                candidate.city_code,
+                candidate.court_unit_name,
+                candidate.court_unit_code,
+                self._status(candidate),
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, candidate)
+                if column in (0, len(self.HEADERS) - 1):
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(row, column, item)
+        self.table.resizeColumnsToContents()
+
+    @staticmethod
+    def _status(candidate: RecipientCandidate) -> str:
+        lookup_issues = (
+            issue for issue in candidate.issues
+            if "lookup" in issue or "unresolved" in issue or "ambiguous" in issue
+        )
+        return "نیازمند تکمیل" if next(lookup_issues, None) else "آماده بازبینی"
+
+
 class RecipientWizard(QWizard):
     def __init__(self) -> None:
         super().__init__()
@@ -299,8 +415,12 @@ class RecipientWizard(QWizard):
         self.resize(1180, 680)
         self.files_page = FileSelectionPage()
         self.review_page = RecipientReviewPage()
-        self.addPage(self.files_page)
-        self.addPage(self.review_page)
+        self.preprocessing_page = PreprocessingPage()
+        self.files_page_id = self.addPage(self.files_page)
+        self.review_page_id = self.addPage(self.review_page)
+        self.preprocessing_page_id = self.addPage(self.preprocessing_page)
+        self._loaded_paths: tuple[Path, ...] = ()
+        self._lookup_dir = Path(__file__).resolve().parents[2] / "lookups"
         self.currentIdChanged.connect(self._page_changed)
         self.setButtonLayout([
             QWizard.WizardButton.FinishButton,
@@ -317,16 +437,26 @@ class RecipientWizard(QWizard):
         self.button(QWizard.WizardButton.FinishButton).setObjectName("PrimaryButton")
 
     def _page_changed(self, page_id: int) -> None:
-        if page_id != 1:
+        if page_id == self.preprocessing_page_id:
+            candidates = preprocess_candidates(
+                self.review_page.candidates(), self._lookup_dir
+            )
+            self.preprocessing_page.set_candidates(candidates)
+            return
+        if page_id != self.review_page_id:
+            return
+        selected_paths = tuple(self.files_page.selected_paths())
+        if selected_paths == self._loaded_paths:
             return
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            candidates = extract_recipients(self.files_page.selected_paths())
+            candidates = extract_recipients(list(selected_paths))
         except DocumentExtractionError as exc:
             self.review_page.set_candidates(())
             QMessageBox.warning(self, "خطا در استخراج", str(exc))
         else:
             self.review_page.set_candidates(candidates)
+            self._loaded_paths = selected_paths
         finally:
             QApplication.restoreOverrideCursor()
 
