@@ -284,6 +284,34 @@ class FlowTests(unittest.TestCase):
 
             self.assertEqual(page.calls, [])
 
+    def test_all_attachment_metadata_is_checked_before_first_write(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            attachments = (
+                Attachment(
+                    path=root / "valid.pdf",
+                    title="مدرک اول",
+                    kind="سند",
+                    document_number="100",
+                    document_date="1405/07/18",
+                ),
+                Attachment(
+                    path=root / "invalid.pdf",
+                    title="مدرک دوم",
+                    kind="سند",
+                    document_number="",
+                    document_date="1405/07/18",
+                ),
+            )
+            page = StubAttachmentPage()
+
+            with self.assertRaisesRegex(
+                AttachmentWorkflowError, "attachment_document_number_missing"
+            ):
+                run_attachment_workflow(attachments, page)
+
+            self.assertEqual(page.calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

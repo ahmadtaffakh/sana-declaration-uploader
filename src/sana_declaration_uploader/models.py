@@ -54,6 +54,10 @@ class RecipientCandidate:
 
     source_path: Path
     full_name: str = ""
+    first_name: str = ""
+    last_name: str = ""
+    father_name: str = ""
+    gender: str = ""
     national_id: str = ""
     employee_code: str = ""
     birth_date: str = ""

@@ -39,11 +39,22 @@ def run_attachment_workflow(
     navigation back to the attachments page after an ambiguous response.
     """
 
-    for attachment in attachments:
-        _validate_site_attachment(attachment)
+    attachment_list = validate_attachments_for_upload(attachments)
+    for attachment in attachment_list:
         page.register_attachment(attachment)
         page.upload_attachment_file(attachment)
         page.confirm_attachment_authenticity(attachment)
+
+
+def validate_attachments_for_upload(
+    attachments: Iterable[Attachment],
+) -> tuple[Attachment, ...]:
+    """Validate every attachment before the first remote attachment write."""
+
+    attachment_list = tuple(attachments)
+    for attachment in attachment_list:
+        _validate_site_attachment(attachment)
+    return attachment_list
 
 
 def _validate_site_attachment(attachment: Attachment) -> None:

@@ -1,6 +1,7 @@
 import os
 import json
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -18,6 +19,7 @@ from sana_declaration_uploader.desktop import (
     DeclarationContentPage,
     RecipientReviewPage,
     RecipientWizard,
+    _build_desktop_drafts,
     _load_login_settings,
     _save_login_settings,
 )
@@ -45,7 +47,7 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertTrue(all(button.geometry().x() > wizard.width() / 2 for button in buttons))
         self.assertEqual(
             wizard.buttonText(QWizard.WizardButton.FinishButton),
-            "آزمایش ورود امن",
+            "شروع پردازش و ثبت",
         )
         self.assertFalse(wizard.button(QWizard.WizardButton.BackButton).icon().isNull())
         self.assertFalse(wizard.button(QWizard.WizardButton.NextButton).icon().isNull())
@@ -154,6 +156,65 @@ class RecipientWizardTests(unittest.TestCase):
 
             _save_login_settings("", "", "", "", remember=False, path=path)
             self.assertFalse(path.exists())
+
+    def test_finish_invokes_registration_instead_of_login_check(self) -> None:
+        wizard = RecipientWizard()
+        page = wizard.login_page
+        page.national_code.setText("national")
+        page.password.setText("password")
+        page.legal_identity.setText("legal")
+        page.otp.setText("otp")
+        received = []
+        page.registration_callback = lambda credentials: received.append(credentials) or True
+
+        with patch("sana_declaration_uploader.desktop._save_login_settings"):
+            self.assertTrue(page.validatePage())
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].otp, "otp")
+        self.assertIn(
+            "آزمایش ورود بدون ثبت",
+            [button.text() for button in page.findChildren(QPushButton)],
+        )
+
+    def test_reviewed_rows_build_registration_drafts_with_exact_lookups(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input.pdf"
+            source.write_bytes(b"%PDF-test")
+            candidate = RecipientCandidate(
+                source_path=source,
+                full_name="نام خانوادگی",
+                first_name="نام",
+                last_name="خانوادگی",
+                gender="مرد",
+                national_id="0000000000",
+                birth_date="1370/01/01",
+                address="خیابان نمونه",
+                job_title="آزاد",
+                province="استان تهران",
+                county="شهرستان تهران",
+                city="تهران",
+                court_unit_name="دادگستري كل استان تهران",
+            )
+
+            drafts = _build_desktop_drafts(
+                (candidate,),
+                {-1: {
+                    "subject": "موضوع",
+                    "description": "شرح",
+                    "attachments": (),
+                }},
+                shared=True,
+                lookup_dir=Path(__file__).resolve().parents[1] / "lookups",
+            )
+
+            self.assertEqual(len(drafts), 1)
+            self.assertEqual(drafts[0].fields["recipient_first_name"], "نام")
+            self.assertEqual(drafts[0].fields["job_code"], "00002")
+            self.assertEqual(drafts[0].fields["province_code"], "23")
+            self.assertEqual(drafts[0].fields["court_unit_code"], "00159")
+            self.assertEqual(drafts[0].fields["declaration_text"], "شرح")
 
 
 if __name__ == "__main__":

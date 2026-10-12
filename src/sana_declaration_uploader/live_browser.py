@@ -7,7 +7,9 @@ from dataclasses import dataclass
 import re
 from typing import TypeVar
 
-from .models import Attachment, DeclarationDraft
+from .browser import run_attachment_workflow, validate_attachments_for_upload
+from .models import Attachment, DeclarationDraft, UploadResult
+from .validator import validate_draft
 
 
 LOGIN_URL = "https://person.adliran.ir/LegalPerson/Index"
@@ -149,12 +151,57 @@ def run_login_check(
             browser.close()
 
 
+def run_live_upload_batch(
+    drafts: Iterable[DeclarationDraft],
+    credentials_provider: Callable[[], LoginCredentials | None],
+    final_confirmation: Callable[[DeclarationDraft], bool],
+    *,
+    headless: bool = False,
+    timeout_ms: int = 60_000,
+) -> tuple[UploadResult, ...]:
+    """Open one Chrome context and execute the reviewed batch exactly once."""
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise LiveBrowserError(
+            "playwright_not_installed: install the project with [browser]"
+        ) from exc
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(channel="chrome", headless=headless)
+        context = browser.new_context()
+        try:
+            page = context.new_page()
+            return upload_authenticated_batch(
+                page,
+                drafts,
+                credentials_provider,
+                final_confirmation,
+                timeout_ms=timeout_ms,
+            )
+        finally:
+            context.close()
+            browser.close()
+
+
 class PlaywrightAttachmentPage:
     """Observed attachment flow; the caller navigates to «منضمات» first."""
 
     def __init__(self, page: object, *, timeout_ms: int = 60_000) -> None:
         self.page = page
         self.timeout_ms = timeout_ms
+
+    def open_attachments(self) -> None:
+        steps = self.page.locator(
+            "div[ng-click*='navCtrl.onStepSelect'] .step"
+        ).filter(has_text="منضمات")
+        if steps.count() != 1:
+            raise LiveBrowserError("attachments_step_not_unique")
+        steps.click()
+        self.page.locator("#frmAttachment").wait_for(
+            state="visible", timeout=self.timeout_ms
+        )
 
     def register_attachment(self, attachment: Attachment) -> None:
         page = self.page
@@ -234,12 +281,168 @@ class PlaywrightDeclarationPage:
         )
 
 
+class PlaywrightRecipientPage:
+    """Fill one observed Iranian natural-person recipient form."""
+
+    REQUIRED_FIELDS = (
+        "recipient_national_id",
+        "recipient_birth_date",
+        "recipient_gender",
+        "recipient_first_name",
+        "recipient_last_name",
+        "job_title",
+        "job_id",
+        "job_code",
+        "province",
+        "province_id",
+        "province_code",
+        "county",
+        "county_id",
+        "county_code",
+        "city",
+        "city_id",
+        "city_code",
+        "recipient_main_street",
+    )
+    GENDER_SELECTORS = {
+        "مرد": "#rdbRealIrMale",
+        "مذکر": "#rdbRealIrMale",
+        "زن": "#rdbRealIrFemale",
+        "مونث": "#rdbRealIrFemale",
+    }
+
+    def __init__(self, page: object, *, timeout_ms: int = 60_000) -> None:
+        self.page = page
+        self.timeout_ms = timeout_ms
+
+    def fill_natural_person(self, draft: DeclarationDraft) -> None:
+        self.validate(draft)
+        fields = draft.fields
+
+        page = self.page
+        natural_person = page.locator("label").filter(has_text="حقیقی ایرانی")
+        if natural_person.count() != 1:
+            raise LiveBrowserError("natural_person_option_not_unique")
+        natural_person.click()
+        page.locator("#btnNext").click()
+
+        add_button = page.locator("#btnAddSection")
+        add_button.wait_for(state="visible", timeout=self.timeout_ms)
+        add_button.click()
+        page.locator("#txtRealIrNationalityCode1").fill(
+            fields["recipient_national_id"]
+        )
+        page.locator("input[name='RealIrBirthDate']").fill(
+            fields["recipient_birth_date"]
+        )
+        self._select_gender(fields["recipient_gender"])
+        page.locator("#txtRealIrName").fill(fields["recipient_first_name"])
+        page.locator("#txtRealIrFamily").fill(fields["recipient_last_name"])
+        father_name = fields.get("recipient_father_name", "").strip()
+        if father_name:
+            page.locator("#txtRealIrFatherName").fill(father_name)
+
+        try:
+            selected = page.evaluate(
+                _SELECT_RECIPIENT_LOOKUPS,
+                {
+                    "job": _lookup_payload(fields, "job", "job_title", None),
+                    "province": _lookup_payload(fields, "province", "province", 2),
+                    "county": _lookup_payload(fields, "county", "county", 3),
+                    "city": _lookup_payload(fields, "city", "city", 5),
+                },
+            )
+        except Exception as exc:
+            raise LiveBrowserError("recipient_lookup_selection_failed") from exc
+        expected = {
+            "job": fields["job_title"].strip(),
+            "province": fields["province"].strip(),
+            "county": fields["county"].strip(),
+            "city": fields["city"].strip(),
+        }
+        if selected != expected:
+            raise LiveBrowserError("recipient_lookup_selection_not_verified")
+
+        page.locator("#txtBasicAvenue").fill(fields["recipient_main_street"])
+        address = fields.get("recipient_address", "").strip()
+        if address:
+            page.locator(
+                "textarea[ng-model='viewModel.currentPetitionPerson.HomeAddress']"
+            ).fill(address)
+        page.locator("#btnNext").click()
+
+    def validate(self, draft: DeclarationDraft) -> None:
+        fields = draft.fields
+        person_type = fields.get("person_type", "حقیقی").strip()
+        if person_type not in {"", "حقیقی", "شخص حقیقی"}:
+            raise LiveBrowserError("recipient_person_type_not_supported")
+        missing = [
+            name for name in self.REQUIRED_FIELDS
+            if not fields.get(name, "").strip()
+        ]
+        if missing:
+            raise LiveBrowserError(f"recipient_fields_incomplete:{','.join(missing)}")
+        if fields["recipient_gender"].strip() not in self.GENDER_SELECTORS:
+            raise LiveBrowserError("recipient_gender_unsupported")
+
+    def _select_gender(self, gender: str) -> None:
+        normalized = gender.strip()
+        selector = self.GENDER_SELECTORS.get(normalized)
+        if selector is None:
+            raise LiveBrowserError("recipient_gender_unsupported")
+        self.page.locator(selector).click()
+
+
+_SELECT_RECIPIENT_LOOKUPS = """payload => {
+    const containers = document.querySelectorAll('.ui-select-container');
+    const selections = [
+        ['job', 0, {Id: payload.job.id, Title: payload.job.label, Code: payload.job.code}],
+        ['province', 2, {Id: payload.province.id, LocationName: payload.province.label,
+                         LocationCode: payload.province.code, LocationType: payload.province.type}],
+        ['county', 3, {Id: payload.county.id, LocationName: payload.county.label,
+                       LocationCode: payload.county.code, LocationType: payload.county.type}],
+        ['city', 4, {Id: payload.city.id, LocationName: payload.city.label,
+                     LocationCode: payload.city.code, LocationType: payload.city.type}],
+    ];
+    const result = {};
+    for (const [name, index, value] of selections) {
+        const container = containers[index];
+        if (!container) throw new Error(`lookup_container_missing:${name}`);
+        const scope = angular.element(container).scope();
+        if (!scope || !scope.$select) throw new Error(`lookup_scope_missing:${name}`);
+        scope.$apply(() => scope.$select.select(value, false));
+        const match = container.querySelector('.ui-select-match-text');
+        result[name] = match ? match.textContent.trim() : '';
+    }
+    return result;
+}"""
+
+
+def _lookup_payload(
+    fields: Mapping[str, str], prefix: str, label_field: str, location_type: int | None
+) -> dict[str, str | int]:
+    payload: dict[str, str | int] = {
+        "id": fields[f"{prefix}_id"].strip(),
+        "code": fields[f"{prefix}_code"].strip(),
+        "label": fields[label_field].strip(),
+    }
+    if location_type is not None:
+        payload["type"] = location_type
+    return payload
+
+
 class PlaywrightSubmissionPage:
     """Observed payment-readiness and final-signature boundary."""
 
     def __init__(self, page: object, *, timeout_ms: int = 60_000) -> None:
         self.page = page
         self.timeout_ms = timeout_ms
+
+    def open_signature(self) -> None:
+        self.page.locator("#btnSubmit").click()
+        self.page.locator("#btnCalculateCash").wait_for(
+            state="visible", timeout=self.timeout_ms
+        )
 
     def verify_ready_for_signature(self) -> None:
         """Ask the portal to validate the draft; do not sign it."""
@@ -321,6 +524,99 @@ class PlaywrightContentPage:
         self.page.locator("#btnSave").click()
         _close_success_dialog(self.page, self.timeout_ms)
 
+
+class PlaywrightDeclarationUploader:
+    """Execute one fully validated draft on an already authenticated page."""
+
+    def __init__(
+        self,
+        page: object,
+        final_confirmation: Callable[[DeclarationDraft], bool],
+        *,
+        timeout_ms: int = 60_000,
+    ) -> None:
+        self.page = page
+        self.final_confirmation = final_confirmation
+        self.timeout_ms = timeout_ms
+
+    def upload(self, draft: DeclarationDraft) -> UploadResult:
+        _validate_live_draft(draft)
+        recipient = PlaywrightRecipientPage(self.page, timeout_ms=self.timeout_ms)
+        subject = draft.fields.get("declaration_subject", "").strip()
+        description = draft.fields.get("declaration_text", "").strip()
+
+        PlaywrightDeclarationPage(
+            self.page, timeout_ms=self.timeout_ms
+        ).open_draft_wizard(draft)
+        recipient.fill_natural_person(draft)
+
+        content = PlaywrightContentPage(self.page, timeout_ms=self.timeout_ms)
+        content.select_subject(subject)
+        content.select_other_evidence_and_save()
+        content.fill_description_and_save(description)
+
+        if draft.attachments:
+            attachment_page = PlaywrightAttachmentPage(
+                self.page, timeout_ms=self.timeout_ms
+            )
+            attachment_page.open_attachments()
+            run_attachment_workflow(draft.attachments, attachment_page)
+
+        submission = PlaywrightSubmissionPage(
+            self.page, timeout_ms=self.timeout_ms
+        )
+        submission.open_signature()
+        submission.verify_ready_for_signature()
+        tracking_code = submission.submit_signature(
+            final_confirmed=self.final_confirmation(draft)
+        )
+        return UploadResult(status="success", tracking_code=tracking_code)
+
+
+def upload_authenticated_batch(
+    page: object,
+    drafts: Iterable[DeclarationDraft],
+    credentials_provider: Callable[[], LoginCredentials | None],
+    final_confirmation: Callable[[DeclarationDraft], bool],
+    *,
+    timeout_ms: int = 60_000,
+) -> tuple[UploadResult, ...]:
+    """Upload drafts once on one reusable page, reauthenticating between items."""
+
+    draft_list = tuple(drafts)
+    for draft in draft_list:
+        _validate_live_draft(draft)
+
+    results: list[UploadResult] = []
+    session = ReusableLoginSession(page, timeout_ms=timeout_ms)
+
+    def upload_one(draft: DeclarationDraft, current_page: object) -> None:
+        try:
+            result = PlaywrightDeclarationUploader(
+                current_page,
+                final_confirmation,
+                timeout_ms=timeout_ms,
+            ).upload(draft)
+        except LiveBrowserError:
+            raise
+        except Exception as exc:
+            raise LiveBrowserError("site_response_ambiguous") from exc
+        results.append(result)
+
+    run_authenticated_batch(draft_list, session, credentials_provider, upload_one)
+    return tuple(results)
+
+
+def _validate_live_draft(draft: DeclarationDraft) -> None:
+    errors = validate_draft(draft)
+    if errors:
+        raise LiveBrowserError(f"draft_invalid:{','.join(errors)}")
+    PlaywrightRecipientPage(None).validate(draft)
+    validate_attachments_for_upload(draft.attachments)
+    if not draft.fields.get("declaration_subject", "").strip():
+        raise LiveBrowserError("declaration_subject_missing")
+    if not draft.fields.get("declaration_text", "").strip():
+        raise LiveBrowserError("declaration_text_missing")
 
 _TRACKING_LABEL = re.compile(
     r"کد\s*رهگیری\s*[:：]?\s*([۰-۹0-9]{12,24})"

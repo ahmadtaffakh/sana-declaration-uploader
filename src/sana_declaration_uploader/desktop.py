@@ -1,4 +1,4 @@
-"""Review-first desktop interface; this phase performs no browser activity."""
+"""Review-first desktop interface with an explicit live-registration boundary."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -35,9 +36,16 @@ from PySide6.QtWidgets import (
 )
 
 from .extraction import DocumentExtractionError, extract_recipients
-from .live_browser import LiveBrowserError, LoginCredentials, run_login_check
-from .models import RecipientCandidate
+from .live_browser import (
+    LiveBrowserError,
+    LoginCredentials,
+    run_live_upload_batch,
+    run_login_check,
+)
+from .lookups import LookupResolutionError, resolve_lookup_fields
+from .models import Attachment, DeclarationDraft, RecipientCandidate
 from .preprocessing import preprocess_candidates
+from .results import ResultPersistenceError, save_verified_result
 
 
 _SUPPORTED_SUFFIXES = {".docx", ".pdf", ".txt"}
@@ -61,6 +69,7 @@ _PERSON_TYPE_DISPLAY = {
 }
 _ROLE_VALUE = {label: value for value, label in _ROLE_DISPLAY.items()}
 _PERSON_TYPE_VALUE = {label: value for value, label in _PERSON_TYPE_DISPLAY.items()}
+_GENDER_DISPLAY = ("", "مرد", "زن")
 _ORGANIZATIONAL_STYLE = """
 QWizard, QWizardPage {
     background-color: #F4F7FB;
@@ -206,6 +215,73 @@ def _save_login_settings(
     )
 
 
+def _split_full_name(full_name: str) -> tuple[str, str]:
+    parts = full_name.split()
+    if len(parts) < 2:
+        return (full_name.strip(), "")
+    return (" ".join(parts[:-1]), parts[-1])
+
+
+def _build_desktop_drafts(
+    candidates: tuple[RecipientCandidate, ...],
+    payloads: dict[int, dict[str, object]],
+    *,
+    shared: bool,
+    lookup_dir: Path,
+) -> tuple[DeclarationDraft, ...]:
+    drafts = []
+    for index, candidate in enumerate(candidates):
+        payload = payloads.get(-1 if shared else index, {})
+        lookup_fields = resolve_lookup_fields(
+            {
+                "job_title": candidate.job_title,
+                "province": candidate.province,
+                "county": candidate.county,
+                "city": candidate.city,
+                "court_unit_name": candidate.court_unit_name,
+                "court_unit_code": candidate.court_unit_code,
+            },
+            lookup_dir,
+        )
+        fields = {
+            **lookup_fields,
+            "recipient_id": f"desktop-{index + 1}",
+            "data_source": "manual",
+            "person_type": _PERSON_TYPE_DISPLAY.get(
+                candidate.person_type, candidate.person_type
+            ),
+            "recipient_national_id": candidate.national_id,
+            "recipient_first_name": candidate.first_name,
+            "recipient_last_name": candidate.last_name,
+            "recipient_father_name": candidate.father_name,
+            "recipient_birth_date": candidate.birth_date,
+            "recipient_gender": candidate.gender,
+            "recipient_main_street": candidate.address,
+            "recipient_address": candidate.address,
+            "recipient_postal_code": candidate.postal_code,
+            "notice_number": candidate.notice_number,
+            "related_declaration_number": candidate.related_declaration_number,
+            "declaration_subject": str(payload.get("subject", "")),
+            "declaration_text": str(payload.get("description", "")),
+        }
+        attachments = tuple(
+            Attachment(
+                path=Path(path),
+                title=Path(path).stem,
+                kind=str(payload.get("attachment_kind", "")),
+                document_number=str(payload.get("attachment_number", "")),
+                document_date=str(payload.get("attachment_date", "")),
+            )
+            for path in payload.get("attachments", ())
+        )
+        drafts.append(DeclarationDraft(
+            source_dir=candidate.source_path.resolve().parent,
+            fields=fields,
+            attachments=attachments,
+        ))
+    return tuple(drafts)
+
+
 class FileSelectionPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
@@ -294,6 +370,10 @@ class RecipientReviewPage(QWizardPage):
         "نقش",
         "نوع شخص",
         "نام و نام خانوادگی",
+        "نام",
+        "نام خانوادگی",
+        "نام پدر",
+        "جنسیت",
         "شغل",
         "کد ملی",
         "کد پرسنلی",
@@ -346,6 +426,9 @@ class RecipientReviewPage(QWizardPage):
     def add_candidate(self, candidate: RecipientCandidate | None) -> None:
         row = self.table.rowCount()
         self.table.insertRow(row)
+        suggested_first, suggested_last = _split_full_name(
+            candidate.full_name if candidate else ""
+        )
         values = (
             candidate.source_path.name if candidate else "دستی",
             candidate.notice_number if candidate else "",
@@ -353,6 +436,10 @@ class RecipientReviewPage(QWizardPage):
             _ROLE_DISPLAY.get(candidate.role, candidate.role) if candidate else "",
             _PERSON_TYPE_DISPLAY.get(candidate.person_type, candidate.person_type) if candidate else "",
             candidate.full_name if candidate else "",
+            (candidate.first_name or suggested_first) if candidate else "",
+            (candidate.last_name or suggested_last) if candidate else "",
+            candidate.father_name if candidate else "",
+            candidate.gender if candidate else "",
             candidate.job_title if candidate else "",
             candidate.national_id if candidate else "",
             candidate.employee_code if candidate else "",
@@ -390,6 +477,10 @@ class RecipientReviewPage(QWizardPage):
                     value("نوع شخص"), value("نوع شخص")
                 ),
                 full_name=value("نام و نام خانوادگی"),
+                first_name=value("نام"),
+                last_name=value("نام خانوادگی"),
+                father_name=value("نام پدر"),
+                gender=value("جنسیت"),
                 job_title=value("شغل"),
                 national_id=value("کد ملی"),
                 employee_code=value("کد پرسنلی"),
@@ -534,6 +625,8 @@ class DeclarationContentPage(QWizardPage):
         self.shared_checkbox.setChecked(True)
         self.recipient_combo = QComboBox()
         self.recipient_combo.setEnabled(False)
+        self.subject = QLineEdit()
+        self.subject.setPlaceholderText("موضوع دقیق اظهارنامه را وارد کنید")
         self.description = QTextEdit()
         self.description.setPlaceholderText(
             "شرح اظهارنامه را کامل و دقیق وارد کنید. این متن قبل از ثبت قابل بازبینی است."
@@ -541,6 +634,11 @@ class DeclarationContentPage(QWizardPage):
         self.description.setMinimumHeight(160)
         self.attachment_list = QListWidget()
         self.attachment_list.setAlternatingRowColors(True)
+        self.attachment_kind = QLineEdit("سایر دلایل و مستندات")
+        self.attachment_number = QLineEdit()
+        self.attachment_number.setPlaceholderText("شماره مدرک")
+        self.attachment_date = QLineEdit()
+        self.attachment_date.setPlaceholderText("نمونه: ۱۴۰۵/۰۷/۲۰")
 
         add_button = QPushButton("افزودن پیوست‌ها")
         remove_button = QPushButton("حذف پیوست انتخاب‌شده")
@@ -554,14 +652,19 @@ class DeclarationContentPage(QWizardPage):
         group = QGroupBox("محتوای اظهارنامه")
         form = QFormLayout(group)
         form.addRow("دامنهٔ محتوا:", self.recipient_combo)
+        form.addRow("موضوع اظهارنامه:", self.subject)
         form.addRow("شرح اظهارنامه:", self.description)
         form.addRow("فایل‌های پیوست:", self.attachment_list)
+        form.addRow("نوع پیوست‌ها:", self.attachment_kind)
+        form.addRow("شماره پیوست‌ها:", self.attachment_number)
+        form.addRow("تاریخ پیوست‌ها:", self.attachment_date)
         form.addRow("", attachment_buttons)
 
         guidance = QLabel(
             "راهنما: اگر شرح و پیوست‌ها برای همه یکسان است، تیک بالا را روشن "
             "بگذارید و فقط یک‌بار اطلاعات را وارد کنید. در حالت اختصاصی، از فهرست "
-            "«دامنهٔ محتوا» هر شخص را انتخاب و شرح و پیوست‌های همان ردیف را ثبت کنید."
+            "«دامنهٔ محتوا» هر شخص را انتخاب و شرح و پیوست‌های همان ردیف را ثبت کنید. "
+            "نوع، شماره و تاریخ واردشده فعلاً برای همه پیوست‌های همان ردیف اعمال می‌شود."
         )
         guidance.setObjectName("Guidance")
         guidance.setWordWrap(True)
@@ -592,8 +695,12 @@ class DeclarationContentPage(QWizardPage):
         self._save_active()
         return {
             key: {
+                "subject": str(value.get("subject", "")),
                 "description": str(value.get("description", "")),
                 "attachments": tuple(value.get("attachments", ())),
+                "attachment_kind": str(value.get("attachment_kind", "")),
+                "attachment_number": str(value.get("attachment_number", "")),
+                "attachment_date": str(value.get("attachment_date", "")),
             }
             for key, value in self._payloads.items()
         }
@@ -638,13 +745,21 @@ class DeclarationContentPage(QWizardPage):
 
     def _save_active(self) -> None:
         self._payloads[self._active_key] = {
+            "subject": self.subject.text().strip(),
             "description": self.description.toPlainText().strip(),
             "attachments": tuple(self._attachment_paths()),
+            "attachment_kind": self.attachment_kind.text().strip(),
+            "attachment_number": self.attachment_number.text().strip(),
+            "attachment_date": self.attachment_date.text().strip(),
         }
 
     def _load_active(self) -> None:
         payload = self._payloads.get(self._active_key, self._empty_payload())
+        self.subject.setText(str(payload.get("subject", "")))
         self.description.setPlainText(str(payload.get("description", "")))
+        self.attachment_kind.setText(str(payload.get("attachment_kind", "")))
+        self.attachment_number.setText(str(payload.get("attachment_number", "")))
+        self.attachment_date.setText(str(payload.get("attachment_date", "")))
         self.attachment_list.clear()
         for path in payload.get("attachments", ()):
             self._add_attachment(Path(path))
@@ -673,24 +788,64 @@ class DeclarationContentPage(QWizardPage):
         for item in self.attachment_list.selectedItems():
             self.attachment_list.takeItem(self.attachment_list.row(item))
 
+    def validatePage(self) -> bool:
+        payloads = self.payloads()
+        keys = (-1,) if self.shared_checkbox.isChecked() else range(len(self._candidates))
+        for key in keys:
+            payload = payloads.get(key, {})
+            label = "همه اشخاص" if key == -1 else f"ردیف {key + 1}"
+            if not str(payload.get("subject", "")).strip():
+                QMessageBox.warning(self, "موضوع ناقص", f"موضوع {label} وارد نشده است.")
+                return False
+            if not str(payload.get("description", "")).strip():
+                QMessageBox.warning(self, "شرح ناقص", f"شرح {label} وارد نشده است.")
+                return False
+            if payload.get("attachments") and not all(
+                str(payload.get(name, "")).strip()
+                for name in (
+                    "attachment_kind",
+                    "attachment_number",
+                    "attachment_date",
+                )
+            ):
+                QMessageBox.warning(
+                    self,
+                    "مشخصات پیوست ناقص",
+                    f"نوع، شماره و تاریخ پیوست‌های {label} را کامل کنید.",
+                )
+                return False
+        return True
+
     @staticmethod
     def _empty_payload() -> dict[str, object]:
-        return {"description": "", "attachments": ()}
+        return {
+            "subject": "",
+            "description": "",
+            "attachments": (),
+            "attachment_kind": "سایر دلایل و مستندات",
+            "attachment_number": "",
+            "attachment_date": "",
+        }
 
     @staticmethod
     def _copy_payload(payload: dict[str, object]) -> dict[str, object]:
         return {
+            "subject": str(payload.get("subject", "")),
             "description": str(payload.get("description", "")),
             "attachments": tuple(payload.get("attachments", ())),
+            "attachment_kind": str(payload.get("attachment_kind", "")),
+            "attachment_number": str(payload.get("attachment_number", "")),
+            "attachment_date": str(payload.get("attachment_date", "")),
         }
 
 
 class LoginPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
+        self.registration_callback = None
         self.setTitle("<b>ورود امن به سامانه ثنا</b>")
         self.setSubTitle(
-            "ورود فقط پس از تأیید شما اجرا می‌شود و در این مرحله ثبتی انجام نمی‌گیرد."
+            "ورود را جداگانه آزمایش کنید یا پس از بازبینی، پردازش و ثبت را شروع کنید."
         )
 
         saved = _load_login_settings()
@@ -721,9 +876,16 @@ class LoginPage(QWizardPage):
         guidance.setObjectName("Guidance")
         guidance.setWordWrap(True)
 
+        test_button = QPushButton("آزمایش ورود بدون ثبت")
+        test_button.clicked.connect(self._test_login)
+        test_row = QHBoxLayout()
+        test_row.addWidget(test_button)
+        test_row.addStretch()
+
         layout = QVBoxLayout(self)
         layout.addWidget(guidance)
         layout.addWidget(form_group)
+        layout.addLayout(test_row)
         layout.addStretch()
 
         for field in (
@@ -740,6 +902,13 @@ class LoginPage(QWizardPage):
         )
 
     def validatePage(self) -> bool:
+        self._save_credentials()
+        if self.registration_callback is None:
+            QMessageBox.warning(self, "ثبت در دسترس نیست", "مسیر ثبت مقداردهی نشده است.")
+            return False
+        return bool(self.registration_callback(self._credentials()))
+
+    def _test_login(self) -> None:
         answer = QMessageBox.question(
             self,
             "تأیید ورود زنده",
@@ -749,27 +918,15 @@ class LoginPage(QWizardPage):
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
-            return False
+            return
 
-        _save_login_settings(
-            self.national_code.text(),
-            self.password.text(),
-            self.legal_identity.text(),
-            self.otp.text(),
-            remember=self.remember_credentials.isChecked(),
-        )
-        credentials = LoginCredentials(
-            national_code=self.national_code.text().strip(),
-            password=self.password.text(),
-            legal_identity=self.legal_identity.text().strip(),
-            otp=self.otp.text().strip(),
-        )
+        self._save_credentials()
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            run_login_check(credentials)
+            run_login_check(self._credentials())
         except LiveBrowserError as exc:
             QMessageBox.warning(self, "ورود ناموفق", str(exc))
-            return False
+            return
         finally:
             QApplication.restoreOverrideCursor()
         QMessageBox.information(
@@ -777,7 +934,23 @@ class LoginPage(QWizardPage):
             "ورود موفق",
             "ورود با موفقیت تأیید شد. هیچ اظهارنامه‌ای ثبت نشده است.",
         )
-        return True
+
+    def _credentials(self) -> LoginCredentials:
+        return LoginCredentials(
+            national_code=self.national_code.text().strip(),
+            password=self.password.text(),
+            legal_identity=self.legal_identity.text().strip(),
+            otp=self.otp.text().strip(),
+        )
+
+    def _save_credentials(self) -> None:
+        _save_login_settings(
+            self.national_code.text(),
+            self.password.text(),
+            self.legal_identity.text(),
+            self.otp.text(),
+            remember=self.remember_credentials.isChecked(),
+        )
 
 
 class RecipientWizard(QWizard):
@@ -793,6 +966,7 @@ class RecipientWizard(QWizard):
         self.preprocessing_page = PreprocessingPage()
         self.content_page = DeclarationContentPage()
         self.login_page = LoginPage()
+        self.login_page.registration_callback = self._register_declarations
         self.files_page_id = self.addPage(self.files_page)
         self.review_page_id = self.addPage(self.review_page)
         self.preprocessing_page_id = self.addPage(self.preprocessing_page)
@@ -811,7 +985,9 @@ class RecipientWizard(QWizard):
         ])
         self.setButtonText(QWizard.WizardButton.BackButton, "قبلی")
         self.setButtonText(QWizard.WizardButton.NextButton, "بعدی")
-        self.setButtonText(QWizard.WizardButton.FinishButton, "آزمایش ورود امن")
+        self.setButtonText(
+            QWizard.WizardButton.FinishButton, "شروع پردازش و ثبت"
+        )
         self.setButtonText(QWizard.WizardButton.CancelButton, "انصراف")
         self.button(QWizard.WizardButton.BackButton).setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward)
@@ -821,6 +997,93 @@ class RecipientWizard(QWizard):
         )
         self.button(QWizard.WizardButton.NextButton).setObjectName("PrimaryButton")
         self.button(QWizard.WizardButton.FinishButton).setObjectName("PrimaryButton")
+
+    def _register_declarations(self, credentials: LoginCredentials) -> bool:
+        candidates = self.preprocessing_page.candidates()
+        if not candidates:
+            QMessageBox.warning(self, "مخاطب وجود ندارد", "حداقل یک ردیف لازم است.")
+            return False
+        try:
+            drafts = _build_desktop_drafts(
+                candidates,
+                self.content_page.payloads(),
+                shared=self.content_page.shared_checkbox.isChecked(),
+                lookup_dir=self._lookup_dir,
+            )
+        except LookupResolutionError as exc:
+            QMessageBox.warning(self, "کدهای ثنا ناقص", str(exc))
+            return False
+
+        answer = QMessageBox.question(
+            self,
+            "تأیید شروع عملیات زنده",
+            f"مرورگر باز شود و پردازش {len(drafts)} اظهارنامه آغاز گردد؟\n"
+            "پیش از امضای نهایی هر اظهارنامه، تأیید جداگانه گرفته می‌شود.\n"
+            "در صورت خطای مبهم، اجرای گروه متوقف و همان مورد تکرار نمی‌شود.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+
+        first_login = True
+
+        def credentials_provider() -> LoginCredentials | None:
+            nonlocal first_login, credentials
+            if first_login:
+                first_login = False
+                return credentials
+            otp, accepted = QInputDialog.getText(
+                self,
+                "ورود مجدد به ثنا",
+                "نشست پایان یافته است. OTP جدید را وارد کنید:",
+                QLineEdit.EchoMode.Password,
+            )
+            if not accepted or not otp.strip():
+                return None
+            credentials = replace(credentials, otp=otp.strip())
+            self.login_page.otp.setText(otp.strip())
+            self.login_page._save_credentials()
+            return credentials
+
+        def final_confirmation(draft: DeclarationDraft) -> bool:
+            name = " ".join(
+                value for value in (
+                    draft.fields.get("recipient_first_name", ""),
+                    draft.fields.get("recipient_last_name", ""),
+                ) if value
+            )
+            return QMessageBox.question(
+                self,
+                "تأیید امضا و ثبت نهایی",
+                f"اظهارنامه مخاطب «{name}» آماده امضا است.\n"
+                "این اقدام نهایی و غیرقابل‌برگشت است. ثبت انجام شود؟",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            ) == QMessageBox.StandardButton.Yes
+
+        try:
+            results = run_live_upload_batch(
+                drafts,
+                credentials_provider,
+                final_confirmation,
+            )
+            for index, (draft, result) in enumerate(zip(drafts, results), start=1):
+                save_verified_result(
+                    draft,
+                    result,
+                    filename=f"result-{index:03d}.json",
+                )
+        except (LiveBrowserError, ResultPersistenceError, ValueError) as exc:
+            QMessageBox.critical(self, "ثبت متوقف شد", str(exc))
+            return False
+
+        QMessageBox.information(
+            self,
+            "ثبت کامل شد",
+            f"تعداد {len(results)} اظهارنامه با کد رهگیری معتبر ثبت شد.",
+        )
+        return True
 
     def _page_changed(self, page_id: int) -> None:
         if page_id == self.preprocessing_page_id:
