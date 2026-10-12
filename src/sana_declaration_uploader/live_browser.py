@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 import re
+from typing import TypeVar
 
 from .models import Attachment, DeclarationDraft
 
@@ -37,6 +38,51 @@ class LoginCredentials:
             "legalIdentity": self.legal_identity,
             "otpPassowrd": self.otp,
         }
+
+
+_BatchItem = TypeVar("_BatchItem")
+
+
+class ReusableLoginSession:
+    """Reuse one authenticated page and reauthenticate only between items."""
+
+    def __init__(self, page: object, *, timeout_ms: int = 60_000) -> None:
+        self.page = page
+        self.timeout_ms = timeout_ms
+
+    def ensure_authenticated(
+        self, credentials_provider: Callable[[], LoginCredentials | None]
+    ) -> None:
+        try:
+            if self.page.locator("#menu4Container").is_visible():
+                return
+        except Exception:
+            pass
+        credentials = credentials_provider()
+        if credentials is None:
+            raise LiveBrowserError("session_reauthentication_required")
+        login_self_service(
+            self.page,
+            credentials.as_portal_fields(),
+            timeout_ms=self.timeout_ms,
+        )
+
+
+def run_authenticated_batch(
+    items: Iterable[_BatchItem],
+    session: ReusableLoginSession,
+    credentials_provider: Callable[[], LoginCredentials | None],
+    process_item: Callable[[_BatchItem, object], None],
+) -> None:
+    """Process each item once, reauthenticating only before a new item.
+
+    An error during ``process_item`` is never retried because the remote write
+    state may be ambiguous. The caller may resume only after operator review.
+    """
+
+    for item in items:
+        session.ensure_authenticated(credentials_provider)
+        process_item(item, session.page)
 
 
 def login_self_service(

@@ -2,11 +2,14 @@ import unittest
 
 from sana_declaration_uploader.live_browser import (
     LiveBrowserError,
+    LoginCredentials,
     PlaywrightDeclarationPage,
     PlaywrightContentPage,
     PlaywrightSubmissionPage,
+    ReusableLoginSession,
     extract_tracking_code,
     login_self_service,
+    run_authenticated_batch,
 )
 from sana_declaration_uploader.models import DeclarationDraft
 from pathlib import Path
@@ -26,11 +29,15 @@ class _Locator:
 
     def click(self):
         self.page.calls.append(("click", self.selector))
+        if self.selector == "#frmCheckOTP button":
+            self.page.authenticated = True
 
     def wait_for(self, **kwargs):
         self.page.calls.append(("wait_for", self.selector, kwargs["state"]))
 
     def is_visible(self):
+        if self.selector == "#menu4Container":
+            return self.page.authenticated
         return self.selector == "#chkAgreement"
 
     def is_checked(self):
@@ -40,6 +47,7 @@ class _Locator:
 class _Page:
     def __init__(self):
         self.calls = []
+        self.authenticated = False
 
     def goto(self, url, **kwargs):
         self.calls.append(("goto", url))
@@ -94,6 +102,64 @@ class LiveBrowserLoginTests(unittest.TestCase):
             login_self_service(page, credentials)
 
         self.assertEqual(page.calls, [])
+
+    def test_batch_reuses_login_and_processes_each_item_once(self):
+        page = _Page()
+        session = ReusableLoginSession(page)
+        provider_calls = []
+        processed = []
+
+        def credentials_provider():
+            provider_calls.append(True)
+            return LoginCredentials("national", "password", "identity", "otp")
+
+        run_authenticated_batch(
+            ("first", "second"),
+            session,
+            credentials_provider,
+            lambda item, _page: processed.append(item),
+        )
+
+        self.assertEqual(len(provider_calls), 1)
+        self.assertEqual(processed, ["first", "second"])
+
+    def test_batch_reauthenticates_before_next_item_after_session_loss(self):
+        page = _Page()
+        session = ReusableLoginSession(page)
+        provider_calls = []
+
+        def credentials_provider():
+            provider_calls.append(True)
+            return LoginCredentials("national", "password", "identity", "new-otp")
+
+        def process(item, current_page):
+            if item == "first":
+                current_page.authenticated = False
+
+        run_authenticated_batch(
+            ("first", "second"), session, credentials_provider, process
+        )
+
+        self.assertEqual(len(provider_calls), 2)
+
+    def test_batch_never_retries_an_item_after_ambiguous_failure(self):
+        page = _Page()
+        session = ReusableLoginSession(page)
+        processed = []
+
+        def process(item, _page):
+            processed.append(item)
+            raise LiveBrowserError("site_response_ambiguous")
+
+        with self.assertRaisesRegex(LiveBrowserError, "site_response_ambiguous"):
+            run_authenticated_batch(
+                ("first", "second"),
+                session,
+                lambda: LoginCredentials("national", "password", "identity", "otp"),
+                process,
+            )
+
+        self.assertEqual(processed, ["first"])
 
 
 class DeclarationPageTests(unittest.TestCase):
