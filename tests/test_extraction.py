@@ -14,6 +14,109 @@ from sana_declaration_uploader.extraction import (
 
 
 class RecipientExtractionTests(unittest.TestCase):
+    def test_extracts_each_declaration_table_row_with_shared_description(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "declarations.docx"
+            document = Document()
+            table = document.add_table(rows=4, cols=5)
+            headers = (
+                "ردیف", "شماره و تاریخ اظهارنامه", "نام و نام خانوادگی",
+                "کد ملی", "آدرس",
+            )
+            for index, value in enumerate(headers):
+                table.cell(0, index).text = value
+            values = (
+                ("1", "1405220012345678 5/6/1405", "علی رضایی", "1234567891", "تهران"),
+                ("2", "1405220087654321 مورخ 7/6/1405", "رضا کریمی فرزند حسن", "ندارد", "استان فارس- شهرستان شیراز- شیراز- خیابان نمونه"),
+            )
+            for row_index, row_values in enumerate(values, start=1):
+                for column, value in enumerate(row_values):
+                    table.cell(row_index, column).text = value
+            description = (
+                "مخاطب محترم: این متن ساختگی برای بررسی استخراج شرح اظهارنامه "
+                "از سلول ادغام‌شده جدول ایجاد شده و هیچ محتوای حقوقی واقعی ندارد."
+            )
+            table.cell(3, 0).merge(table.cell(3, 4)).text = description
+            document.save(path)
+
+            candidates = extract_recipient_candidates(path)
+
+            self.assertEqual(len(candidates), 2)
+            self.assertEqual(candidates[0].first_name, "علی")
+            self.assertEqual(candidates[0].last_name, "رضایی")
+            self.assertEqual(candidates[0].related_declaration_number, "1405220012345678")
+            self.assertEqual(candidates[0].related_declaration_date, "5/6/1405")
+            self.assertEqual(candidates[0].province, "استان تهران")
+            self.assertEqual(candidates[0].county, "شهرستان تهران")
+            self.assertEqual(candidates[0].city, "تهران")
+            self.assertEqual(candidates[0].declaration_subject, "سایر موضوعات")
+            self.assertEqual(candidates[0].declaration_text, description)
+            self.assertEqual(candidates[1].full_name, "رضا کریمی")
+            self.assertEqual(candidates[1].father_name, "حسن")
+            self.assertEqual(candidates[1].national_id, "")
+            self.assertEqual(candidates[1].province, "استان فارس")
+            self.assertEqual(candidates[1].county, "شهرستان شیراز")
+            self.assertEqual(candidates[1].city, "شیراز")
+
+    def test_no_national_id_uses_unlabeled_address_hierarchy_for_review(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "address.docx"
+            document = Document()
+            table = document.add_table(rows=3, cols=5)
+            for index, value in enumerate((
+                "ردیف", "شماره و تاریخ اظهارنامه", "نام و نام خانوادگی",
+                "کد ملی", "آدرس",
+            )):
+                table.cell(0, index).text = value
+            for index, value in enumerate((
+                "1", "1405220012345678 5/6/1405", "علی رضایی",
+                "ندارد", "فارس- شیراز- صدرا- خیابان نمونه",
+            )):
+                table.cell(1, index).text = value
+            table.cell(2, 0).merge(table.cell(2, 4)).text = (
+                "مخاطب محترم: این متن ساختگی فقط برای تکمیل حداقل طول شرح و "
+                "آزمایش تجزیه سلسله‌مراتب آدرس بدون برچسب استفاده می‌شود."
+            )
+            document.save(path)
+
+            candidate = extract_recipient_candidates(path)[0]
+
+            self.assertEqual(candidate.province, "استان فارس")
+            self.assertEqual(candidate.county, "شهرستان شیراز")
+            self.assertEqual(candidate.city, "صدرا")
+            self.assertNotIn("address_location_review_required", candidate.issues)
+
+    def test_extracts_labeled_legal_addressee_without_treating_body_as_name(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "legal.docx"
+            document = Document()
+            table = document.add_table(rows=3, cols=3)
+            for index, value in enumerate((
+                "مشخصات و اقامتگاه اظهارکننده",
+                "موضوع اظهارنامه",
+                "مشخصات و اقامتگاه مخاطب",
+            )):
+                table.cell(0, index).text = value
+            table.cell(1, 0).text = "شرکت اظهارکننده نمونه"
+            table.cell(1, 1).text = "اظهارنامه شماره 1405220012345678 مورخ 10/06/1405"
+            table.cell(1, 2).text = (
+                "شرکت مخاطب نمونه، استان بوشهر، شهرستان بوشهر، شهر خارک، خیابان نمونه"
+            )
+            table.cell(2, 0).merge(table.cell(2, 2)).text = (
+                "مخاطب محترم: این شرح ساختگی طول کافی دارد و فقط برای اطمینان از "
+                "استخراج صحیح مخاطب حقوقی و نادیده گرفتن متن بدنه ایجاد شده است."
+            )
+            document.save(path)
+
+            candidate = extract_recipient_candidates(path)[0]
+
+            self.assertEqual(candidate.full_name, "شرکت مخاطب نمونه")
+            self.assertEqual(candidate.person_type, "legal")
+            self.assertEqual(candidate.province, "استان بوشهر")
+            self.assertEqual(candidate.county, "شهرستان بوشهر")
+            self.assertEqual(candidate.city, "خارک")
+            self.assertEqual(candidate.related_declaration_date, "10/06/1405")
+
     def test_extracts_labeled_recipient_fields_from_word(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "person.docx"

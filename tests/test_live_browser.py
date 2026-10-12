@@ -288,6 +288,15 @@ class RecipientPageTests(unittest.TestCase):
             for call in page.calls
         ))
 
+    def test_single_space_is_allowed_for_required_main_street(self):
+        page = _Page()
+
+        PlaywrightRecipientPage(page).fill_natural_person(
+            self._draft(recipient_main_street=" ", recipient_address="")
+        )
+
+        self.assertIn(("fill", "#txtBasicAvenue", " "), page.calls)
+
     def test_missing_recipient_data_stops_before_browser_activity(self):
         page = _Page()
 

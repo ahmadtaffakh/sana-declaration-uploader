@@ -377,7 +377,11 @@ class PlaywrightRecipientPage:
             raise LiveBrowserError("recipient_person_type_not_supported")
         missing = [
             name for name in self.REQUIRED_FIELDS
-            if not fields.get(name, "").strip()
+            if (
+                fields.get(name, "") == ""
+                if name == "recipient_main_street"
+                else not fields.get(name, "").strip()
+            )
         ]
         if missing:
             raise LiveBrowserError(f"recipient_fields_incomplete:{','.join(missing)}")

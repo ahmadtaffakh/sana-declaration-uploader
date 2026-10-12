@@ -59,6 +59,12 @@ _LEGAL_PERSON_MARKERS = (
     "شرکت", "سازمان", "وزارت", "اداره", "بانک", "مؤسسه", "شهرداری"
 )
 _DOCUMENT_NUMBER_LENGTH = r"[0-9]{8,30}"
+_DECLARATION_DATE = r"[0-9]{1,4}/[0-9]{1,2}/[0-9]{1,4}"
+_DEFAULT_LOCATION = {
+    "province": "استان تهران",
+    "county": "شهرستان تهران",
+    "city": "تهران",
+}
 
 
 def extract_recipients(paths: list[Path]) -> tuple[RecipientCandidate, ...]:
@@ -122,16 +128,24 @@ def _extract_document(
     if not source.is_file():
         raise DocumentExtractionError(f"source_file_missing:{path.name}")
 
-    text = _read_text(source)
+    document = _load_docx(source) if source.suffix.lower() == ".docx" else None
+    text = _read_text(source, document=document)
     normalized = _normalize_text(text)
     notice_number = _document_number(normalized, source, "ابلاغیه")
     declaration_number = _document_number(normalized, source, "اظهارنامه")
-    table_parties = _pdf_table_parties(source) if source.suffix.lower() == ".pdf" else ()
+    if document is not None:
+        table_parties = _docx_table_parties(document, source)
+    elif source.suffix.lower() == ".pdf":
+        table_parties = _pdf_table_parties(source)
+    else:
+        table_parties = ()
     parties = tuple(
         replace(
             candidate,
             notice_number=notice_number,
-            related_declaration_number=declaration_number,
+            related_declaration_number=(
+                candidate.related_declaration_number or declaration_number
+            ),
         )
         for candidate in (table_parties or _extract_parties(normalized, source))
     )
@@ -180,6 +194,237 @@ def _extract_document(
         issues=tuple(issues),
     ),)
     return candidates, notice_number, declaration_number
+
+
+def _load_docx(source: Path) -> object:
+    try:
+        return Document(source)
+    except Exception as exc:
+        raise DocumentExtractionError(f"source_file_invalid:{source.name}") from exc
+
+
+def _docx_table_parties(document: object, source: Path) -> tuple[RecipientCandidate, ...]:
+    candidates = []
+    descriptions = []
+    for table in document.tables:
+        rows = [
+            tuple(_normalize_cell(cell.text) for cell in row.cells)
+            for row in table.rows
+        ]
+        candidates.extend(_tabular_addressees(rows, source))
+        candidates.extend(_labeled_addressee(rows, source))
+        descriptions.extend(_table_descriptions(rows))
+
+    if not candidates:
+        return ()
+    description = max(descriptions, key=len, default="")
+    return tuple(
+        replace(
+            candidate,
+            declaration_subject=candidate.declaration_subject or "سایر موضوعات",
+            declaration_text=candidate.declaration_text or description,
+        )
+        for candidate in candidates
+    )
+
+
+def _tabular_addressees(
+    rows: list[tuple[str, ...]], source: Path
+) -> tuple[RecipientCandidate, ...]:
+    for header_index, row in enumerate(rows):
+        columns = _recipient_columns(row)
+        if columns is None:
+            continue
+        candidates = []
+        for values in rows[header_index + 1:]:
+            name = values[columns["name"]].strip()
+            reference = values[columns["reference"]].strip()
+            if not name or not re.search(_DOCUMENT_NUMBER_LENGTH, reference):
+                continue
+            candidates.append(_table_candidate(
+                source,
+                name=name,
+                national_id=values[columns["national_id"]].strip(),
+                address=values[columns["address"]].strip(),
+                reference=reference,
+            ))
+        return tuple(candidates)
+    return ()
+
+
+def _recipient_columns(row: tuple[str, ...]) -> dict[str, int] | None:
+    columns = {}
+    for index, value in enumerate(row):
+        if "شماره" in value and "اظهارنامه" in value:
+            columns["reference"] = index
+        elif "نام" in value and "نام خانوادگی" in value:
+            columns["name"] = index
+        elif "کد ملی" in value:
+            columns["national_id"] = index
+        elif value == "آدرس" or value == "نشانی":
+            columns["address"] = index
+    required = {"reference", "name", "national_id", "address"}
+    return columns if required.issubset(columns) else None
+
+
+def _labeled_addressee(
+    rows: list[tuple[str, ...]], source: Path
+) -> tuple[RecipientCandidate, ...]:
+    for header_index, row in enumerate(rows[:-1]):
+        recipient_index = next(
+            (index for index, value in enumerate(row) if "اقامتگاه مخاطب" in value),
+            None,
+        )
+        reference_index = next(
+            (
+                index for index, value in enumerate(row)
+                if value == "موضوع اظهارنامه" or "شماره و تاریخ اظهارنامه" in value
+            ),
+            None,
+        )
+        if recipient_index is None or reference_index is None:
+            continue
+        values = rows[header_index + 1]
+        if len(values) <= max(recipient_index, reference_index):
+            return ()
+        recipient = values[recipient_index]
+        reference = values[reference_index]
+        if not recipient or not re.search(_DOCUMENT_NUMBER_LENGTH, reference):
+            return ()
+        name, address = _split_labeled_recipient(recipient)
+        return (_table_candidate(
+            source,
+            name=name,
+            national_id="",
+            address=address,
+            reference=reference,
+        ),)
+    return ()
+
+
+def _split_labeled_recipient(value: str) -> tuple[str, str]:
+    match = re.search(r"[،,]\s*(?=(?:استان|شهرستان|شهر|خیابان|نشانی|آدرس)\b)", value)
+    if not match:
+        return value, ""
+    return value[:match.start()].strip(), value[match.start() + 1:].strip()
+
+
+def _table_candidate(
+    source: Path,
+    *,
+    name: str,
+    national_id: str,
+    address: str,
+    reference: str,
+) -> RecipientCandidate:
+    full_name, father_name = _split_father_name(name)
+    person_type = _person_type(full_name)
+    first_name, last_name = _split_natural_name(full_name, person_type)
+    national_id = national_id if re.fullmatch(r"[0-9]{10}", national_id) else ""
+    declaration_number, declaration_date = _split_declaration_reference(reference)
+    locations = _address_locations(address)
+    if national_id:
+        locations = {**_DEFAULT_LOCATION, **locations}
+    issues = []
+    if person_type != "legal" and (not first_name or not last_name):
+        issues.append("name_parts_review_required")
+    if national_id and not _valid_national_id(national_id):
+        issues.append("national_id_invalid")
+    if not national_id:
+        issues.append("national_id_missing")
+        if not all(locations.get(field) for field in ("province", "county", "city")):
+            issues.append("address_location_review_required")
+    return RecipientCandidate(
+        source_path=source,
+        full_name=full_name,
+        first_name=first_name,
+        last_name=last_name,
+        father_name=father_name,
+        national_id=national_id,
+        address=address,
+        province=locations.get("province", ""),
+        county=locations.get("county", ""),
+        city=locations.get("city", ""),
+        related_declaration_number=declaration_number,
+        related_declaration_date=declaration_date,
+        role="addressee",
+        person_type=person_type if person_type == "legal" else "natural",
+        evidence=" | ".join(value for value in (reference, name, national_id, address) if value),
+        extraction_method="local_docx_table",
+        issues=tuple(issues),
+    )
+
+
+def _split_father_name(value: str) -> tuple[str, str]:
+    match = re.search(r"\s+فرزند\s+(.+)$", value)
+    if not match:
+        return value.strip(), ""
+    return value[:match.start()].strip(), match.group(1).strip()
+
+
+def _split_natural_name(value: str, person_type: str) -> tuple[str, str]:
+    if person_type == "legal":
+        return "", ""
+    parts = value.split(maxsplit=1)
+    return (parts[0], parts[1]) if len(parts) == 2 else (value.strip(), "")
+
+
+def _split_declaration_reference(value: str) -> tuple[str, str]:
+    number = re.search(_DOCUMENT_NUMBER_LENGTH, value)
+    date = re.search(_DECLARATION_DATE, value)
+    return (
+        number.group(0) if number else "",
+        date.group(0) if date else "",
+    )
+
+
+def _address_locations(address: str) -> dict[str, str]:
+    normalized = _normalize_cell(address)
+    result = {}
+    for field, label in (("province", "استان"), ("county", "شهرستان")):
+        match = re.search(rf"(?:^|[-،,])\s*{label}\s+([^\-،,]+)", normalized)
+        if match:
+            result[field] = f"{label} {match.group(1).strip()}"
+    city_match = re.search(
+        r"(?:^|[-،,])\s*شهر\s+([^\-،,]+)", normalized
+    )
+    if city_match:
+        result["city"] = city_match.group(1).strip()
+    elif result.get("county"):
+        county_match = re.search(
+            r"شهرستان\s+[^\-،,]+[-،,]\s*([^\-،,]+)", normalized
+        )
+        if county_match:
+            result["city"] = county_match.group(1).strip()
+    segments = [
+        segment.strip(" .")
+        for segment in re.split(r"\s*[-،,]\s*", normalized)
+        if segment.strip(" .")
+    ]
+    if not result.get("province") and segments:
+        if segments[0] == "تهران":
+            result.update(_DEFAULT_LOCATION)
+        elif len(segments) >= 3 and not any(
+            segments[index].startswith(("خیابان", "خ ", "کوچه", "شهرک"))
+            for index in (1, 2)
+        ):
+            result["province"] = f"استان {segments[0]}"
+            result["county"] = f"شهرستان {segments[1]}"
+            result["city"] = segments[2]
+    return result
+
+
+def _table_descriptions(rows: list[tuple[str, ...]]) -> tuple[str, ...]:
+    result = []
+    for row in rows:
+        unique = tuple(dict.fromkeys(value for value in row if value))
+        if len(unique) == 1 and len(unique[0]) >= 80 and "مخاطب محترم" in unique[0]:
+            result.append(unique[0])
+    return tuple(result)
+
+
+def _normalize_cell(value: str) -> str:
+    return " ".join(_normalize_text(value).split())
 
 
 def _pdf_table_parties(source: Path) -> tuple[RecipientCandidate, ...]:
@@ -424,11 +669,11 @@ def _person_type(name: str) -> str:
     return "unknown"
 
 
-def _read_text(path: Path) -> str:
+def _read_text(path: Path, *, document: object | None = None) -> str:
     suffix = path.suffix.lower()
     try:
         if suffix == ".docx":
-            document = Document(path)
+            document = document or Document(path)
             paragraphs = [paragraph.text for paragraph in document.paragraphs]
             table_rows = []
             for table in document.tables:

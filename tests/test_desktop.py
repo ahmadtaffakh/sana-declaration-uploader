@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -116,6 +117,30 @@ class RecipientWizardTests(unittest.TestCase):
             "نشانی اصلاح‌شده",
         )
 
+    def test_review_rows_can_be_removed_by_checkbox_or_row_button(self) -> None:
+        page = RecipientReviewPage()
+        page.set_candidates((
+            RecipientCandidate(source_path=Path("one.docx"), full_name="شخص اول"),
+            RecipientCandidate(source_path=Path("two.docx"), full_name="شخص دوم"),
+            RecipientCandidate(source_path=Path("three.docx"), full_name="شخص سوم"),
+        ))
+
+        page.table.item(0, page.HEADERS.index("انتخاب")).setCheckState(
+            Qt.CheckState.Checked
+        )
+        page._remove_selected()
+        self.assertEqual(
+            [candidate.full_name for candidate in page.candidates()],
+            ["شخص دوم", "شخص سوم"],
+        )
+
+        button = page.table.cellWidget(0, page.HEADERS.index("حذف"))
+        button.click()
+        self.assertEqual(
+            [candidate.full_name for candidate in page.candidates()],
+            ["شخص سوم"],
+        )
+
     def test_preprocessing_edits_survive_reloading_the_same_rows(self) -> None:
         wizard = RecipientWizard()
         page = wizard.preprocessing_page
@@ -196,6 +221,28 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertEqual(payloads[0]["description"], "شرح مشترک")
         self.assertEqual(payloads[1]["description"], "شرح مشترک")
         self.assertTrue(page.recipient_combo.isEnabled())
+
+    def test_extracted_descriptions_seed_separate_recipient_content(self) -> None:
+        page = DeclarationContentPage()
+        page.set_candidates((
+            RecipientCandidate(
+                source_path=Path("one.docx"),
+                full_name="شخص اول",
+                declaration_subject="سایر موضوعات",
+                declaration_text="شرح اول",
+            ),
+            RecipientCandidate(
+                source_path=Path("two.docx"),
+                full_name="شخص دوم",
+                declaration_subject="سایر موضوعات",
+                declaration_text="شرح دوم",
+            ),
+        ))
+
+        self.assertFalse(page.shared_checkbox.isChecked())
+        payloads = page.payloads()
+        self.assertEqual(payloads[0]["description"], "شرح اول")
+        self.assertEqual(payloads[1]["description"], "شرح دوم")
 
     def test_declaration_fields_survive_back_navigation_and_reentry(self) -> None:
         with TemporaryDirectory() as directory, patch(

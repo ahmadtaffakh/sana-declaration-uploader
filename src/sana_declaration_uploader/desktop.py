@@ -79,6 +79,11 @@ _DECLARATION_DEFAULTS = {
     "subject": "سایر موضوعات",
     "description": "شرح موضوع",
 }
+_DEFAULT_LOCATION = {
+    "province": "استان تهران",
+    "county": "شهرستان تهران",
+    "city": "تهران",
+}
 _ORGANIZATIONAL_STYLE = """
 QWizard, QWizardPage {
     background-color: #F4F7FB;
@@ -319,12 +324,13 @@ def _build_desktop_drafts(
     drafts = []
     for index, candidate in enumerate(candidates):
         payload = payloads.get(-1 if shared else index, {})
+        default_location = _DEFAULT_LOCATION if candidate.national_id else {}
         lookup_fields = resolve_lookup_fields(
             {
                 "job_title": candidate.job_title,
-                "province": candidate.province,
-                "county": candidate.county,
-                "city": candidate.city,
+                "province": candidate.province or default_location.get("province", ""),
+                "county": candidate.county or default_location.get("county", ""),
+                "city": candidate.city or default_location.get("city", ""),
                 "court_unit_name": candidate.court_unit_name,
                 "court_unit_code": candidate.court_unit_code,
             },
@@ -343,11 +349,12 @@ def _build_desktop_drafts(
             "recipient_father_name": candidate.father_name,
             "recipient_birth_date": candidate.birth_date,
             "recipient_gender": candidate.gender,
-            "recipient_main_street": candidate.address,
+            "recipient_main_street": candidate.address or " ",
             "recipient_address": candidate.address,
             "recipient_postal_code": candidate.postal_code,
             "notice_number": candidate.notice_number,
             "related_declaration_number": candidate.related_declaration_number,
+            "related_declaration_date": candidate.related_declaration_date,
             "declaration_subject": str(payload.get("subject", "")),
             "declaration_text": str(payload.get("description", "")),
         }
@@ -451,9 +458,11 @@ class FileSelectionPage(QWizardPage):
 
 class RecipientReviewPage(QWizardPage):
     HEADERS = (
+        "انتخاب",
         "فایل منبع",
         "شماره ابلاغیه",
         "شماره اظهارنامه مرتبط",
+        "تاریخ اظهارنامه مرتبط",
         "نقش",
         "نوع شخص",
         "نام و نام خانوادگی",
@@ -469,6 +478,7 @@ class RecipientReviewPage(QWizardPage):
         "آدرس",
         "شاهد استخراج",
         "وضعیت",
+        "حذف",
     )
 
     def __init__(self) -> None:
@@ -495,7 +505,8 @@ class RecipientReviewPage(QWizardPage):
         guidance = QLabel(
             "روش کار: ۱) نام و نقش هر شخص را کنترل کنید. ۲) خانه‌های خالی یا اشتباه "
             "را مستقیم در جدول اصلاح کنید. ۳) اگر یک ردیف به پرونده شما مربوط نیست، "
-            "آن را انتخاب و حذف کنید. وضعیت «نیازمند اصلاح» یعنی دست‌کم یک مقدار "
+            "تیک آن را بزنید یا از کلید حذف همان ردیف استفاده کنید. وضعیت «نیازمند "
+            "اصلاح» یعنی دست‌کم یک مقدار "
             "ضروری ناقص یا مشکوک است. پایان بازبینی به معنی ثبت نهایی در ثنا نیست."
         )
         guidance.setObjectName("Guidance")
@@ -517,9 +528,11 @@ class RecipientReviewPage(QWizardPage):
             candidate.full_name if candidate else ""
         )
         values = (
+            "",
             candidate.source_path.name if candidate else "دستی",
             candidate.notice_number if candidate else "",
             candidate.related_declaration_number if candidate else "",
+            candidate.related_declaration_date if candidate else "",
             _ROLE_DISPLAY.get(candidate.role, candidate.role) if candidate else "",
             _PERSON_TYPE_DISPLAY.get(candidate.person_type, candidate.person_type) if candidate else "",
             candidate.full_name if candidate else "",
@@ -535,19 +548,37 @@ class RecipientReviewPage(QWizardPage):
             candidate.address if candidate else "",
             candidate.evidence if candidate else "",
             self._status(candidate),
+            "",
         )
         for column, value in enumerate(values):
             item = QTableWidgetItem(value)
             if column == 0:
+                item.setFlags(
+                    (item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    & ~Qt.ItemFlag.ItemIsEditable
+                )
+                item.setCheckState(Qt.CheckState.Unchecked)
+            if column == 1:
                 item.setData(Qt.ItemDataRole.UserRole, candidate)
-            if column in (0, len(self.HEADERS) - 2, len(self.HEADERS) - 1):
+            if column in (
+                1,
+                len(self.HEADERS) - 3,
+                len(self.HEADERS) - 2,
+                len(self.HEADERS) - 1,
+            ):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(row, column, item)
+        remove_button = QPushButton("حذف")
+        remove_button.clicked.connect(
+            lambda _checked=False, marker=self.table.item(row, 0):
+            self.table.removeRow(marker.row())
+        )
+        self.table.setCellWidget(row, len(self.HEADERS) - 1, remove_button)
 
     def candidates(self) -> tuple[RecipientCandidate, ...]:
         result = []
         for row in range(self.table.rowCount()):
-            original = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            original = self.table.item(row, 1).data(Qt.ItemDataRole.UserRole)
             if not isinstance(original, RecipientCandidate):
                 original = RecipientCandidate(source_path=Path("manual"))
 
@@ -559,6 +590,7 @@ class RecipientReviewPage(QWizardPage):
                 original,
                 notice_number=value("شماره ابلاغیه"),
                 related_declaration_number=value("شماره اظهارنامه مرتبط"),
+                related_declaration_date=value("تاریخ اظهارنامه مرتبط"),
                 role=_ROLE_VALUE.get(value("نقش"), value("نقش")),
                 person_type=_PERSON_TYPE_VALUE.get(
                     value("نوع شخص"), value("نوع شخص")
@@ -575,12 +607,17 @@ class RecipientReviewPage(QWizardPage):
                 postal_code=value("کدپستی"),
                 address=value("آدرس"),
             )
-            self.table.item(row, 0).setData(Qt.ItemDataRole.UserRole, updated)
+            self.table.item(row, 1).setData(Qt.ItemDataRole.UserRole, updated)
             result.append(updated)
         return tuple(result)
 
     def _remove_selected(self) -> None:
-        rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)
+        rows = {
+            row for row in range(self.table.rowCount())
+            if self.table.item(row, 0).checkState() == Qt.CheckState.Checked
+        }
+        rows.update(index.row() for index in self.table.selectedIndexes())
+        rows = sorted(rows, reverse=True)
         for row in rows:
             self.table.removeRow(row)
 
@@ -795,6 +832,32 @@ class DeclarationContentPage(QWizardPage):
             self._signature = signature
             self._payloads.clear()
             self._active_key = -1
+            seeded = []
+            for candidate in candidates:
+                payload = self._empty_payload()
+                payload["subject"] = (
+                    candidate.declaration_subject or payload["subject"]
+                )
+                payload["description"] = (
+                    candidate.declaration_text or payload["description"]
+                )
+                seeded.append(payload)
+            shared_content = {
+                (str(payload["subject"]), str(payload["description"]))
+                for payload in seeded
+            }
+            use_shared = len(shared_content) <= 1
+            self.shared_checkbox.blockSignals(True)
+            self.shared_checkbox.setChecked(use_shared)
+            self.shared_checkbox.blockSignals(False)
+            if seeded:
+                if use_shared:
+                    self._payloads[-1] = self._copy_payload(seeded[0])
+                else:
+                    self._payloads.update(
+                        (index, self._copy_payload(payload))
+                        for index, payload in enumerate(seeded)
+                    )
         self._rebuild_recipient_combo()
 
     def payloads(self) -> dict[int, dict[str, object]]:

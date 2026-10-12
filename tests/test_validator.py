@@ -7,6 +7,33 @@ from sana_declaration_uploader.validator import validate_draft
 
 
 class ValidatorTests(unittest.TestCase):
+    def test_single_space_main_street_satisfies_site_field_without_address(self) -> None:
+        with TemporaryDirectory() as directory:
+            fields = {
+                "recipient_id": "r1",
+                "data_source": "manual",
+                "recipient_first_name": "Test",
+                "recipient_last_name": "User",
+                "job_title": "Job",
+                "job_id": "job-1",
+                "job_code": "1",
+                "province": "Province",
+                "province_id": "province-1",
+                "province_code": "1",
+                "county": "County",
+                "county_id": "county-1",
+                "county_code": "1",
+                "city": "City",
+                "city_id": "city-1",
+                "city_code": "1",
+                "recipient_main_street": " ",
+                "declaration_subject": "Subject",
+                "declaration_text": "Text",
+            }
+            draft = DeclarationDraft(source_dir=Path(directory), fields=fields)
+
+            self.assertNotIn("field_missing:recipient_main_street", validate_draft(draft))
+
     def test_valid_draft_has_no_errors(self) -> None:
         with TemporaryDirectory() as directory:
             source_dir = Path(directory)
