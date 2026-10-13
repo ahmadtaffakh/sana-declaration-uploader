@@ -782,12 +782,24 @@ class PlaywrightContentPage:
         subject = subject.strip()
         if not subject:
             raise LiveBrowserError("declaration_subject_missing")
+        site_subject = (
+            "سایر موضوعات اظهارنامه"
+            if subject == "سایر موضوعات"
+            else subject
+        )
+        search_text = (
+            "سایر" if site_subject == "سایر موضوعات اظهارنامه" else subject
+        )
         page = self.page
         page.locator("#btnAddSection").click()
         control = page.locator("#jssPetitionRelief1")
-        control.locator("input").first.fill(subject)
+        try:
+            control.locator("button.ui-select-toggle").click()
+            control.locator("input.ui-select-search").fill(search_text)
+        except Exception as exc:
+            raise LiveBrowserError("declaration_subject_control_failed") from exc
         choices = control.locator(".ui-select-choices-row:visible").filter(
-            has_text=re.compile(rf"^\s*{re.escape(subject)}\s*$")
+            has_text=re.compile(rf"^\s*{re.escape(site_subject)}\s*$")
         )
         try:
             choices.first.wait_for(state="visible", timeout=self.timeout_ms)
@@ -795,13 +807,22 @@ class PlaywrightContentPage:
             raise LiveBrowserError("declaration_subject_not_found") from exc
         if choices.count() != 1:
             raise LiveBrowserError("declaration_subject_not_unique")
-        if choices.first.inner_text().strip() != subject:
+        if choices.first.inner_text().strip() != site_subject:
             raise LiveBrowserError("declaration_subject_not_exact")
-        choices.first.click()
+        try:
+            choices.first.click()
+            selected = control.locator(".ui-select-match-text")
+            selected.wait_for(state="visible", timeout=self.timeout_ms)
+            if selected.inner_text().strip() != site_subject:
+                raise LiveBrowserError("declaration_subject_not_selected")
+        except LiveBrowserError:
+            raise
+        except Exception as exc:
+            raise LiveBrowserError("declaration_subject_selection_failed") from exc
         _open_form_step(
             page,
-            "شرح اظهارنامه",
-            "textarea[id^='taTextElement']",
+            "شرح",
+            "text-angular[ng-model='Model.Description'] div[contenteditable='true']",
             self.timeout_ms,
         )
 
@@ -809,10 +830,12 @@ class PlaywrightContentPage:
         description = description.strip()
         if not description:
             raise LiveBrowserError("declaration_text_missing")
-        textareas = self.page.locator("textarea[id^='taTextElement']")
-        if textareas.count() != 1:
-            raise LiveBrowserError("declaration_textarea_not_unique")
-        textareas.first.fill(description)
+        editors = self.page.locator(
+            "text-angular[ng-model='Model.Description'] div[contenteditable='true']"
+        )
+        if editors.count() != 1:
+            raise LiveBrowserError("declaration_editor_not_unique")
+        editors.first.fill(description)
         self.page.locator("#btnSave").wait_for(
             state="visible", timeout=self.timeout_ms
         )

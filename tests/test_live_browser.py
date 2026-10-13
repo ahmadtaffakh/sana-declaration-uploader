@@ -832,7 +832,12 @@ class ContentPageTests(unittest.TestCase):
     DESCRIPTION_STEP = (
         "//*[@ng-repeat='step in navCtrl.currentStep.innerSteps']"
         "[.//*[contains(concat(' ', normalize-space(@class), ' '), ' step ') "
-        "and normalize-space()='شرح اظهارنامه']]"
+        "and normalize-space()='شرح']]"
+    )
+    SUBJECT_CHOICE = "#jssPetitionRelief1 >> .ui-select-choices-row:visible"
+    SUBJECT_SELECTED = "#jssPetitionRelief1 >> .ui-select-match-text"
+    DESCRIPTION_EDITOR = (
+        "text-angular[ng-model='Model.Description'] div[contenteditable='true']"
     )
 
     def test_empty_subject_stops_before_browser_activity(self):
@@ -845,9 +850,8 @@ class ContentPageTests(unittest.TestCase):
 
     def test_subject_opens_description_tab_without_next_or_evidence(self):
         page = _Page()
-        page.inner_texts[
-            "#jssPetitionRelief1 >> .ui-select-choices-row:visible"
-        ] = "موضوع"
+        page.inner_texts[self.SUBJECT_CHOICE] = "موضوع"
+        page.inner_texts[self.SUBJECT_SELECTED] = "موضوع"
 
         PlaywrightContentPage(page).select_subject("موضوع")
 
@@ -859,12 +863,12 @@ class ContentPageTests(unittest.TestCase):
             (
                 "wait_for_function",
                 60000,
-                {"readySelector": None, "stepTitle": "شرح اظهارنامه"},
+                {"readySelector": None, "stepTitle": "شرح"},
             ),
             page.calls,
         )
         self.assertIn(
-            ("wait_for", "textarea[id^='taTextElement']", "visible"),
+            ("wait_for", self.DESCRIPTION_EDITOR, "visible"),
             page.calls,
         )
         self.assertFalse(any(
@@ -874,18 +878,26 @@ class ContentPageTests(unittest.TestCase):
 
     def test_subject_waits_for_an_exact_visible_choice(self):
         page = _Page()
-        choice_selector = "#jssPetitionRelief1 >> .ui-select-choices-row:visible"
-        page.inner_texts[choice_selector] = "سایر موضوعات"
+        page.inner_texts[self.SUBJECT_CHOICE] = "سایر موضوعات اظهارنامه"
+        page.inner_texts[self.SUBJECT_SELECTED] = "سایر موضوعات اظهارنامه"
 
         PlaywrightContentPage(page).select_subject("سایر موضوعات")
 
-        self.assertIn(("wait_for", choice_selector, "visible"), page.calls)
-        self.assertIn(("click", choice_selector), page.calls)
+        self.assertIn(
+            ("click", "#jssPetitionRelief1 >> button.ui-select-toggle"),
+            page.calls,
+        )
+        self.assertIn(
+            ("fill", "#jssPetitionRelief1 >> input.ui-select-search", "سایر"),
+            page.calls,
+        )
+        self.assertIn(("wait_for", self.SUBJECT_CHOICE, "visible"), page.calls)
+        self.assertIn(("click", self.SUBJECT_CHOICE), page.calls)
+        self.assertIn(("wait_for", self.SUBJECT_SELECTED, "visible"), page.calls)
 
     def test_missing_subject_choice_stops_before_description_navigation(self):
         page = _Page()
-        choice_selector = "#jssPetitionRelief1 >> .ui-select-choices-row:visible"
-        page.wait_failures.add(choice_selector)
+        page.wait_failures.add(self.SUBJECT_CHOICE)
 
         with self.assertRaisesRegex(
             LiveBrowserError, "declaration_subject_not_found"
@@ -893,7 +905,21 @@ class ContentPageTests(unittest.TestCase):
             PlaywrightContentPage(page).select_subject("سایر موضوعات")
 
         self.assertFalse(any(
-            "شرح اظهارنامه" in str(call) for call in page.calls
+            "normalize-space()='شرح'" in str(call) for call in page.calls
+        ))
+
+    def test_unverified_subject_selection_stops_before_description(self):
+        page = _Page()
+        page.inner_texts[self.SUBJECT_CHOICE] = "سایر موضوعات اظهارنامه"
+        page.inner_texts[self.SUBJECT_SELECTED] = "موضوع دیگری"
+
+        with self.assertRaisesRegex(
+            LiveBrowserError, "declaration_subject_not_selected"
+        ):
+            PlaywrightContentPage(page).select_subject("سایر موضوعات")
+
+        self.assertFalse(any(
+            "normalize-space()='شرح'" in str(call) for call in page.calls
         ))
 
     def test_description_is_temporarily_saved_without_next(self):
@@ -905,7 +931,7 @@ class ContentPageTests(unittest.TestCase):
             PlaywrightContentPage(page).fill_description_and_save("شرح")
 
         self.assertIn(
-            ("fill", "textarea[id^='taTextElement']", "شرح"), page.calls
+            ("fill", self.DESCRIPTION_EDITOR, "شرح"), page.calls
         )
         self.assertIn(("wait_for", "#btnSave", "visible"), page.calls)
         self.assertIn(("click", "#btnSave"), page.calls)
