@@ -510,25 +510,79 @@ class PlaywrightRecipientPage:
             raise LiveBrowserError("recipient_gender_unsupported")
         self.page.locator(selector).click()
 
-_SELECT_RECIPIENT_LOOKUPS = """payload => {
+_SELECT_RECIPIENT_LOOKUPS = """async payload => {
     const containers = document.querySelectorAll('.ui-select-container');
-    const selections = [
-        ['job', 0, {Id: payload.job.id, Title: payload.job.label, Code: payload.job.code}],
-        ['province', 2, {Id: payload.province.id, LocationName: payload.province.label,
-                         LocationCode: payload.province.code, LocationType: payload.province.type}],
-        ['county', 3, {Id: payload.county.id, LocationName: payload.county.label,
-                       LocationCode: payload.county.code, LocationType: payload.county.type}],
-        ['city', 4, {Id: payload.city.id, LocationName: payload.city.label,
-                     LocationCode: payload.city.code, LocationType: payload.city.type}],
-    ];
-    const result = {};
-    for (const [name, index, value] of selections) {
-        const container = containers[index];
-        if (!container) throw new Error(`lookup_container_missing:${name}`);
-        const scope = angular.element(container).scope();
-        if (!scope || !scope.$select) throw new Error(`lookup_scope_missing:${name}`);
+    const container = name => document.querySelector(
+        `.ui-select-container[name="${name}"]`
+    );
+    const selectScope = name => {
+        const node = container(name);
+        if (!node) throw new Error(`lookup_container_missing:${name}`);
+        const scope = angular.element(node).scope();
+        if (!scope || !scope.$select) {
+            throw new Error(`lookup_scope_missing:${name}`);
+        }
+        return scope;
+    };
+    const waitFor = async (predicate, code) => {
+        const deadline = Date.now() + 30000;
+        while (Date.now() < deadline) {
+            const value = predicate();
+            if (value) return value;
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        throw new Error(code);
+    };
+    const choose = (name, value) => {
+        const scope = selectScope(name);
         scope.$apply(() => scope.$select.select(value, false));
-        const match = container.querySelector('.ui-select-match-text');
+    };
+    const findById = (items, id) => Array.isArray(items)
+        ? items.find(item => String(item.Id || '') === String(id || ''))
+        : null;
+    const result = {};
+
+    const jobContainer = containers[0];
+    if (!jobContainer) throw new Error('lookup_container_missing:job');
+    const jobScope = angular.element(jobContainer).scope();
+    if (!jobScope || !jobScope.$select) {
+        throw new Error('lookup_scope_missing:job');
+    }
+    jobScope.$apply(() => jobScope.$select.select(
+        {Id: payload.job.id, Title: payload.job.label, Code: payload.job.code},
+        false
+    ));
+    const jobMatch = jobContainer.querySelector('.ui-select-match-text');
+    result.job = jobMatch ? jobMatch.textContent.trim() : '';
+
+    const stateScope = selectScope('state');
+    const viewModel = stateScope.viewModel;
+    if (!viewModel || !viewModel.currentPetitionPerson) {
+        throw new Error('recipient_model_missing');
+    }
+    choose('state', {
+        Id: payload.province.id,
+        LocationName: payload.province.label,
+        LocationCode: payload.province.code,
+        LocationType: payload.province.type,
+    });
+    const county = await waitFor(
+        () => findById(viewModel.theProvinceTitleList, payload.county.id),
+        'lookup_children_missing:county'
+    );
+    choose('province', county);
+    const city = await waitFor(
+        () => findById(viewModel.theCityTitleList, payload.city.id),
+        'lookup_children_missing:city'
+    );
+    choose('city', city);
+
+    for (const [name, control] of [
+        ['province', 'state'],
+        ['county', 'province'],
+        ['city', 'city'],
+    ]) {
+        const match = container(control).querySelector('.ui-select-match-text');
         result[name] = match ? match.textContent.trim() : '';
     }
     return result;

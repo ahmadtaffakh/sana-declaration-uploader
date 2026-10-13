@@ -16,6 +16,7 @@ from sana_declaration_uploader.live_browser import (
     PlaywrightRecipientPage,
     PlaywrightSubmissionPage,
     ReusableLoginSession,
+    _SELECT_RECIPIENT_LOOKUPS,
     _hold_browser_for_error_inspection,
     _wait_for_transition,
     extract_tracking_code,
@@ -370,6 +371,22 @@ class RecipientPageTests(unittest.TestCase):
             page.calls,
         )
         self.assertIn(("wait_for", "#btnAddSection", "visible"), page.calls)
+
+    def test_location_lookups_wait_for_each_dependent_list(self):
+        script = _SELECT_RECIPIENT_LOOKUPS
+
+        state_choice = script.index("choose('state'")
+        county_wait = script.index("viewModel.theProvinceTitleList")
+        county_choice = script.index("choose('province'")
+        city_wait = script.index("viewModel.theCityTitleList")
+        city_choice = script.index("choose('city'")
+
+        self.assertTrue(script.startswith("async payload =>"))
+        self.assertLess(state_choice, county_wait)
+        self.assertLess(county_wait, county_choice)
+        self.assertLess(county_choice, city_wait)
+        self.assertLess(city_wait, city_choice)
+        self.assertIn('.ui-select-container[name="${name}"]', script)
 
     def test_opens_recorded_natural_person_tab_without_next_button(self):
         page = _Page()
