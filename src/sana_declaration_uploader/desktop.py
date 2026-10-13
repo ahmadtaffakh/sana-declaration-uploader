@@ -182,18 +182,33 @@ def _declaration_settings_path() -> Path:
     return _settings_dir() / "declaration-defaults.json"
 
 
-def _load_declaration_settings(path: Path | None = None) -> dict[str, str]:
-    target = path or _declaration_settings_path()
+def _load_default_settings(
+    target: Path,
+    defaults: dict[str, str],
+) -> dict[str, str]:
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
-        return dict(_DECLARATION_DEFAULTS)
+        return dict(defaults)
     if not isinstance(payload, dict):
-        return dict(_DECLARATION_DEFAULTS)
+        return dict(defaults)
     return {
         key: str(payload.get(key, default)).strip()
-        for key, default in _DECLARATION_DEFAULTS.items()
+        for key, default in defaults.items()
     }
+
+
+def _write_default_settings(target: Path, payload: dict[str, str]) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _load_declaration_settings(path: Path | None = None) -> dict[str, str]:
+    target = path or _declaration_settings_path()
+    return _load_default_settings(target, _DECLARATION_DEFAULTS)
 
 
 def _save_declaration_settings(
@@ -203,29 +218,18 @@ def _save_declaration_settings(
     path: Path | None = None,
 ) -> None:
     target = path or _declaration_settings_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "subject": subject.strip(),
-        "description": description.strip(),
-    }
-    target.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    _write_default_settings(
+        target,
+        {
+            "subject": subject.strip(),
+            "description": description.strip(),
+        },
     )
 
 
 def _load_attachment_settings(path: Path | None = None) -> dict[str, str]:
     target = path or _attachment_settings_path()
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return dict(_ATTACHMENT_DEFAULTS)
-    if not isinstance(payload, dict):
-        return dict(_ATTACHMENT_DEFAULTS)
-    return {
-        key: str(payload.get(key, default)).strip()
-        for key, default in _ATTACHMENT_DEFAULTS.items()
-    }
+    return _load_default_settings(target, _ATTACHMENT_DEFAULTS)
 
 
 def _save_attachment_settings(
@@ -236,15 +240,13 @@ def _save_attachment_settings(
     path: Path | None = None,
 ) -> None:
     target = path or _attachment_settings_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "attachment_kind": kind.strip(),
-        "attachment_number": document_number.strip(),
-        "attachment_date": document_date.strip(),
-    }
-    target.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    _write_default_settings(
+        target,
+        {
+            "attachment_kind": kind.strip(),
+            "attachment_number": document_number.strip(),
+            "attachment_date": document_date.strip(),
+        },
     )
 
 

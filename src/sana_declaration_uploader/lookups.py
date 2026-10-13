@@ -166,6 +166,51 @@ def resolve_city_hierarchy(
     }
 
 
+def resolve_province_from_county(
+    county_label: str, lookup_dir: Path
+) -> dict[str, str]:
+    """Return one county and its verified parent province without guessing."""
+
+    normalized = " ".join(county_label.split()).rstrip(".").rstrip()
+    if normalized.startswith("استان "):
+        normalized = f"شهرستان {normalized.removeprefix('استان ').strip()}"
+    elif not normalized.startswith("شهرستان "):
+        normalized = f"شهرستان {normalized}"
+
+    locations = _load_entries(lookup_dir, "locations")
+    county = _resolve_by_label(
+        locations,
+        category="county",
+        label=normalized,
+        entry_type="county",
+    )
+    provinces = [
+        entry for entry in locations
+        if entry.get("type") == "province"
+        and entry.get("key") == county.get("parent_key")
+    ]
+    if len(provinces) != 1:
+        raise LookupResolutionError(
+            f"lookup_parent_not_unique:province:{county_label}"
+        )
+    province = provinces[0]
+    for field, entry in (("province", province), ("county", county)):
+        if not all(entry.get(key) for key in ("key", "id", "code", "label")):
+            raise LookupResolutionError(
+                f"lookup_entry_invalid:{field}:{entry.get('label', '')}"
+            )
+    return {
+        "province": province["label"],
+        "province_key": province["key"],
+        "province_id": province["id"],
+        "province_code": province["code"],
+        "county": county["label"],
+        "county_key": county["key"],
+        "county_id": county["id"],
+        "county_code": county["code"],
+    }
+
+
 def suggest_court_unit(
     fields: Mapping[str, str], lookup_dir: Path
 ) -> dict[str, str]:

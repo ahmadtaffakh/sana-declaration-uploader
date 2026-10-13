@@ -23,6 +23,18 @@ class RecipientPreprocessingTests(unittest.TestCase):
         })
         self.assertEqual(issues, ())
 
+    def test_removes_trailing_dots_from_extracted_location_labels(self) -> None:
+        labels, issues = extract_address_labels(
+            "استان تهران. - شهرستان تهران. - شهر تهران. - خیابان نمونه"
+        )
+
+        self.assertEqual(labels, {
+            "province": "استان تهران",
+            "county": "شهرستان تهران",
+            "city": "تهران",
+        })
+        self.assertEqual(issues, ())
+
     def test_marks_different_group_locations_ambiguous(self) -> None:
         labels, issues = extract_address_labels(
             "استان تهران - شهرستان تهران - تهران | "
@@ -121,6 +133,27 @@ class RecipientPreprocessingTests(unittest.TestCase):
         self.assertEqual(result.county_code, "")
         self.assertEqual(result.city_code, "")
         self.assertIn("location_lookup_unresolved", result.issues)
+
+    def test_replaces_county_name_in_province_with_verified_parent(self) -> None:
+        lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
+        candidate = RecipientCandidate(
+            source_path=lookup_dir / "source.pdf",
+            full_name="شخص نمونه",
+            address="نشانی کامل",
+            province="شهرستان گچساران.",
+            county="شهرستان گچساران.",
+            city="دوگنبدان.",
+        )
+
+        result = preprocess_candidate(candidate, lookup_dir)
+
+        self.assertEqual(result.province, "استان كهكيلويه وبويراحمد")
+        self.assertEqual(result.province_code, "17")
+        self.assertEqual(result.county, "شهرستان گچساران")
+        self.assertEqual(result.county_code, "1703")
+        self.assertEqual(result.city, "دوگنبدان")
+        self.assertEqual(result.city_code, "1703021515")
+        self.assertNotIn("location_lookup_unresolved", result.issues)
 
     def test_invalid_city_uses_resolved_county_name_as_city(self) -> None:
         lookup_dir = Path(__file__).resolve().parents[1] / "lookups"

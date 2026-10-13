@@ -635,6 +635,59 @@ class RecipientWizardTests(unittest.TestCase):
                 "description": "شرح دلخواه",
             })
 
+    def test_default_settings_fall_back_for_invalid_json_payloads(self) -> None:
+        cases = (
+            (
+                "attachment-defaults.json",
+                _load_attachment_settings,
+                {
+                    "attachment_kind": "سایر دلایل و مستندات",
+                    "attachment_number": "شماره مدرک",
+                    "attachment_date": "۱۴۰۵/۰۷/۲۰",
+                },
+            ),
+            (
+                "declaration-defaults.json",
+                _load_declaration_settings,
+                {
+                    "subject": "سایر موضوعات",
+                    "description": "شرح موضوع",
+                },
+            ),
+        )
+        with TemporaryDirectory() as directory:
+            for filename, loader, defaults in cases:
+                with self.subTest(filename=filename, payload="invalid-json"):
+                    path = Path(directory) / filename
+                    path.write_text("{", encoding="utf-8")
+                    self.assertEqual(loader(path), defaults)
+                with self.subTest(filename=filename, payload="list"):
+                    path.write_text("[]", encoding="utf-8")
+                    self.assertEqual(loader(path), defaults)
+
+    def test_default_settings_strip_values_and_fill_missing_keys(self) -> None:
+        with TemporaryDirectory() as directory:
+            attachment_path = Path(directory) / "attachment-defaults.json"
+            attachment_path.write_text(
+                json.dumps({"attachment_kind": "  نوع دلخواه  "}),
+                encoding="utf-8",
+            )
+            self.assertEqual(_load_attachment_settings(attachment_path), {
+                "attachment_kind": "نوع دلخواه",
+                "attachment_number": "شماره مدرک",
+                "attachment_date": "۱۴۰۵/۰۷/۲۰",
+            })
+
+            declaration_path = Path(directory) / "declaration-defaults.json"
+            declaration_path.write_text(
+                json.dumps({"subject": "  موضوع دلخواه  "}),
+                encoding="utf-8",
+            )
+            self.assertEqual(_load_declaration_settings(declaration_path), {
+                "subject": "موضوع دلخواه",
+                "description": "شرح موضوع",
+            })
+
     def test_declaration_fields_start_with_defaults_and_save_edits(self) -> None:
         defaults = {
             "subject": "سایر موضوعات",

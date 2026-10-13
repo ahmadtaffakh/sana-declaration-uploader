@@ -11,6 +11,7 @@ from .lookups import (
     LookupResolutionError,
     resolve_city_hierarchy,
     resolve_lookup_fields,
+    resolve_province_from_county,
 )
 from .models import RecipientCandidate
 
@@ -38,9 +39,9 @@ def preprocess_candidate(
     candidate: RecipientCandidate, lookup_dir: Path
 ) -> RecipientCandidate:
     labels, address_issues = extract_address_labels(candidate.address)
-    province = candidate.province or labels.get("province", "")
-    county = candidate.county or labels.get("county", "")
-    city = candidate.city or labels.get("city", "")
+    province = _clean_location_label(candidate.province or labels.get("province", ""))
+    county = _clean_location_label(candidate.county or labels.get("county", ""))
+    city = _clean_location_label(candidate.city or labels.get("city", ""))
     ignored_issues = {
         "address_location_review_required",
         "job_lookup_unresolved",
@@ -59,6 +60,19 @@ def preprocess_candidate(
     except LookupResolutionError:
         job = {}
         issues.append("job_lookup_unresolved")
+
+    if province:
+        try:
+            resolve_lookup_fields({"province": province}, lookup_dir)
+        except LookupResolutionError:
+            try:
+                inferred_parent = resolve_province_from_county(province, lookup_dir)
+            except LookupResolutionError:
+                pass
+            else:
+                province = inferred_parent["province"]
+                if not county:
+                    county = inferred_parent["county"]
 
     requested_location = {"province": province, "county": county, "city": city}
     location_defaulted = not candidate.address.strip() or not all(
@@ -137,7 +151,7 @@ def extract_address_labels(address: str) -> tuple[dict[str, str], tuple[str, ...
     values: dict[str, set[str]] = {"province": set(), "county": set(), "city": set()}
     for raw_address in address.split("|"):
         segments = [
-            _normalize_display(segment).strip(" ،؛")
+            _normalize_display(segment).strip(" .،؛")
             for segment in _SEGMENT_RE.split(raw_address)
             if segment.strip()
         ]
@@ -170,6 +184,10 @@ def _normalize_display(value: str) -> str:
     return " ".join(
         unicodedata.normalize("NFKC", value).translate(_ARABIC_TO_PERSIAN).split()
     )
+
+
+def _clean_location_label(value: str) -> str:
+    return _normalize_display(value).rstrip(".").rstrip()
 
 
 def _plausible_city(value: str) -> bool:

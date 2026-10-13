@@ -7,6 +7,7 @@ from sana_declaration_uploader.lookups import (
     LookupResolutionError,
     resolve_city_hierarchy,
     resolve_lookup_fields,
+    resolve_province_from_county,
     suggest_court_unit,
 )
 
@@ -44,6 +45,48 @@ class LookupTests(unittest.TestCase):
         self.assertEqual(result["county"], "شهرستان گچساران")
         self.assertEqual(result["county_code"], "1703")
         self.assertEqual(result["city_code"], "1703021515")
+
+    def test_resolves_county_and_its_verified_parent_province(self) -> None:
+        lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
+
+        result = resolve_province_from_county(
+            "استان گچساران.", lookup_dir
+        )
+
+        self.assertEqual(result["province"], "استان كهكيلويه وبويراحمد")
+        self.assertEqual(result["province_code"], "17")
+        self.assertEqual(result["county"], "شهرستان گچساران")
+        self.assertEqual(result["county_code"], "1703")
+
+    def test_ambiguous_county_parent_resolution_fails_closed(self) -> None:
+        with TemporaryDirectory() as directory:
+            lookup_dir = Path(directory)
+            self._write(
+                lookup_dir / "locations.json",
+                [
+                    {
+                        "key": "p1", "label": "استان یک", "type": "province",
+                        "parent_key": "", "id": "1", "code": "P1",
+                    },
+                    {
+                        "key": "p2", "label": "استان دو", "type": "province",
+                        "parent_key": "", "id": "2", "code": "P2",
+                    },
+                    {
+                        "key": "c1", "label": "شهرستان نمونه", "type": "county",
+                        "parent_key": "p1", "id": "3", "code": "C1",
+                    },
+                    {
+                        "key": "c2", "label": "شهرستان نمونه", "type": "county",
+                        "parent_key": "p2", "id": "4", "code": "C2",
+                    },
+                ],
+            )
+
+            with self.assertRaisesRegex(
+                LookupResolutionError, "lookup_ambiguous:county"
+            ):
+                resolve_province_from_county("نمونه", lookup_dir)
 
     def test_resolves_exact_hierarchical_values(self) -> None:
         with TemporaryDirectory() as directory:
