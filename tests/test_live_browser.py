@@ -34,7 +34,7 @@ class _Locator:
     def press(self, key):
         self.page.calls.append(("press", self.selector, key))
 
-    def click(self):
+    def click(self, **_kwargs):
         self.page.calls.append(("click", self.selector))
         if self.selector == "#frmCheckOTP button":
             self.page.authenticated = True
@@ -236,7 +236,11 @@ class DeclarationPageTests(unittest.TestCase):
                 ("wait_for", "#replayToDeclaration"),
                 ("fill", "#replayToDeclaration"),
                 ("click", "#btnNext"),
-                ("wait_for", "#legalIranianPerson"),
+                (
+                    "wait_for",
+                    "div.margin-bottom-5 > div > div > div:nth-of-type(1) "
+                    "div:nth-of-type(3) > div > div > div",
+                ),
             ],
         )
         self.assertNotIn(("click", "#legalIranianPerson"), page.calls)
@@ -294,6 +298,11 @@ class DeclarationPageTests(unittest.TestCase):
 
 
 class RecipientPageTests(unittest.TestCase):
+    RECORDED_NATURAL_PERSON_TAB = (
+        "div.margin-bottom-5 > div > div > div:nth-of-type(1) "
+        "div:nth-of-type(3) > div > div > div"
+    )
+
     @staticmethod
     def _draft(**changes):
         fields = {
@@ -332,10 +341,7 @@ class RecipientPageTests(unittest.TestCase):
         self.assertIn(("click", "#rdbRealIrMale"), page.calls)
         self.assertEqual(
             [call for call in page.calls if call[0:2] == ("click", "#btnNext")],
-            [
-                ("click", "#btnNext"),
-                ("click", "#btnNext"),
-            ],
+            [("click", "#btnNext")],
         )
         subject_step = (
             "//*[@ng-repeat='step in navCtrl.currentStep.innerSteps']"
@@ -347,6 +353,40 @@ class RecipientPageTests(unittest.TestCase):
             ("wait_for_function", 60000, "موضوع اظهارنامه"), page.calls
         )
         self.assertIn(("wait_for", "#btnAddSection", "visible"), page.calls)
+
+    def test_opens_recorded_natural_person_tab_without_next_button(self):
+        page = _Page()
+
+        PlaywrightRecipientPage(page).fill_natural_person(self._draft())
+
+        tab_click = ("click", self.RECORDED_NATURAL_PERSON_TAB)
+        add_click = ("click", "#btnAddSection")
+        self.assertIn(tab_click, page.calls)
+        self.assertLess(page.calls.index(tab_click), page.calls.index(add_click))
+        self.assertEqual(
+            [call for call in page.calls if call[0:2] == ("click", "#btnNext")],
+            [("click", "#btnNext")],
+        )
+
+    def test_tab_navigation_failure_stops_before_adding_recipient(self):
+        page = _Page()
+        original_locator = page.locator
+        tab = Mock()
+        tab.count.return_value = 1
+        tab.click.side_effect = TimeoutError
+        page.locator = lambda selector: (
+            tab
+            if selector == self.RECORDED_NATURAL_PERSON_TAB
+            else original_locator(selector)
+        )
+
+        with self.assertRaisesRegex(
+            LiveBrowserError, "natural_person_tab_navigation_failed"
+        ):
+            PlaywrightRecipientPage(page).fill_natural_person(self._draft())
+
+        tab.click.assert_called_once_with(timeout=60_000)
+        self.assertNotIn(("click", "#btnAddSection"), page.calls)
 
     def test_stops_when_subject_step_is_not_available(self):
         page = _Page()

@@ -15,6 +15,10 @@ from .validator import validate_draft
 LOGIN_URL = "https://person.adliran.ir/LegalPerson/Index"
 OTP_SELECTOR = "#otpPassowrd, #otpPassword, #otp, input[placeholder*='کد']"
 MINISTRY_COURT_UNIT_CODE = "00006"
+NATURAL_PERSON_TAB_SELECTOR = (
+    "div.margin-bottom-5 > div > div > div:nth-of-type(1) "
+    "div:nth-of-type(3) > div > div > div"
+)
 REQUIRED_CREDENTIALS = (
     "personNationalCode",
     "personUserPassword",
@@ -326,7 +330,7 @@ class PlaywrightDeclarationPage:
             related_number.wait_for(state="visible", timeout=self.timeout_ms)
             related_number.fill(value)
         page.locator("#btnNext").click()
-        page.locator("#legalIranianPerson").wait_for(
+        page.locator(NATURAL_PERSON_TAB_SELECTOR).wait_for(
             state="visible", timeout=self.timeout_ms
         )
 
@@ -367,11 +371,13 @@ class PlaywrightRecipientPage:
         fields = draft.fields
 
         page = self.page
-        natural_person = page.locator("label").filter(has_text="حقیقی ایرانی")
-        if natural_person.count() != 1:
-            raise LiveBrowserError("natural_person_option_not_unique")
-        natural_person.click()
-        page.locator("#btnNext").click()
+        natural_person_tab = page.locator(NATURAL_PERSON_TAB_SELECTOR)
+        if natural_person_tab.count() != 1:
+            raise LiveBrowserError("natural_person_tab_not_unique")
+        try:
+            natural_person_tab.click(timeout=self.timeout_ms)
+        except Exception as exc:
+            raise LiveBrowserError("natural_person_tab_navigation_failed") from exc
 
         add_button = page.locator("#btnAddSection")
         add_button.wait_for(state="visible", timeout=self.timeout_ms)
