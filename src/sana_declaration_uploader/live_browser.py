@@ -15,6 +15,10 @@ from .validator import validate_draft
 LOGIN_URL = "https://person.adliran.ir/LegalPerson/Index"
 OTP_SELECTOR = "#otpPassowrd, #otpPassword, #otp, input[placeholder*='کد']"
 MINISTRY_COURT_UNIT_CODE = "00006"
+ERROR_INSPECTION_MINUTES = 5
+ERROR_INSPECTION_INTERVAL_MS = 60_000
+PAGE_LOADING_TIMEOUT_MS = 5 * 60_000
+LOADER_APPEARANCE_TIMEOUT_MS = 1_000
 NATURAL_PERSON_TAB_SELECTOR = (
     "div.margin-bottom-5 > div > div > div:nth-of-type(1) "
     "div:nth-of-type(3) > div > div > div"
@@ -54,6 +58,39 @@ ProgressCallback = Callable[[str], None]
 def _report(progress: ProgressCallback | None, message: str) -> None:
     if progress is not None:
         progress(message)
+
+
+def _run_logged_stage(
+    progress: ProgressCallback | None,
+    title: str,
+    action: Callable[[], _BatchItem],
+) -> _BatchItem:
+    _report(progress, f"شروع مرحله: {title}")
+    try:
+        result = action()
+    except Exception as exc:
+        detail = str(exc) if isinstance(exc, LiveBrowserError) else type(exc).__name__
+        _report(progress, f"پایان ناموفق مرحله: {title}؛ علت: {detail}")
+        raise
+    _report(progress, f"پایان موفق مرحله: {title}")
+    return result
+
+
+def _hold_browser_for_error_inspection(
+    page: object,
+    progress: ProgressCallback | None,
+) -> None:
+    for remaining in range(ERROR_INSPECTION_MINUTES, 0, -1):
+        _report(
+            progress,
+            "اجرای مرورگر متوقف شده است؛ "
+            f"صفحه برای بررسی داده‌ها باز می‌ماند (زمان باقی‌مانده: {remaining} دقیقه).",
+        )
+        try:
+            page.wait_for_timeout(ERROR_INSPECTION_INTERVAL_MS)
+        except Exception:
+            return
+    _report(progress, "مهلت بررسی پایان یافت؛ مرورگر بسته می‌شود.")
 
 
 class ReusableLoginSession:
@@ -188,14 +225,18 @@ def run_live_upload_batch(
         context = browser.new_context()
         try:
             page = context.new_page()
-            return upload_authenticated_batch(
-                page,
-                drafts,
-                credentials_provider,
-                final_confirmation,
-                timeout_ms=timeout_ms,
-                progress=progress,
-            )
+            try:
+                return upload_authenticated_batch(
+                    page,
+                    drafts,
+                    credentials_provider,
+                    final_confirmation,
+                    timeout_ms=timeout_ms,
+                    progress=progress,
+                )
+            except Exception:
+                _hold_browser_for_error_inspection(page, progress)
+                raise
         finally:
             context.close()
             browser.close()
@@ -380,10 +421,18 @@ class PlaywrightRecipientPage:
             raise LiveBrowserError("natural_person_tab_navigation_failed") from exc
 
         add_button = page.locator("#btnAddSection")
-        add_button.wait_for(state="visible", timeout=self.timeout_ms)
+        _wait_for_transition(
+            page,
+            self.timeout_ms,
+            ready_selector="#btnAddSection",
+            failure_code="page_load_not_completed:#btnAddSection",
+        )
         add_button.click()
-        page.locator("#txtRealIrName").wait_for(
-            state="visible", timeout=self.timeout_ms
+        _wait_for_transition(
+            page,
+            self.timeout_ms,
+            ready_selector="#txtRealIrName",
+            failure_code="page_load_not_completed:#txtRealIrName",
         )
         national_id = fields.get("recipient_national_id", "").strip()
         if national_id:
@@ -497,10 +546,12 @@ def _open_form_step(
         "[.//*[contains(concat(' ', normalize-space(@class), ' '), ' step ') "
         f"and normalize-space()='{title}']]"
     )
-    try:
-        step.wait_for(state="visible", timeout=timeout_ms)
-    except Exception as exc:
-        raise LiveBrowserError(f"form_step_not_unique:{title}") from exc
+    _wait_for_transition(
+        page,
+        timeout_ms,
+        step_title=title,
+        failure_code=f"form_step_not_visible:{title}",
+    )
     if step.count() != 1:
         raise LiveBrowserError(f"form_step_not_unique:{title}")
 
@@ -541,6 +592,73 @@ def _open_form_step(
         )
     except Exception as exc:
         raise LiveBrowserError(f"form_step_navigation_failed:{title}") from exc
+
+
+def _wait_for_transition(
+    page: object,
+    timeout_ms: int,
+    *,
+    ready_selector: str | None = None,
+    step_title: str | None = None,
+    failure_code: str,
+) -> None:
+    loader = page.locator(".blockUI:visible").first
+    try:
+        loader.wait_for(state="visible", timeout=LOADER_APPEARANCE_TIMEOUT_MS)
+    except Exception:
+        pass
+    else:
+        try:
+            loader.wait_for(state="hidden", timeout=PAGE_LOADING_TIMEOUT_MS)
+        except Exception as exc:
+            raise LiveBrowserError("page_loading_timeout") from exc
+
+    try:
+        page.wait_for_function(
+            r"""target => {
+                const visible = element => Boolean(element)
+                    && element.getClientRects().length > 0
+                    && getComputedStyle(element).visibility !== 'hidden';
+                if ([...document.querySelectorAll('.blockUI')].some(visible)) {
+                    return false;
+                }
+                if (visible(document.querySelector('.sweet-alert'))) return true;
+                if (target.readySelector) {
+                    return visible(document.querySelector(target.readySelector));
+                }
+                const normalize = value => (value || '')
+                    .replace(/\u0643/g, '\u06a9')
+                    .replace(/[\u064a\u0649]/g, '\u06cc')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                return [...document.querySelectorAll(
+                    '[ng-repeat="step in navCtrl.currentStep.innerSteps"]'
+                )].some(item => {
+                    const label = item.querySelector('.step.ng-binding');
+                    return visible(item)
+                        && normalize(label?.textContent)
+                            === normalize(target.stepTitle);
+                });
+            }""",
+            arg={"readySelector": ready_selector, "stepTitle": step_title},
+            timeout=timeout_ms,
+        )
+    except Exception as exc:
+        raise LiveBrowserError(failure_code) from exc
+    _raise_visible_site_error(page)
+
+
+def _raise_visible_site_error(page: object) -> None:
+    dialog = page.locator(".sweet-alert:visible")
+    try:
+        if not dialog.is_visible():
+            return
+        message = dialog.inner_text(timeout=2_000)
+    except Exception as exc:
+        raise LiveBrowserError("site_response_ambiguous") from exc
+    if "اقامتگاه" in message:
+        raise LiveBrowserError("site_validation_rejected:recipient_residence_incomplete")
+    raise LiveBrowserError("site_operation_rejected")
 
 
 def _lookup_payload(
@@ -678,72 +796,71 @@ class PlaywrightDeclarationUploader:
         subject = draft.fields.get("declaration_subject", "").strip()
         description = draft.fields.get("declaration_text", "").strip()
 
-        _report(
+        _run_logged_stage(
             self.progress,
-            "اقدام جاری: بازکردن فرم اظهارنامه؛ اقدام بعدی: ثبت اطلاعات مخاطب",
+            "بازکردن فرم اظهارنامه",
+            lambda: PlaywrightDeclarationPage(
+                self.page, timeout_ms=self.timeout_ms
+            ).open_draft_wizard(draft),
         )
-        PlaywrightDeclarationPage(
-            self.page, timeout_ms=self.timeout_ms
-        ).open_draft_wizard(draft)
-        _report(
+        _run_logged_stage(
             self.progress,
-            "فرم اظهارنامه آماده شد؛ اقدام جاری: ثبت اطلاعات مخاطب",
-        )
-        recipient.fill_natural_person(draft)
-        _report(
-            self.progress,
-            "اطلاعات مخاطب آماده شد؛ اقدام بعدی: ثبت موضوع اظهارنامه",
+            "ثبت اطلاعات مخاطب",
+            lambda: recipient.fill_natural_person(draft),
         )
 
         content = PlaywrightContentPage(self.page, timeout_ms=self.timeout_ms)
-        content.select_subject(subject)
-        _report(
+        _run_logged_stage(
             self.progress,
-            "موضوع اظهارنامه ثبت شد؛ اقدام بعدی: ثبت دلایل و مستندات",
+            "ثبت موضوع اظهارنامه",
+            lambda: content.select_subject(subject),
         )
-        content.select_other_evidence_and_save()
-        _report(
+        _run_logged_stage(
             self.progress,
-            "دلایل و مستندات ذخیره شد؛ اقدام بعدی: ثبت شرح اظهارنامه",
+            "ثبت دلایل و مستندات",
+            content.select_other_evidence_and_save,
         )
-        content.fill_description_and_save(description)
-        _report(
+        _run_logged_stage(
             self.progress,
-            "شرح اظهارنامه ذخیره شد؛ اقدام بعدی: بررسی پیوست‌ها",
+            "ثبت شرح اظهارنامه",
+            lambda: content.fill_description_and_save(description),
         )
 
         if draft.attachments:
             attachment_page = PlaywrightAttachmentPage(
                 self.page, timeout_ms=self.timeout_ms
             )
-            attachment_page.open_attachments()
-            run_attachment_workflow(draft.attachments, attachment_page)
-            _report(
+            _run_logged_stage(
                 self.progress,
-                f"تعداد {len(draft.attachments)} پیوست پردازش شد؛ "
-                "اقدام بعدی: کنترل آمادگی امضا",
+                f"پردازش {len(draft.attachments)} پیوست",
+                lambda: (
+                    attachment_page.open_attachments(),
+                    run_attachment_workflow(draft.attachments, attachment_page),
+                ),
             )
         else:
             _report(
                 self.progress,
-                "پیوستی وجود ندارد؛ اقدام بعدی: کنترل آمادگی امضا",
+                "مرحله پیوست‌ها رد شد: پیوستی وجود ندارد.",
             )
 
         submission = PlaywrightSubmissionPage(
             self.page, timeout_ms=self.timeout_ms
         )
-        submission.open_signature()
-        submission.verify_ready_for_signature()
-        _report(
+        _run_logged_stage(
             self.progress,
-            "آمادگی امضا تأیید شد؛ اقدام جاری: انتظار تأیید نهایی اپراتور",
+            "کنترل آمادگی امضا",
+            lambda: (
+                submission.open_signature(),
+                submission.verify_ready_for_signature(),
+            ),
         )
-        tracking_code = submission.submit_signature(
-            final_confirmed=self.final_confirmation(draft)
-        )
-        _report(
+        tracking_code = _run_logged_stage(
             self.progress,
-            "ثبت نهایی با کد رهگیری معتبر تأیید شد؛ اقدام بعدی: ذخیره نتیجه",
+            "ثبت نهایی اظهارنامه",
+            lambda: submission.submit_signature(
+                final_confirmed=self.final_confirmation(draft)
+            ),
         )
         return UploadResult(status="success", tracking_code=tracking_code)
 

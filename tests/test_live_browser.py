@@ -1,7 +1,13 @@
 import unittest
-from unittest.mock import Mock, patch
+import sys
+from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock, call, patch
 
 from sana_declaration_uploader.live_browser import (
+    ERROR_INSPECTION_INTERVAL_MS,
+    ERROR_INSPECTION_MINUTES,
+    LOADER_APPEARANCE_TIMEOUT_MS,
+    PAGE_LOADING_TIMEOUT_MS,
     LiveBrowserError,
     LoginCredentials,
     PlaywrightDeclarationUploader,
@@ -10,9 +16,12 @@ from sana_declaration_uploader.live_browser import (
     PlaywrightRecipientPage,
     PlaywrightSubmissionPage,
     ReusableLoginSession,
+    _hold_browser_for_error_inspection,
+    _wait_for_transition,
     extract_tracking_code,
     login_self_service,
     run_authenticated_batch,
+    run_live_upload_batch,
     upload_authenticated_batch,
 )
 from sana_declaration_uploader.models import DeclarationDraft, UploadResult
@@ -87,6 +96,9 @@ class _Page:
         self.calls.append(
             ("wait_for_function", kwargs["timeout"], kwargs.get("arg"))
         )
+
+    def wait_for_timeout(self, timeout):
+        self.calls.append(("wait_for_timeout", timeout))
 
 
 class LiveBrowserLoginTests(unittest.TestCase):
@@ -350,7 +362,12 @@ class RecipientPageTests(unittest.TestCase):
         )
         self.assertIn(("click", subject_step), page.calls)
         self.assertIn(
-            ("wait_for_function", 60000, "موضوع اظهارنامه"), page.calls
+            (
+                "wait_for_function",
+                60000,
+                {"readySelector": None, "stepTitle": "موضوع اظهارنامه"},
+            ),
+            page.calls,
         )
         self.assertIn(("wait_for", "#btnAddSection", "visible"), page.calls)
 
@@ -406,6 +423,26 @@ class RecipientPageTests(unittest.TestCase):
             PlaywrightRecipientPage(page).fill_natural_person(self._draft())
 
         subject_step.click.assert_not_called()
+
+    def test_reports_recipient_residence_error_without_waiting_for_subject(self):
+        page = _Page()
+        original_locator = page.locator
+        dialog = Mock()
+        dialog.is_visible.side_effect = (False, False, True)
+        dialog.inner_text.return_value = (
+            "لطفا اقامتگاه اشخاص مخاطب را مشخص یا تکمیل نمایید"
+        )
+        page.locator = lambda selector: (
+            dialog if selector == ".sweet-alert:visible" else original_locator(selector)
+        )
+
+        with self.assertRaisesRegex(
+            LiveBrowserError,
+            "site_validation_rejected:recipient_residence_incomplete",
+        ):
+            PlaywrightRecipientPage(page).fill_natural_person(self._draft())
+
+        dialog.inner_text.assert_called_once_with(timeout=2_000)
 
     def test_optional_identity_fields_are_not_filled_when_absent(self):
         page = _Page()
@@ -549,9 +586,43 @@ class DeclarationUploaderTests(unittest.TestCase):
                 progress=progress.append,
             ).upload(draft)
 
-        self.assertIn("اقدام جاری: بازکردن فرم اظهارنامه", progress[0])
-        self.assertIn("اطلاعات مخاطب آماده شد", "\n".join(progress))
-        self.assertIn("اقدام بعدی: ذخیره نتیجه", progress[-1])
+        self.assertEqual(progress[0], "شروع مرحله: بازکردن فرم اظهارنامه")
+        self.assertIn("پایان موفق مرحله: ثبت اطلاعات مخاطب", progress)
+        self.assertEqual(progress[-1], "پایان موفق مرحله: ثبت نهایی اظهارنامه")
+
+    def test_reports_failed_stage_and_preserves_original_error(self):
+        page = _Page()
+        draft = DeclarationDraft(
+            source_dir=Path("input"),
+            fields={"declaration_subject": "موضوع", "declaration_text": "شرح"},
+        )
+        progress = []
+
+        with (
+            patch("sana_declaration_uploader.live_browser._validate_live_draft"),
+            patch.object(PlaywrightRecipientPage, "validate"),
+            patch.object(PlaywrightDeclarationPage, "open_draft_wizard"),
+            patch.object(
+                PlaywrightRecipientPage,
+                "fill_natural_person",
+                side_effect=LiveBrowserError("recipient_residence_incomplete"),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                LiveBrowserError, "recipient_residence_incomplete"
+            ):
+                PlaywrightDeclarationUploader(
+                    page,
+                    lambda _draft: True,
+                    progress=progress.append,
+                ).upload(draft)
+
+        self.assertIn("شروع مرحله: ثبت اطلاعات مخاطب", progress)
+        self.assertIn(
+            "پایان ناموفق مرحله: ثبت اطلاعات مخاطب؛ "
+            "علت: recipient_residence_incomplete",
+            progress,
+        )
 
     def test_authenticated_batch_reuses_page_for_each_draft(self):
         page = _Page()
@@ -606,6 +677,89 @@ class DeclarationUploaderTests(unittest.TestCase):
         self.assertEqual(results[0].message, "draft_invalid")
         self.assertEqual(results[1], uploaded)
         upload.assert_called_once_with(drafts[1])
+
+
+class BrowserErrorInspectionTests(unittest.TestCase):
+    def test_keeps_page_open_for_five_minutes_with_minute_updates(self):
+        page = _Page()
+        progress = []
+
+        _hold_browser_for_error_inspection(page, progress.append)
+
+        self.assertEqual(
+            [call for call in page.calls if call[0] == "wait_for_timeout"],
+            [
+                ("wait_for_timeout", ERROR_INSPECTION_INTERVAL_MS)
+                for _ in range(ERROR_INSPECTION_MINUTES)
+            ],
+        )
+        self.assertIn("زمان باقی‌مانده: 5 دقیقه", progress[0])
+        self.assertEqual(progress[-1], "مهلت بررسی پایان یافت؛ مرورگر بسته می‌شود.")
+
+    def test_live_batch_holds_browser_before_closing_after_error(self):
+        page = Mock()
+        context = Mock()
+        context.new_page.return_value = page
+        browser = Mock()
+        browser.new_context.return_value = context
+        playwright = SimpleNamespace(chromium=Mock())
+        playwright.chromium.launch.return_value = browser
+        manager = Mock()
+        manager.__enter__ = Mock(return_value=playwright)
+        manager.__exit__ = Mock(return_value=False)
+        sync_api = ModuleType("playwright.sync_api")
+        sync_api.sync_playwright = Mock(return_value=manager)
+        playwright_package = ModuleType("playwright")
+
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "playwright": playwright_package,
+                    "playwright.sync_api": sync_api,
+                },
+            ),
+            patch(
+                "sana_declaration_uploader.live_browser.upload_authenticated_batch",
+                side_effect=LiveBrowserError("site_operation_rejected"),
+            ),
+            patch(
+                "sana_declaration_uploader.live_browser."
+                "_hold_browser_for_error_inspection"
+            ) as hold,
+        ):
+            with self.assertRaisesRegex(
+                LiveBrowserError, "site_operation_rejected"
+            ):
+                run_live_upload_batch((), lambda: None, lambda _draft: False)
+
+        hold.assert_called_once_with(page, None)
+        context.close.assert_called_once_with()
+        browser.close.assert_called_once_with()
+
+    def test_waits_up_to_five_minutes_when_loading_overlay_is_visible(self):
+        page = _Page()
+        original_locator = page.locator
+        loader = Mock()
+        loader.first = loader
+        page.locator = lambda selector: (
+            loader if selector == ".blockUI:visible" else original_locator(selector)
+        )
+
+        _wait_for_transition(
+            page,
+            60_000,
+            ready_selector="#ready",
+            failure_code="ready_not_found",
+        )
+
+        self.assertEqual(
+            loader.wait_for.call_args_list,
+            [
+                call(state="visible", timeout=LOADER_APPEARANCE_TIMEOUT_MS),
+                call(state="hidden", timeout=PAGE_LOADING_TIMEOUT_MS),
+            ],
+        )
 
 
 class SubmissionPageTests(unittest.TestCase):
