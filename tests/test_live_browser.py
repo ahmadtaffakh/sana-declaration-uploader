@@ -59,6 +59,10 @@ class _Locator:
         self.page.calls.append(("get_attribute", self.selector, name))
         return ""
 
+    def inner_text(self, **_kwargs):
+        self.page.calls.append(("inner_text", self.selector))
+        return self.page.inner_texts.get(self.selector, "")
+
     def is_visible(self):
         if self.selector == "#menu4Container":
             return self.page.authenticated
@@ -79,6 +83,7 @@ class _Page:
     def __init__(self):
         self.calls = []
         self.authenticated = False
+        self.inner_texts = {}
 
     def goto(self, url, **kwargs):
         self.calls.append(("goto", url))
@@ -354,7 +359,7 @@ class RecipientPageTests(unittest.TestCase):
         self.assertIn(("click", "#rdbRealIrMale"), page.calls)
         self.assertEqual(
             [call for call in page.calls if call[0:2] == ("click", "#btnNext")],
-            [("click", "#btnNext")],
+            [],
         )
         subject_step = (
             "//*[@ng-repeat='step in navCtrl.currentStep.innerSteps']"
@@ -399,7 +404,7 @@ class RecipientPageTests(unittest.TestCase):
         self.assertLess(page.calls.index(tab_click), page.calls.index(add_click))
         self.assertEqual(
             [call for call in page.calls if call[0:2] == ("click", "#btnNext")],
-            [("click", "#btnNext")],
+            [],
         )
 
     def test_tab_navigation_failure_stops_before_adding_recipient(self):
@@ -552,7 +557,6 @@ class DeclarationUploaderTests(unittest.TestCase):
             patch.object(PlaywrightDeclarationPage, "open_draft_wizard"),
             patch.object(PlaywrightRecipientPage, "fill_natural_person"),
             patch.object(PlaywrightContentPage, "select_subject") as subject,
-            patch.object(PlaywrightContentPage, "select_other_evidence_and_save"),
             patch.object(PlaywrightContentPage, "fill_description_and_save") as text,
             patch.object(PlaywrightSubmissionPage, "open_signature"),
             patch.object(PlaywrightSubmissionPage, "verify_ready_for_signature"),
@@ -587,7 +591,6 @@ class DeclarationUploaderTests(unittest.TestCase):
             patch.object(PlaywrightDeclarationPage, "open_draft_wizard"),
             patch.object(PlaywrightRecipientPage, "fill_natural_person"),
             patch.object(PlaywrightContentPage, "select_subject"),
-            patch.object(PlaywrightContentPage, "select_other_evidence_and_save"),
             patch.object(PlaywrightContentPage, "fill_description_and_save"),
             patch.object(PlaywrightSubmissionPage, "open_signature"),
             patch.object(PlaywrightSubmissionPage, "verify_ready_for_signature"),
@@ -804,6 +807,12 @@ class SubmissionPageTests(unittest.TestCase):
 
 
 class ContentPageTests(unittest.TestCase):
+    DESCRIPTION_STEP = (
+        "//*[@ng-repeat='step in navCtrl.currentStep.innerSteps']"
+        "[.//*[contains(concat(' ', normalize-space(@class), ' '), ' step ') "
+        "and normalize-space()='شرح اظهارنامه']]"
+    )
+
     def test_empty_subject_stops_before_browser_activity(self):
         page = _Page()
 
@@ -811,6 +820,50 @@ class ContentPageTests(unittest.TestCase):
             PlaywrightContentPage(page).select_subject("  ")
 
         self.assertEqual(page.calls, [])
+
+    def test_subject_opens_description_tab_without_next_or_evidence(self):
+        page = _Page()
+        page.inner_texts[
+            "#jssPetitionRelief1 >> .ui-select-choices-row"
+        ] = "موضوع"
+
+        PlaywrightContentPage(page).select_subject("موضوع")
+
+        self.assertIn(("click", self.DESCRIPTION_STEP), page.calls)
+        self.assertIn(
+            (
+                "wait_for_function",
+                60000,
+                {"readySelector": None, "stepTitle": "شرح اظهارنامه"},
+            ),
+            page.calls,
+        )
+        self.assertIn(
+            ("wait_for", "textarea[id^='taTextElement']", "visible"),
+            page.calls,
+        )
+        self.assertFalse(any(
+            call[0:2] == ("click", "#btnNext") for call in page.calls
+        ))
+        self.assertFalse(any("#chk7" in str(call) for call in page.calls))
+
+    def test_description_is_temporarily_saved_without_next(self):
+        page = _Page()
+
+        with patch(
+            "sana_declaration_uploader.live_browser._close_success_dialog"
+        ) as close_dialog:
+            PlaywrightContentPage(page).fill_description_and_save("شرح")
+
+        self.assertIn(
+            ("fill", "textarea[id^='taTextElement']", "شرح"), page.calls
+        )
+        self.assertIn(("wait_for", "#btnSave", "visible"), page.calls)
+        self.assertIn(("click", "#btnSave"), page.calls)
+        self.assertFalse(any(
+            call[0:2] == ("click", "#btnNext") for call in page.calls
+        ))
+        close_dialog.assert_called_once_with(page, 60_000)
 
 
 if __name__ == "__main__":

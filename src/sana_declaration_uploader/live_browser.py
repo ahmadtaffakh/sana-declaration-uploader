@@ -476,7 +476,6 @@ class PlaywrightRecipientPage:
             page.locator(
                 "textarea[ng-model='viewModel.currentPetitionPerson.HomeAddress']"
             ).fill(address)
-        page.locator("#btnNext").click()
         _open_form_step(
             page,
             "موضوع اظهارنامه",
@@ -802,15 +801,12 @@ class PlaywrightContentPage:
         if choices.first.inner_text().strip() != subject:
             raise LiveBrowserError("declaration_subject_not_exact")
         choices.first.click()
-        page.locator("#btnNext").click()
-        page.locator("#chk7").wait_for(state="visible", timeout=self.timeout_ms)
-
-    def select_other_evidence_and_save(self) -> None:
-        checkbox = self.page.locator("#chk7")
-        if not checkbox.is_checked():
-            checkbox.click()
-        self.page.locator("#btnSave").click()
-        _close_success_dialog(self.page, self.timeout_ms)
+        _open_form_step(
+            page,
+            "شرح اظهارنامه",
+            "textarea[id^='taTextElement']",
+            self.timeout_ms,
+        )
 
     def fill_description_and_save(self, description: str) -> None:
         description = description.strip()
@@ -820,7 +816,6 @@ class PlaywrightContentPage:
         if textareas.count() != 1:
             raise LiveBrowserError("declaration_textarea_not_unique")
         textareas.first.fill(description)
-        self.page.locator("#btnNext").click()
         self.page.locator("#btnSave").wait_for(
             state="visible", timeout=self.timeout_ms
         )
@@ -871,12 +866,7 @@ class PlaywrightDeclarationUploader:
         )
         _run_logged_stage(
             self.progress,
-            "ثبت دلایل و مستندات",
-            content.select_other_evidence_and_save,
-        )
-        _run_logged_stage(
-            self.progress,
-            "ثبت شرح اظهارنامه",
+            "ثبت شرح و ذخیره موقت اظهارنامه",
             lambda: content.fill_description_and_save(description),
         )
 
