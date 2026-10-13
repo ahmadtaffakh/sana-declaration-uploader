@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
+from html import escape
 import json
 import os
 from pathlib import Path
@@ -1246,6 +1247,15 @@ class DeclarationContentPage(QWizardPage):
 
 
 class LoginPage(QWizardPage):
+    LOG_COLORS = {
+        "system": ("#E8F1FB", "#245B88", "اطلاعات"),
+        "progress": ("#E6F7FA", "#087C8C", "در حال اجرا"),
+        "success": ("#E8F6EC", "#247A3D", "موفق"),
+        "warning": ("#FFF4DD", "#A15C00", "هشدار"),
+        "error": ("#FDEBEC", "#B42318", "خطا"),
+        "debug": ("#F1F3F5", "#4B5563", "جزئیات فنی"),
+    }
+
     def __init__(self) -> None:
         super().__init__()
         self.registration_callback = None
@@ -1290,17 +1300,19 @@ class LoginPage(QWizardPage):
 
         self.python_output = QTextEdit()
         self.python_output.setReadOnly(True)
-        self.python_output.setMinimumHeight(150)
+        self.python_output.setMinimumHeight(220)
         self.python_output.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         self.python_output.setPlaceholderText(
-            "خروجی پردازش و جزئیات خطا در این بخش نمایش داده می‌شود."
+            "گزارش مرحله‌به‌مرحلهٔ عملیات و جزئیات فنی در این بخش نمایش داده می‌شود."
         )
+        self._log_run_id = ""
+        self._log_sequence = 0
 
         layout = QVBoxLayout(self)
         layout.addWidget(guidance)
         layout.addWidget(form_group)
         layout.addLayout(test_row)
-        layout.addWidget(QLabel("خروجی Python (قابل انتخاب و کپی):"))
+        layout.addWidget(QLabel("گزارش اجرای عملیات (قابل انتخاب و کپی):"))
         layout.addWidget(self.python_output)
         layout.addStretch()
 
@@ -1337,21 +1349,23 @@ class LoginPage(QWizardPage):
             return
 
         self._save_credentials()
-        self.python_output.clear()
+        self.start_log()
         self.append_output(
-            "اقدام جاری: آزمایش ورود به سامانه ثنا؛ اقدام بعدی: تأیید منوی اظهارنامه"
+            "اقدام جاری: آزمایش ورود به سامانه ثنا؛ اقدام بعدی: تأیید منوی اظهارنامه",
+            level="progress",
         )
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             run_login_check(self._credentials())
         except LiveBrowserError as exc:
-            self.append_output(f"آزمایش ورود متوقف شد: {exc}")
+            self.append_output(f"آزمایش ورود متوقف شد: {exc}", level="error")
             QMessageBox.warning(self, "ورود ناموفق", str(exc))
             return
         finally:
             QApplication.restoreOverrideCursor()
         self.append_output(
-            "ورود و منوی اظهارنامه تأیید شد؛ عملیات ثبت انجام نشد."
+            "ورود و منوی اظهارنامه تأیید شد؛ عملیات ثبت انجام نشد.",
+            level="success",
         )
         QMessageBox.information(
             self,
@@ -1376,12 +1390,57 @@ class LoginPage(QWizardPage):
             remember=self.remember_credentials.isChecked(),
         )
 
-    def append_output(self, message: str) -> None:
-        self.python_output.append(message)
+    def start_log(self) -> None:
+        now = datetime.now()
+        self._log_run_id = (
+            f"RUN-{now:%Y%m%d-%H%M%S}-{now.microsecond // 1000:03d}"
+        )
+        self._log_sequence = 0
+        self.python_output.clear()
+        self.append_output("اجرای جدید آغاز شد.", level="system")
+
+    def append_output(self, message: str, *, level: str = "system") -> None:
+        if not self._log_run_id:
+            self.start_log()
+            if message == "اجرای جدید آغاز شد.":
+                return
+        self._log_sequence += 1
+        background, foreground, label = self.LOG_COLORS.get(
+            level, self.LOG_COLORS["system"]
+        )
+        technical = level == "debug"
+        direction = "ltr" if technical else "rtl"
+        alignment = "left" if technical else "right"
+        font = "Consolas, monospace" if technical else "Segoe UI, Tahoma"
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        safe_message = escape(self._redact_log_text(message)).replace("\n", "<br>")
+        safe_run_id = escape(self._log_run_id)
+        self.python_output.append(
+            f'<table width="100%" cellspacing="0" cellpadding="6" '
+            f'bgcolor="{background}"><tr><td dir="{direction}" '
+            f'style="text-align:{alignment}; color:{foreground}; '
+            f'font-family:{font};">'
+            f'<span style="font-weight:700;">[{label}]</span> '
+            f'<span dir="ltr" style="font-family:Consolas, monospace;">'
+            f'[{timestamp}] [#{self._log_sequence:03d}] [{safe_run_id}]</span><br>'
+            f'{safe_message}</td></tr></table>'
+        )
         self.python_output.ensureCursorVisible()
         QApplication.processEvents(
             QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
         )
+
+    def _redact_log_text(self, message: str) -> str:
+        redacted = message
+        for value in (
+            self.national_code.text().strip(),
+            self.password.text(),
+            self.legal_identity.text().strip(),
+            self.otp.text().strip(),
+        ):
+            if value:
+                redacted = redacted.replace(value, "[حذف‌شده]")
+        return redacted
 
 
 class RecipientWizard(QWizard):
@@ -1430,13 +1489,12 @@ class RecipientWizard(QWizard):
         self.button(QWizard.WizardButton.FinishButton).setObjectName("PrimaryButton")
 
     def _register_declarations(self, credentials: LoginCredentials) -> bool:
-        output = self.login_page.python_output
-        output.clear()
+        self.login_page.start_log()
         report = self.login_page.append_output
-        report("شروع آماده‌سازی اظهارنامه‌ها...")
+        report("شروع آماده‌سازی اظهارنامه‌ها...", level="system")
         candidates = self.preprocessing_page.candidates()
         if not candidates:
-            report("خطا: هیچ مخاطبی برای پردازش وجود ندارد.")
+            report("هیچ مخاطبی برای پردازش وجود ندارد.", level="error")
             QMessageBox.warning(self, "مخاطب وجود ندارد", "حداقل یک ردیف لازم است.")
             return False
         try:
@@ -1447,11 +1505,11 @@ class RecipientWizard(QWizard):
                 lookup_dir=self._lookup_dir,
             )
         except LookupResolutionError as exc:
-            report(f"خطای کدهای ثنا: {exc}")
+            report(f"خطای کدهای ثنا: {exc}", level="error")
             QMessageBox.warning(self, "کدهای ثنا ناقص", str(exc))
             return False
 
-        report(f"تعداد اظهارنامه‌های آماده: {len(drafts)}")
+        report(f"تعداد اظهارنامه‌های آماده: {len(drafts)}", level="system")
 
         answer = QMessageBox.question(
             self,
@@ -1463,7 +1521,7 @@ class RecipientWizard(QWizard):
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
-            report("عملیات توسط کاربر لغو شد.")
+            report("عملیات توسط کاربر لغو شد.", level="warning")
             return False
 
         first_login = True
@@ -1503,12 +1561,12 @@ class RecipientWizard(QWizard):
             ) == QMessageBox.StandardButton.Yes
 
         try:
-            report("شروع عملیات مرورگر...")
+            report("شروع عملیات مرورگر...", level="system")
             results = run_live_upload_batch(
                 drafts,
                 credentials_provider,
                 final_confirmation,
-                progress=report,
+                progress=lambda message: report(message, level="progress"),
             )
             successful = 0
             failures = []
@@ -1521,7 +1579,7 @@ class RecipientWizard(QWizard):
                     failures.append(
                         f"ردیف {index} ({name}): {result.message or result.status}"
                     )
-                    report(failures[-1])
+                    report(failures[-1], level="warning")
                     continue
                 try:
                     save_verified_result(
@@ -1531,16 +1589,17 @@ class RecipientWizard(QWizard):
                     )
                 except ResultPersistenceError as exc:
                     failures.append(f"ردیف {index}: {exc}")
-                    report(failures[-1])
+                    report(failures[-1], level="error")
                 else:
                     successful += 1
                     report(
                         f"ردیف {index}: ثبت موفق با کد رهگیری "
-                        f"{result.tracking_code}"
+                        f"{result.tracking_code}",
+                        level="success",
                     )
         except (LiveBrowserError, ValueError) as exc:
-            report("\n--- traceback ---")
-            report(traceback.format_exc())
+            report(f"ثبت متوقف شد: {exc}", level="error")
+            report(traceback.format_exc(), level="debug")
             QMessageBox.critical(self, "ثبت متوقف شد", str(exc))
             return False
 
@@ -1558,7 +1617,7 @@ class RecipientWizard(QWizard):
             "ثبت کامل شد",
             f"تعداد {successful} اظهارنامه با کد رهگیری معتبر ثبت شد.",
         )
-        report(f"پردازش کامل شد. موفق: {successful}")
+        report(f"پردازش کامل شد. موفق: {successful}", level="success")
         return True
 
     def _page_changed(self, page_id: int) -> None:

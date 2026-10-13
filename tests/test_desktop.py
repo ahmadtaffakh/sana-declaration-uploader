@@ -110,6 +110,50 @@ class RecipientWizardTests(unittest.TestCase):
             output.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse
         )
 
+    def test_last_page_log_is_colored_numbered_and_traceable(self) -> None:
+        page = RecipientWizard().login_page
+        page.start_log()
+        page.append_output("مرحله جاری", level="progress")
+        page.append_output("مرحله موفق", level="success")
+        page.append_output("هشدار نمونه", level="warning")
+        page.append_output("خطای نمونه", level="error")
+        page.append_output("Traceback\nValueError", level="debug")
+
+        text = page.python_output.toPlainText()
+        html = page.python_output.toHtml().lower()
+        self.assertRegex(text, r"RUN-\d{8}-\d{6}-\d{3}")
+        self.assertIn("[#001]", text)
+        self.assertIn("[#006]", text)
+        for label in (
+            "[اطلاعات]", "[در حال اجرا]", "[موفق]", "[هشدار]",
+            "[خطا]", "[جزئیات فنی]",
+        ):
+            self.assertIn(label, text)
+        for color in ("#e8f1fb", "#e6f7fa", "#e8f6ec", "#fff4dd", "#fdebec"):
+            self.assertIn(f'bgcolor="{color}"', html)
+        self.assertIn("dir='rtl'", html)
+        self.assertIn("consolas", html)
+
+    def test_last_page_log_escapes_markup_and_redacts_credentials(self) -> None:
+        page = RecipientWizard().login_page
+        page.national_code.setText("0012345678")
+        page.password.setText("secret-password")
+        page.legal_identity.setText("legal-secret")
+        page.otp.setText("otp-secret")
+        page.start_log()
+        page.append_output(
+            "<b>خطا</b> 0012345678 secret-password legal-secret otp-secret",
+            level="error",
+        )
+
+        text = page.python_output.toPlainText()
+        self.assertIn("<b>خطا</b>", text)
+        self.assertEqual(text.count("[حذف‌شده]"), 4)
+        for secret in (
+            "0012345678", "secret-password", "legal-secret", "otp-secret",
+        ):
+            self.assertNotIn(secret, text)
+
     def test_file_page_shows_loaded_file_count(self) -> None:
         with TemporaryDirectory() as directory:
             first = Path(directory) / "one.docx"
