@@ -8,11 +8,13 @@ from html import escape
 import json
 import os
 from pathlib import Path
+from queue import Queue
 import sys
 import traceback
+from typing import Callable
 
-from PySide6.QtCore import QEventLoop, Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent
+from PySide6.QtCore import QObject, QEventLoop, QSize, Qt, QThread, QUrl, Signal, Slot
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -30,6 +32,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QStyle,
     QTableWidget,
@@ -41,10 +44,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .extraction import DocumentExtractionError, extract_recipients
+from .extraction import extract_recipients
 from .flow import _build_desktop_drafts
 from .live_browser import (
-    LiveBrowserError,
     LoginCredentials,
     run_live_upload_batch,
     run_login_check,
@@ -65,6 +67,25 @@ _DECLARATION_DEFAULTS = {
     "subject": "سایر موضوعات",
     "description": "شرح موضوع",
 }
+
+
+class _BackgroundWorker(QObject):
+    progress = Signal(str)
+    succeeded = Signal(object)
+    failed = Signal(object, str)
+
+    def __init__(self, task: Callable[[Callable[[str], None]], object]) -> None:
+        super().__init__()
+        self._task = task
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self._task(self.progress.emit)
+        except Exception as exc:
+            self.failed.emit(exc, traceback.format_exc())
+        else:
+            self.succeeded.emit(result)
 _ORGANIZATIONAL_STYLE = """
 QWizard, QWizardPage {
     background-color: #F4F7FB;
@@ -141,6 +162,16 @@ QPushButton {
 }
 QPushButton:hover { background-color: #EDF4FA; }
 QPushButton:pressed { background-color: #DCEAF5; }
+QPushButton#TableIconButton {
+    min-width: 24px;
+    max-width: 24px;
+    min-height: 24px;
+    max-height: 24px;
+    padding: 0;
+    border: 0;
+    background-color: transparent;
+}
+QPushButton#TableIconButton:hover { background-color: #EAF2F8; }
 QPushButton:disabled {
     background-color: #EEF1F4;
     border-color: #D7DEE5;
@@ -309,6 +340,26 @@ def _location_value(value: str, prefix: str) -> str:
 def _open_source(path: Path) -> None:
     if path.is_file():
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
+
+
+def _table_icon_action(
+    icon: QStyle.StandardPixmap,
+    label: str,
+) -> tuple[QWidget, QPushButton]:
+    container = QWidget()
+    layout = QHBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    button = QPushButton(container)
+    button.setObjectName("TableIconButton")
+    button.setIcon(button.style().standardIcon(icon))
+    button.setIconSize(QSize(14, 14))
+    button.setFixedSize(24, 24)
+    button.setToolTip(label)
+    button.setAccessibleName(label)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    layout.addWidget(button)
+    return container, button
 
 
 _PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
@@ -483,8 +534,8 @@ class RecipientReviewPage(QWizardPage):
         "نام فایل مرتبط",
     )
     COLUMN_WIDTHS = {
-        "حذف": 104,
-        "بازکردن": 112,
+        "حذف": 48,
+        "بازکردن": 64,
         "تاریخ اظهارنامه مرتبط": 126,
         "تعداد روز گذشته از آن تاریخ": 112,
         "نام و نام خانوادگی": 180,
@@ -592,20 +643,26 @@ class RecipientReviewPage(QWizardPage):
             if self.HEADERS[column] == "نام فایل مرتبط":
                 item.setData(Qt.ItemDataRole.UserRole, candidate)
             self.table.setItem(row, column, item)
-        open_button = QPushButton("بازکردن")
+        open_widget, open_button = _table_icon_action(
+            QStyle.StandardPixmap.SP_DialogOpenButton,
+            "بازکردن فایل",
+        )
         if candidate:
             open_button.clicked.connect(
                 lambda _checked=False, path=candidate.source_path: _open_source(path)
             )
         else:
             open_button.setEnabled(False)
-        self.table.setCellWidget(row, self.HEADERS.index("بازکردن"), open_button)
-        remove_button = QPushButton("حذف")
+        self.table.setCellWidget(row, self.HEADERS.index("بازکردن"), open_widget)
+        remove_widget, remove_button = _table_icon_action(
+            QStyle.StandardPixmap.SP_TrashIcon,
+            "حذف ردیف",
+        )
         remove_button.clicked.connect(
             lambda _checked=False, marker=self.table.item(row, 0):
             self.table.removeRow(marker.row())
         )
-        self.table.setCellWidget(row, self.HEADERS.index("حذف"), remove_button)
+        self.table.setCellWidget(row, self.HEADERS.index("حذف"), remove_widget)
         self.table.blockSignals(signals_blocked)
         self.table.setSortingEnabled(sorting)
 
@@ -1261,6 +1318,7 @@ class LoginPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
         self.registration_callback = None
+        self.login_check_callback = None
         self.setTitle("<b>مرحله ۵ از ۵ — ورود امن به سامانه ثنا</b>")
         self.setSubTitle(
             "ورود را جداگانه آزمایش کنید یا پس از بازبینی، پردازش و ثبت را شروع کنید."
@@ -1294,10 +1352,10 @@ class LoginPage(QWizardPage):
         guidance.setObjectName("Guidance")
         guidance.setWordWrap(True)
 
-        test_button = QPushButton("آزمایش ورود بدون ثبت")
-        test_button.clicked.connect(self._test_login)
+        self.test_login_button = QPushButton("آزمایش ورود بدون ثبت")
+        self.test_login_button.clicked.connect(self._test_login)
         test_row = QHBoxLayout()
-        test_row.addWidget(test_button)
+        test_row.addWidget(self.test_login_button)
         test_row.addStretch()
 
         self.python_output = QTextEdit()
@@ -1356,24 +1414,13 @@ class LoginPage(QWizardPage):
             "اقدام جاری: آزمایش ورود به سامانه ثنا؛ اقدام بعدی: تأیید منوی اظهارنامه",
             level="progress",
         )
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            run_login_check(self._credentials())
-        except LiveBrowserError as exc:
-            self.append_output(f"آزمایش ورود متوقف شد: {exc}", level="error")
-            QMessageBox.warning(self, "ورود ناموفق", str(exc))
+        if self.login_check_callback is None:
+            self.append_output("مسیر آزمایش ورود مقداردهی نشده است.", level="error")
+            QMessageBox.warning(
+                self, "ورود در دسترس نیست", "مسیر آزمایش ورود مقداردهی نشده است."
+            )
             return
-        finally:
-            QApplication.restoreOverrideCursor()
-        self.append_output(
-            "ورود و منوی اظهارنامه تأیید شد؛ عملیات ثبت انجام نشد.",
-            level="success",
-        )
-        QMessageBox.information(
-            self,
-            "ورود موفق",
-            "ورود با موفقیت تأیید شد. هیچ اظهارنامه‌ای ثبت نشده است.",
-        )
+        self.login_check_callback(self._credentials())
 
     def _credentials(self) -> LoginCredentials:
         return LoginCredentials(
@@ -1446,6 +1493,9 @@ class LoginPage(QWizardPage):
 
 
 class RecipientWizard(QWizard):
+    otp_requested = Signal(object)
+    final_confirmation_requested = Signal(object, object)
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("دستیار ثبت اظهارنامه ثنا")
@@ -1459,6 +1509,7 @@ class RecipientWizard(QWizard):
         self.content_page = DeclarationContentPage()
         self.login_page = LoginPage()
         self.login_page.registration_callback = self._register_declarations
+        self.login_page.login_check_callback = self._start_login_check
         self.files_page_id = self.addPage(self.files_page)
         self.review_page_id = self.addPage(self.review_page)
         self.preprocessing_page_id = self.addPage(self.preprocessing_page)
@@ -1467,7 +1518,17 @@ class RecipientWizard(QWizard):
         self._loaded_paths: tuple[Path, ...] = ()
         self._preprocess_source: tuple[RecipientCandidate, ...] = ()
         self._lookup_dir = Path(__file__).resolve().parents[2] / "lookups"
+        self._background_thread: QThread | None = None
+        self._background_worker: _BackgroundWorker | None = None
+        self._background_dialog: QProgressDialog | None = None
+        self._background_success: Callable[[object], None] | None = None
+        self._background_failure: Callable[[Exception, str], None] | None = None
+        self._background_progress: Callable[[str], None] | None = None
+        self._background_result: object | None = None
+        self._background_error: tuple[Exception, str] | None = None
         self.currentIdChanged.connect(self._page_changed)
+        self.otp_requested.connect(self._show_otp_prompt)
+        self.final_confirmation_requested.connect(self._show_final_confirmation)
         self.setButtonLayout([
             QWizard.WizardButton.BackButton,
             QWizard.WizardButton.NextButton,
@@ -1489,6 +1550,189 @@ class RecipientWizard(QWizard):
         )
         self.button(QWizard.WizardButton.NextButton).setObjectName("PrimaryButton")
         self.button(QWizard.WizardButton.FinishButton).setObjectName("PrimaryButton")
+
+    def _start_background(
+        self,
+        label: str,
+        task: Callable[[Callable[[str], None]], object],
+        succeeded: Callable[[object], None],
+        failed: Callable[[Exception, str], None],
+        progressed: Callable[[str], None] | None = None,
+    ) -> bool:
+        if self._background_thread is not None:
+            QMessageBox.information(
+                self,
+                "عملیات در حال اجرا",
+                "لطفاً تا پایان عملیات جاری صبر کنید.",
+            )
+            return False
+
+        dialog = QProgressDialog(label, "", 0, 0, self)
+        dialog.setCancelButton(None)
+        dialog.setWindowTitle("در حال پردازش")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+
+        thread = QThread(self)
+        worker = _BackgroundWorker(task)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._background_progressed)
+        worker.succeeded.connect(self._background_succeeded)
+        worker.failed.connect(self._background_failed)
+        worker.succeeded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._background_thread_finished)
+
+        self._background_thread = thread
+        self._background_worker = worker
+        self._background_dialog = dialog
+        self._background_success = succeeded
+        self._background_failure = failed
+        self._background_progress = progressed
+        self._background_result = None
+        self._background_error = None
+        self._set_background_controls_enabled(False)
+        dialog.show()
+        thread.start()
+        return True
+
+    @Slot(str)
+    def _background_progressed(self, message: str) -> None:
+        if self._background_dialog is not None:
+            self._background_dialog.setLabelText(message)
+        if self._background_progress is not None:
+            self._background_progress(message)
+
+    @Slot(object)
+    def _background_succeeded(self, result: object) -> None:
+        self._background_result = result
+
+    @Slot(object, str)
+    def _background_failed(self, exc: Exception, details: str) -> None:
+        self._background_error = (exc, details)
+
+    @Slot()
+    def _background_thread_finished(self) -> None:
+        succeeded = self._background_success
+        failed = self._background_failure
+        result = self._background_result
+        error = self._background_error
+        self._background_thread = None
+        self._background_worker = None
+        self._background_success = None
+        self._background_failure = None
+        self._background_progress = None
+        self._background_result = None
+        self._background_error = None
+        self._finish_background_ui()
+        if error is not None:
+            if failed is not None:
+                failed(*error)
+        elif succeeded is not None:
+            succeeded(result)
+
+    def _finish_background_ui(self) -> None:
+        if self._background_dialog is not None:
+            self._background_dialog.close()
+            self._background_dialog.deleteLater()
+            self._background_dialog = None
+        self._set_background_controls_enabled(True)
+
+    def _set_background_controls_enabled(self, enabled: bool) -> None:
+        for role in (
+            QWizard.WizardButton.BackButton,
+            QWizard.WizardButton.NextButton,
+            QWizard.WizardButton.FinishButton,
+            QWizard.WizardButton.CancelButton,
+        ):
+            self.button(role).setEnabled(enabled)
+        self.login_page.test_login_button.setEnabled(enabled)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._background_thread is not None:
+            QMessageBox.information(
+                self,
+                "عملیات در حال اجرا",
+                "برای جلوگیری از نیمه‌کاره ماندن عملیات، تا پایان آن صبر کنید.",
+            )
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    def _start_login_check(self, credentials: LoginCredentials) -> None:
+        def task(progress: Callable[[str], None]) -> None:
+            progress("در حال راه‌اندازی مرورگر و ورود به سامانه ثنا...")
+            run_login_check(credentials)
+
+        def succeeded(_result: object) -> None:
+            self.login_page.append_output(
+                "ورود و منوی اظهارنامه تأیید شد؛ عملیات ثبت انجام نشد.",
+                level="success",
+            )
+            QMessageBox.information(
+                self,
+                "ورود موفق",
+                "ورود با موفقیت تأیید شد. هیچ اظهارنامه‌ای ثبت نشده است.",
+            )
+
+        def failed(exc: Exception, details: str) -> None:
+            self.login_page.append_output(
+                f"آزمایش ورود متوقف شد: {exc}", level="error"
+            )
+            self.login_page.append_output(details, level="debug")
+            QMessageBox.warning(self, "ورود ناموفق", str(exc))
+
+        self._start_background(
+            "در حال راه‌اندازی مرورگر...",
+            task,
+            succeeded,
+            failed,
+            lambda message: self.login_page.append_output(
+                message, level="progress"
+            ),
+        )
+
+    @Slot(object)
+    def _show_otp_prompt(self, response: Queue) -> None:
+        otp, accepted = QInputDialog.getText(
+            self,
+            "ورود مجدد به ثنا",
+            "نشست پایان یافته است. OTP جدید را وارد کنید:",
+            QLineEdit.EchoMode.Password,
+        )
+        value = otp.strip() if accepted else ""
+        if value:
+            self.login_page.otp.setText(value)
+            self.login_page._save_credentials()
+        response.put(value or None)
+
+    @Slot(object, object)
+    def _show_final_confirmation(
+        self,
+        draft: DeclarationDraft,
+        response: Queue,
+    ) -> None:
+        name = " ".join(
+            value for value in (
+                draft.fields.get("recipient_first_name", ""),
+                draft.fields.get("recipient_last_name", ""),
+            ) if value
+        )
+        answer = QMessageBox.question(
+            self,
+            "تأیید امضا و ثبت نهایی",
+            f"اظهارنامه مخاطب «{name}» آماده امضا است.\n"
+            "این اقدام نهایی و غیرقابل‌برگشت است. ثبت انجام شود؟",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        response.put(answer == QMessageBox.StandardButton.Yes)
 
     def _register_declarations(self, credentials: LoginCredentials) -> bool:
         self.login_page.start_log()
@@ -1526,84 +1770,91 @@ class RecipientWizard(QWizard):
             report("عملیات توسط کاربر لغو شد.", level="warning")
             return False
 
-        first_login = True
+        def task(progress: Callable[[str], None]) -> object:
+            first_login = True
+            current_credentials = credentials
 
-        def credentials_provider() -> LoginCredentials | None:
-            nonlocal first_login, credentials
-            if first_login:
-                first_login = False
-                return credentials
-            otp, accepted = QInputDialog.getText(
-                self,
-                "ورود مجدد به ثنا",
-                "نشست پایان یافته است. OTP جدید را وارد کنید:",
-                QLineEdit.EchoMode.Password,
-            )
-            if not accepted or not otp.strip():
-                return None
-            credentials = replace(credentials, otp=otp.strip())
-            self.login_page.otp.setText(otp.strip())
-            self.login_page._save_credentials()
-            return credentials
+            def credentials_provider() -> LoginCredentials | None:
+                nonlocal first_login, current_credentials
+                if first_login:
+                    first_login = False
+                    return current_credentials
+                response: Queue = Queue(maxsize=1)
+                self.otp_requested.emit(response)
+                otp = response.get()
+                if not otp:
+                    return None
+                current_credentials = replace(current_credentials, otp=otp)
+                return current_credentials
 
-        def final_confirmation(draft: DeclarationDraft) -> bool:
-            name = " ".join(
-                value for value in (
-                    draft.fields.get("recipient_first_name", ""),
-                    draft.fields.get("recipient_last_name", ""),
-                ) if value
-            )
-            return QMessageBox.question(
-                self,
-                "تأیید امضا و ثبت نهایی",
-                f"اظهارنامه مخاطب «{name}» آماده امضا است.\n"
-                "این اقدام نهایی و غیرقابل‌برگشت است. ثبت انجام شود؟",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            ) == QMessageBox.StandardButton.Yes
+            def final_confirmation(draft: DeclarationDraft) -> bool:
+                response: Queue = Queue(maxsize=1)
+                self.final_confirmation_requested.emit(draft, response)
+                return bool(response.get())
 
-        try:
-            report("شروع عملیات مرورگر...", level="system")
-            results = run_live_upload_batch(
+            progress("در حال راه‌اندازی مرورگر...")
+            return run_live_upload_batch(
                 drafts,
                 credentials_provider,
                 final_confirmation,
-                progress=lambda message: report(message, level="progress"),
+                progress=progress,
             )
-            successful = 0
-            failures = []
-            for index, (draft, result) in enumerate(zip(drafts, results), start=1):
-                if result.status != "success":
-                    name = " ".join(filter(None, (
-                        draft.fields.get("recipient_first_name", ""),
-                        draft.fields.get("recipient_last_name", ""),
-                    ))) or "بدون نام"
-                    failures.append(
-                        f"ردیف {index} ({name}): {result.message or result.status}"
-                    )
-                    report(failures[-1], level="warning")
-                    continue
-                try:
-                    save_verified_result(
-                        draft,
-                        result,
-                        filename=f"result-{index:03d}.json",
-                    )
-                except ResultPersistenceError as exc:
-                    failures.append(f"ردیف {index}: {exc}")
-                    report(failures[-1], level="error")
-                else:
-                    successful += 1
-                    report(
-                        f"ردیف {index}: ثبت موفق با کد رهگیری "
-                        f"{result.tracking_code}",
-                        level="success",
-                    )
-        except (LiveBrowserError, ValueError) as exc:
+
+        def succeeded(results: object) -> None:
+            completed = self._finish_registration(drafts, tuple(results))
+            if completed:
+                self.accept()
+
+        def failed(exc: Exception, details: str) -> None:
             report(f"ثبت متوقف شد: {exc}", level="error")
-            report(traceback.format_exc(), level="debug")
+            report(details, level="debug")
             QMessageBox.critical(self, "ثبت متوقف شد", str(exc))
-            return False
+
+        report("شروع عملیات مرورگر...", level="system")
+        self._start_background(
+            "در حال راه‌اندازی مرورگر...",
+            task,
+            succeeded,
+            failed,
+            lambda message: report(message, level="progress"),
+        )
+        return False
+
+    def _finish_registration(
+        self,
+        drafts: tuple[DeclarationDraft, ...],
+        results: tuple[object, ...],
+    ) -> bool:
+        report = self.login_page.append_output
+        successful = 0
+        failures = []
+        for index, (draft, result) in enumerate(zip(drafts, results), start=1):
+            if result.status != "success":
+                name = " ".join(filter(None, (
+                    draft.fields.get("recipient_first_name", ""),
+                    draft.fields.get("recipient_last_name", ""),
+                ))) or "بدون نام"
+                failures.append(
+                    f"ردیف {index} ({name}): {result.message or result.status}"
+                )
+                report(failures[-1], level="warning")
+                continue
+            try:
+                save_verified_result(
+                    draft,
+                    result,
+                    filename=f"result-{index:03d}.json",
+                )
+            except ResultPersistenceError as exc:
+                failures.append(f"ردیف {index}: {exc}")
+                report(failures[-1], level="error")
+            else:
+                successful += 1
+                report(
+                    f"ردیف {index}: ثبت موفق با کد رهگیری "
+                    f"{result.tracking_code}",
+                    level="success",
+                )
 
         if failures:
             QMessageBox.warning(
@@ -1642,17 +1893,27 @@ class RecipientWizard(QWizard):
         selected_paths = tuple(self.files_page.selected_paths())
         if selected_paths == self._loaded_paths:
             return
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            candidates = extract_recipients(list(selected_paths))
-        except DocumentExtractionError as exc:
+
+        def task(progress: Callable[[str], None]) -> object:
+            progress(
+                f"در حال خواندن و استخراج اطلاعات {len(selected_paths)} فایل..."
+            )
+            return extract_recipients(list(selected_paths))
+
+        def succeeded(candidates: object) -> None:
+            self.review_page.set_candidates(tuple(candidates))
+            self._loaded_paths = selected_paths
+
+        def failed(exc: Exception, _details: str) -> None:
             self.review_page.set_candidates(())
             QMessageBox.warning(self, "خطا در استخراج", str(exc))
-        else:
-            self.review_page.set_candidates(candidates)
-            self._loaded_paths = selected_paths
-        finally:
-            QApplication.restoreOverrideCursor()
+
+        self._start_background(
+            "در حال بارگذاری و استخراج فایل‌ها...",
+            task,
+            succeeded,
+            failed,
+        )
 
 
 def main() -> int:

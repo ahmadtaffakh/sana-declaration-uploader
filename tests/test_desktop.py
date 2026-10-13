@@ -1,5 +1,7 @@
 import os
 import json
+import threading
+import time
 import unittest
 from datetime import date
 from unittest.mock import patch
@@ -8,10 +10,11 @@ from tempfile import TemporaryDirectory
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -43,6 +46,20 @@ class RecipientWizardTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
+
+    def _wait_for_background(
+        self,
+        wizard: RecipientWizard,
+        timeout: float = 3.0,
+    ) -> None:
+        deadline = time.monotonic() + timeout
+        while wizard._background_thread is not None and time.monotonic() < deadline:
+            self.app.processEvents()
+            thread = wizard._background_thread
+            if thread is not None:
+                thread.wait(10)
+        self.app.processEvents()
+        self.assertIsNone(wizard._background_thread)
 
     def test_navigation_is_persian_and_aligned_to_the_right(self) -> None:
         wizard = RecipientWizard()
@@ -204,7 +221,9 @@ class RecipientWizardTests(unittest.TestCase):
             ["شخص دوم", "شخص سوم"],
         )
 
-        button = page.table.cellWidget(0, page.HEADERS.index("حذف"))
+        button = page.table.cellWidget(
+            0, page.HEADERS.index("حذف")
+        ).findChild(QPushButton, "TableIconButton")
         button.click()
         self.assertEqual(
             [candidate.full_name for candidate in page.candidates()],
@@ -231,6 +250,7 @@ class RecipientWizardTests(unittest.TestCase):
                 return_value=candidates,
             ) as extract:
                 wizard._page_changed(wizard.review_page_id)
+                self._wait_for_background(wizard)
 
             extract.assert_called_once_with([source.resolve()])
             self.assertEqual(
@@ -238,6 +258,72 @@ class RecipientWizardTests(unittest.TestCase):
                 ["شخص اول", "شخص دوم"],
             )
             self.assertEqual(wizard._preprocess_source, ())
+
+    def test_file_extraction_runs_without_blocking_the_ui_thread(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "input.docx"
+            source.write_bytes(b"test")
+            wizard = RecipientWizard()
+            wizard.files_page._add_paths((source,))
+            started = threading.Event()
+            release = threading.Event()
+
+            def extract(_paths):
+                started.set()
+                release.wait(2)
+                return (RecipientCandidate(
+                    source_path=source,
+                    full_name="نام نمونه",
+                ),)
+
+            with patch(
+                "sana_declaration_uploader.desktop.extract_recipients",
+                side_effect=extract,
+            ):
+                wizard._page_changed(wizard.review_page_id)
+                self.assertTrue(started.wait(1))
+                self.assertIsNotNone(wizard._background_thread)
+                self.assertFalse(
+                    wizard.button(QWizard.WizardButton.NextButton).isEnabled()
+                )
+                release.set()
+                self._wait_for_background(wizard)
+
+            self.assertEqual(
+                wizard.review_page.candidates()[0].full_name,
+                "نام نمونه",
+            )
+
+    def test_browser_login_check_runs_without_blocking_the_ui_thread(self) -> None:
+        wizard = RecipientWizard()
+        started = threading.Event()
+        release = threading.Event()
+
+        def login_check(_credentials):
+            started.set()
+            release.wait(2)
+
+        with (
+            patch(
+                "sana_declaration_uploader.desktop.run_login_check",
+                side_effect=login_check,
+            ),
+            patch.object(QMessageBox, "information"),
+        ):
+            wizard._start_login_check(
+                LoginCredentials("national", "password", "identity", "otp")
+            )
+            self.assertTrue(started.wait(1))
+            self.assertIsNotNone(wizard._background_thread)
+            self.assertFalse(wizard.login_page.test_login_button.isEnabled())
+            self.assertFalse(wizard.close())
+            release.set()
+            self._wait_for_background(wizard)
+
+        self.assertIn(
+            "ورود و منوی اظهارنامه تأیید شد",
+            wizard.login_page.python_output.toPlainText(),
+        )
 
     def test_preprocessing_location_edits_survive_reloading_the_same_rows(self) -> None:
         wizard = RecipientWizard()
@@ -365,9 +451,30 @@ class RecipientWizardTests(unittest.TestCase):
             ) as open_url:
                 page.table.cellWidget(
                     0, page.HEADERS.index("بازکردن")
-                ).click()
+                ).findChild(QPushButton, "TableIconButton").click()
 
             open_url.assert_called_once()
+
+    def test_review_row_actions_use_compact_accessible_icons(self) -> None:
+        page = RecipientReviewPage()
+        page.set_candidates((RecipientCandidate(
+            source_path=Path("input.docx"),
+            full_name="نام نمونه",
+        ),))
+
+        for header, label in (
+            ("حذف", "حذف ردیف"),
+            ("بازکردن", "بازکردن فایل"),
+        ):
+            button = page.table.cellWidget(
+                0, page.HEADERS.index(header)
+            ).findChild(QPushButton, "TableIconButton")
+            self.assertEqual(button.text(), "")
+            self.assertEqual(button.toolTip(), label)
+            self.assertEqual(button.accessibleName(), label)
+            self.assertFalse(button.icon().isNull())
+            self.assertEqual(button.iconSize(), QSize(14, 14))
+            self.assertEqual(button.maximumSize(), QSize(24, 24))
 
     def test_review_normalizes_and_sorts_related_dates(self) -> None:
         page = RecipientReviewPage()
@@ -801,8 +908,9 @@ class RecipientWizardTests(unittest.TestCase):
             completed = wizard._register_declarations(
                 LoginCredentials("national", "password", "identity", "otp")
             )
+            self._wait_for_background(wizard)
 
-        self.assertTrue(completed)
+        self.assertFalse(completed)
         save.assert_called_once_with(
             drafts[0], results[0], filename="result-001.json"
         )
@@ -850,6 +958,7 @@ class RecipientWizardTests(unittest.TestCase):
             completed = wizard._register_declarations(
                 LoginCredentials("national", "password", "identity", "otp")
             )
+            self._wait_for_background(wizard)
 
         output = wizard.login_page.python_output.toPlainText()
         self.assertFalse(completed)
@@ -857,6 +966,64 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertIn("LiveBrowserError: site_response_ambiguous", output)
         self.assertNotIn("password", output)
         self.assertNotIn("otp", output)
+
+    def test_registration_prompts_are_marshaled_to_the_ui_thread(self) -> None:
+        wizard = RecipientWizard()
+        candidate = RecipientCandidate(
+            source_path=Path("one.docx"), full_name="نمونه"
+        )
+        draft = DeclarationDraft(source_dir=Path("one"), fields={
+            "recipient_first_name": "نام",
+            "recipient_last_name": "نمونه",
+        })
+        ui_thread = self.app.thread()
+        prompt_threads = []
+
+        def question(*_args, **_kwargs):
+            prompt_threads.append(self.app.thread().currentThread())
+            return QMessageBox.StandardButton.Yes
+
+        def get_text(*_args, **_kwargs):
+            prompt_threads.append(self.app.thread().currentThread())
+            return "new-otp", True
+
+        def run_batch(
+            _drafts,
+            credentials_provider,
+            final_confirmation,
+            **_kwargs,
+        ):
+            self.assertEqual(credentials_provider().otp, "otp")
+            self.assertEqual(credentials_provider().otp, "new-otp")
+            self.assertTrue(final_confirmation(draft))
+            return (UploadResult(
+                status="success", tracking_code="111111111111"
+            ),)
+
+        with (
+            patch.object(
+                wizard.preprocessing_page, "candidates", return_value=(candidate,)
+            ),
+            patch.object(wizard.content_page, "payloads", return_value={}),
+            patch(
+                "sana_declaration_uploader.desktop._build_desktop_drafts",
+                return_value=(draft,),
+            ),
+            patch.object(QMessageBox, "question", side_effect=question),
+            patch.object(QInputDialog, "getText", side_effect=get_text),
+            patch.object(QMessageBox, "information"),
+            patch(
+                "sana_declaration_uploader.desktop.run_live_upload_batch",
+                side_effect=run_batch,
+            ),
+            patch("sana_declaration_uploader.desktop.save_verified_result"),
+        ):
+            self.assertFalse(wizard._register_declarations(
+                LoginCredentials("national", "password", "identity", "otp")
+            ))
+            self._wait_for_background(wizard)
+
+        self.assertEqual(prompt_threads, [ui_thread, ui_thread, ui_thread])
 
     def test_reviewed_rows_build_registration_drafts_with_exact_lookups(self) -> None:
         with TemporaryDirectory() as directory:
