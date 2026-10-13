@@ -366,7 +366,7 @@ class RecipientPageTests(unittest.TestCase):
             "[.//*[contains(concat(' ', normalize-space(@class), ' '), ' step ') "
             "and normalize-space()='موضوع اظهارنامه']]"
         )
-        self.assertIn(("click", subject_step), page.calls)
+        self.assertIn(("click", f"{subject_step} >> .step.ng-binding"), page.calls)
         self.assertIn(
             (
                 "wait_for_function",
@@ -427,12 +427,30 @@ class RecipientPageTests(unittest.TestCase):
         tab.click.assert_called_once_with(timeout=60_000)
         self.assertNotIn(("click", "#btnAddSection"), page.calls)
 
-    def test_stops_when_subject_step_is_not_available(self):
+    def test_clicks_subject_label_without_rejecting_parent_status_class(self):
+        page = _Page()
+
+        PlaywrightRecipientPage(page).fill_natural_person(self._draft())
+
+        self.assertIn(
+            (
+                "click",
+                "//*[@ng-repeat='step in navCtrl.currentStep.innerSteps']"
+                "[.//*[contains(concat(' ', normalize-space(@class), ' '), ' step ') "
+                "and normalize-space()='موضوع اظهارنامه']] >> .step.ng-binding",
+            ),
+            page.calls,
+        )
+        self.assertFalse(any(call[0] == "get_attribute" for call in page.calls))
+
+    def test_subject_label_click_failure_stops_navigation(self):
         page = _Page()
         original_locator = page.locator
         subject_step = Mock()
         subject_step.count.return_value = 1
-        subject_step.locator.return_value.get_attribute.return_value = "lock"
+        subject_label = Mock()
+        subject_label.click.side_effect = TimeoutError
+        subject_step.locator.return_value = subject_label
         page.locator = lambda selector: (
             subject_step
             if "normalize-space()='موضوع اظهارنامه'" in selector
@@ -440,11 +458,12 @@ class RecipientPageTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(
-            LiveBrowserError, "form_step_not_available:موضوع اظهارنامه"
+            LiveBrowserError, "form_step_navigation_failed:موضوع اظهارنامه"
         ):
             PlaywrightRecipientPage(page).fill_natural_person(self._draft())
 
-        subject_step.click.assert_not_called()
+        subject_step.locator.assert_called_once_with(".step.ng-binding")
+        subject_label.click.assert_called_once_with()
 
     def test_reports_recipient_residence_error_without_waiting_for_subject(self):
         page = _Page()
@@ -829,7 +848,10 @@ class ContentPageTests(unittest.TestCase):
 
         PlaywrightContentPage(page).select_subject("موضوع")
 
-        self.assertIn(("click", self.DESCRIPTION_STEP), page.calls)
+        self.assertIn(
+            ("click", f"{self.DESCRIPTION_STEP} >> .step.ng-binding"),
+            page.calls,
+        )
         self.assertIn(
             (
                 "wait_for_function",

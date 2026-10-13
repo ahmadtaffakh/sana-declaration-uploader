@@ -609,16 +609,7 @@ def _open_form_step(
         raise LiveBrowserError(f"form_step_not_unique:{title}")
 
     try:
-        status_classes = (
-            step.locator("[jud-static-include] > div").get_attribute("class") or ""
-        ).split()
-    except Exception as exc:
-        raise LiveBrowserError(f"form_step_status_not_resolved:{title}") from exc
-    if {"done", "disable", "lock"}.intersection(status_classes):
-        raise LiveBrowserError(f"form_step_not_available:{title}")
-
-    try:
-        step.click()
+        step.locator(".step.ng-binding").click()
         page.wait_for_function(
             r"""title => {
                 const normalize = value => (value || '')
