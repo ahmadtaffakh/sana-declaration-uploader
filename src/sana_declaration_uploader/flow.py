@@ -85,7 +85,7 @@ def _build_desktop_drafts(
             "recipient_father_name": candidate.father_name,
             "recipient_birth_date": candidate.birth_date,
             "recipient_gender": candidate.gender,
-            "recipient_main_street": candidate.address or " ",
+            "recipient_main_street": candidate.address or "-",
             "recipient_address": candidate.address,
             "recipient_postal_code": candidate.postal_code,
             "notice_number": candidate.notice_number,
