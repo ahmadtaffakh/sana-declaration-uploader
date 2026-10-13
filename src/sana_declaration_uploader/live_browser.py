@@ -786,7 +786,13 @@ class PlaywrightContentPage:
         page.locator("#btnAddSection").click()
         control = page.locator("#jssPetitionRelief1")
         control.locator("input").first.fill(subject)
-        choices = control.locator(".ui-select-choices-row").filter(has_text=subject)
+        choices = control.locator(".ui-select-choices-row:visible").filter(
+            has_text=re.compile(rf"^\s*{re.escape(subject)}\s*$")
+        )
+        try:
+            choices.first.wait_for(state="visible", timeout=self.timeout_ms)
+        except Exception as exc:
+            raise LiveBrowserError("declaration_subject_not_found") from exc
         if choices.count() != 1:
             raise LiveBrowserError("declaration_subject_not_unique")
         if choices.first.inner_text().strip() != subject:

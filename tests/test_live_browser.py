@@ -51,6 +51,8 @@ class _Locator:
 
     def wait_for(self, **kwargs):
         self.page.calls.append(("wait_for", self.selector, kwargs["state"]))
+        if self.selector in self.page.wait_failures:
+            raise TimeoutError
 
     def locator(self, selector):
         return _Locator(self.page, f"{self.selector} >> {selector}")
@@ -84,6 +86,7 @@ class _Page:
         self.calls = []
         self.authenticated = False
         self.inner_texts = {}
+        self.wait_failures = set()
 
     def goto(self, url, **kwargs):
         self.calls.append(("goto", url))
@@ -843,7 +846,7 @@ class ContentPageTests(unittest.TestCase):
     def test_subject_opens_description_tab_without_next_or_evidence(self):
         page = _Page()
         page.inner_texts[
-            "#jssPetitionRelief1 >> .ui-select-choices-row"
+            "#jssPetitionRelief1 >> .ui-select-choices-row:visible"
         ] = "موضوع"
 
         PlaywrightContentPage(page).select_subject("موضوع")
@@ -868,6 +871,30 @@ class ContentPageTests(unittest.TestCase):
             call[0:2] == ("click", "#btnNext") for call in page.calls
         ))
         self.assertFalse(any("#chk7" in str(call) for call in page.calls))
+
+    def test_subject_waits_for_an_exact_visible_choice(self):
+        page = _Page()
+        choice_selector = "#jssPetitionRelief1 >> .ui-select-choices-row:visible"
+        page.inner_texts[choice_selector] = "سایر موضوعات"
+
+        PlaywrightContentPage(page).select_subject("سایر موضوعات")
+
+        self.assertIn(("wait_for", choice_selector, "visible"), page.calls)
+        self.assertIn(("click", choice_selector), page.calls)
+
+    def test_missing_subject_choice_stops_before_description_navigation(self):
+        page = _Page()
+        choice_selector = "#jssPetitionRelief1 >> .ui-select-choices-row:visible"
+        page.wait_failures.add(choice_selector)
+
+        with self.assertRaisesRegex(
+            LiveBrowserError, "declaration_subject_not_found"
+        ):
+            PlaywrightContentPage(page).select_subject("سایر موضوعات")
+
+        self.assertFalse(any(
+            "شرح اظهارنامه" in str(call) for call in page.calls
+        ))
 
     def test_description_is_temporarily_saved_without_next(self):
         page = _Page()
