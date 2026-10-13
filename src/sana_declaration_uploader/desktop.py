@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date
 import json
 import os
 from pathlib import Path
 import sys
 import traceback
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QEventLoop, Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -39,10 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 from .extraction import DocumentExtractionError, extract_recipients
-from .flow import (
-    _build_desktop_drafts,
-    _PERSON_TYPE_DISPLAY,
-)
+from .flow import _build_desktop_drafts
 from .live_browser import (
     LiveBrowserError,
     LoginCredentials,
@@ -56,21 +55,6 @@ from .results import ResultPersistenceError, save_verified_result
 
 
 _SUPPORTED_SUFFIXES = {".docx", ".pdf", ".txt"}
-_ROLE_DISPLAY = {
-    "declarant": "اظهارکننده",
-    "addressee": "مخاطب",
-    "plaintiff": "خواهان",
-    "defendant": "خوانده",
-    "appellant": "تجدیدنظرخواه",
-    "respondent": "تجدیدنظرخوانده",
-    "complainant": "شاکی",
-    "accused": "مشتکی‌عنه/متهم",
-    "petitioner": "درخواست‌کننده",
-    "claimant": "محکوم‌له",
-}
-_ROLE_VALUE = {label: value for value, label in _ROLE_DISPLAY.items()}
-_PERSON_TYPE_VALUE = {label: value for value, label in _PERSON_TYPE_DISPLAY.items()}
-_GENDER_DISPLAY = ("", "مرد", "زن")
 _ATTACHMENT_DEFAULTS = {
     "attachment_kind": "سایر دلایل و مستندات",
     "attachment_number": "شماره مدرک",
@@ -324,6 +308,72 @@ def _open_source(path: Path) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
 
 
+_PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def _parse_related_date(value: str) -> tuple[str, date | None]:
+    normalized = value.translate(_PERSIAN_DIGITS).strip().replace("-", "/")
+    parts = [part.strip() for part in normalized.split("/")]
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        return normalized, None
+    numbers = [int(part) for part in parts]
+    if len(parts[0]) == 4:
+        year, month, day = numbers
+    elif len(parts[2]) == 4:
+        day, month, year = numbers
+    else:
+        return normalized, None
+    display = f"{year:04d}/{month:02d}/{day:02d}"
+    if year < 1200 or not 1 <= month <= 12 or not 1 <= day <= 31:
+        return display, None
+    try:
+        return display, _jalali_to_gregorian(year, month, day)
+    except ValueError:
+        return display, None
+
+
+def _jalali_to_gregorian(year: int, month: int, day: int) -> date:
+    jalali_year = year + 1595
+    days = (
+        -355668
+        + 365 * jalali_year
+        + (jalali_year // 33) * 8
+        + ((jalali_year % 33 + 3) // 4)
+        + day
+    )
+    days += (month - 1) * 31 if month < 7 else (month - 7) * 30 + 186
+    gregorian_year = 400 * (days // 146097)
+    days %= 146097
+    if days > 36524:
+        gregorian_year += 100 * ((days - 1) // 36524)
+        days = (days - 1) % 36524
+        if days >= 365:
+            days += 1
+    gregorian_year += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        gregorian_year += (days - 1) // 365
+        days = (days - 1) % 365
+    gregorian_day = days + 1
+    month_days = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    if gregorian_year % 4 == 0 and (
+        gregorian_year % 100 != 0 or gregorian_year % 400 == 0
+    ):
+        month_days[2] = 29
+    gregorian_month = 1
+    while gregorian_month <= 12 and gregorian_day > month_days[gregorian_month]:
+        gregorian_day -= month_days[gregorian_month]
+        gregorian_month += 1
+    return date(gregorian_year, gregorian_month, gregorian_day)
+
+
+def _days_since_related_date(value: str, *, today: date | None = None) -> int | None:
+    _display, parsed = _parse_related_date(value)
+    if parsed is None:
+        return None
+    return ((today or date.today()) - parsed).days
+
+
 class FileSelectionPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
@@ -415,29 +465,35 @@ class FileSelectionPage(QWizardPage):
 
 class RecipientReviewPage(QWizardPage):
     HEADERS = (
-        "انتخاب",
-        "فایل منبع",
-        "شماره ابلاغیه",
-        "شماره اظهارنامه مرتبط",
+        "حذف",
+        "بازکردن",
         "تاریخ اظهارنامه مرتبط",
-        "نقش",
-        "نوع شخص",
+        "تعداد روز گذشته از آن تاریخ",
         "نام و نام خانوادگی",
-        "نام",
-        "نام خانوادگی",
         "نام پدر",
-        "جنسیت",
-        "شغل",
         "کد ملی",
-        "کد پرسنلی",
-        "تاریخ تولد",
-        "کدپستی",
+        "شماره اظهارنامه",
         "آدرس",
         "شاهد استخراج",
-        "بازکردن",
-        "وضعیت",
-        "حذف",
+        "نام",
+        "نام خانوادگی",
+        "نام فایل مرتبط",
     )
+    COLUMN_WIDTHS = {
+        "حذف": 104,
+        "بازکردن": 112,
+        "تاریخ اظهارنامه مرتبط": 126,
+        "تعداد روز گذشته از آن تاریخ": 112,
+        "نام و نام خانوادگی": 180,
+        "نام پدر": 82,
+        "کد ملی": 118,
+        "شماره اظهارنامه": 150,
+        "آدرس": 260,
+        "شاهد استخراج": 220,
+        "نام": 110,
+        "نام خانوادگی": 135,
+        "نام فایل مرتبط": 175,
+    }
 
     def __init__(self) -> None:
         super().__init__()
@@ -449,10 +505,15 @@ class RecipientReviewPage(QWizardPage):
         self.table = QTableWidget(0, len(self.HEADERS))
         self.table.setHorizontalHeaderLabels(self.HEADERS)
         _configure_table(self.table)
-        for header in (
-            "جنسیت", "کدپستی", "تاریخ تولد", "شغل", "نقش", "نوع شخص",
-        ):
-            self.table.setColumnHidden(self.HEADERS.index(header), True)
+        self.table.setSortingEnabled(True)
+        self.table.itemChanged.connect(self._date_changed)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        for name, width in self.COLUMN_WIDTHS.items():
+            self.table.setColumnWidth(self.HEADERS.index(name), width)
 
         add_button = QPushButton("افزودن شخص")
         remove_button = QPushButton("حذف ردیف")
@@ -465,11 +526,10 @@ class RecipientReviewPage(QWizardPage):
 
         layout = QVBoxLayout(self)
         guidance = QLabel(
-            "روش کار: ۱) نام و نقش هر شخص را کنترل کنید. ۲) خانه‌های خالی یا اشتباه "
+            "روش کار: ۱) تاریخ و مشخصات هر شخص را کنترل کنید. ۲) خانه‌های خالی یا اشتباه "
             "را مستقیم در جدول اصلاح کنید. ۳) اگر یک ردیف به پرونده شما مربوط نیست، "
-            "تیک آن را بزنید یا از کلید حذف همان ردیف استفاده کنید. وضعیت «نیازمند "
-            "اصلاح» یعنی دست‌کم یک مقدار "
-            "ضروری ناقص یا مشکوک است. پایان بازبینی به معنی ثبت نهایی در ثنا نیست."
+            "آن را انتخاب و حذف کنید یا از کلید حذف همان ردیف استفاده کنید. "
+            "پایان بازبینی به معنی ثبت نهایی در ثنا نیست."
         )
         guidance.setObjectName("Guidance")
         guidance.setWordWrap(True)
@@ -478,66 +538,57 @@ class RecipientReviewPage(QWizardPage):
         layout.addLayout(buttons)
 
     def set_candidates(self, candidates: tuple[RecipientCandidate, ...]) -> None:
+        sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         for candidate in candidates:
             self.add_candidate(candidate)
-        self.table.resizeColumnsToContents()
+        self.table.setSortingEnabled(sorting)
 
     def add_candidate(self, candidate: RecipientCandidate | None) -> None:
+        sorting = self.table.isSortingEnabled()
+        signals_blocked = self.table.signalsBlocked()
+        self.table.setSortingEnabled(False)
+        self.table.blockSignals(True)
         row = self.table.rowCount()
         self.table.insertRow(row)
         suggested_first, suggested_last = _split_full_name(
             candidate.full_name if candidate else ""
         )
+        date_value, _parsed_date = _parse_related_date(
+            candidate.related_declaration_date if candidate else ""
+        )
+        days_since = _days_since_related_date(date_value)
         values = (
             "",
-            candidate.source_path.name if candidate else "دستی",
-            candidate.notice_number if candidate else "",
-            candidate.related_declaration_number if candidate else "",
-            candidate.related_declaration_date if candidate else "",
-            _ROLE_DISPLAY.get(candidate.role, candidate.role) if candidate else "",
-            _PERSON_TYPE_DISPLAY.get(candidate.person_type, candidate.person_type) if candidate else "",
+            "",
+            date_value,
+            days_since,
             candidate.full_name if candidate else "",
-            (candidate.first_name or suggested_first) if candidate else "",
-            (candidate.last_name or suggested_last) if candidate else "",
             candidate.father_name if candidate else "",
-            candidate.gender if candidate else "",
-            candidate.job_title if candidate else "",
             candidate.national_id if candidate else "",
-            candidate.employee_code if candidate else "",
-            candidate.birth_date if candidate else "",
-            candidate.postal_code if candidate else "",
+            candidate.related_declaration_number if candidate else "",
             candidate.address if candidate else "",
             candidate.evidence if candidate else "",
-            "",
-            self._status(candidate),
-            "",
+            (candidate.first_name or suggested_first) if candidate else "",
+            (candidate.last_name or suggested_last) if candidate else "",
+            candidate.source_path.name if candidate else "دستی",
         )
         for column, value in enumerate(values):
-            item = QTableWidgetItem(value)
-            if column == 0:
-                item.setFlags(
-                    (item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                    & ~Qt.ItemFlag.ItemIsEditable
-                )
-                item.setCheckState(Qt.CheckState.Unchecked)
-            if column == 1:
-                item.setData(Qt.ItemDataRole.UserRole, candidate)
+            item = QTableWidgetItem()
+            item.setData(Qt.ItemDataRole.DisplayRole, value if value is not None else "")
             if self.HEADERS[column] in (
-                "فایل منبع", "شاهد استخراج", "بازکردن", "وضعیت", "حذف",
+                "حذف", "بازکردن", "تعداد روز گذشته از آن تاریخ",
+                "شاهد استخراج", "نام فایل مرتبط",
             ):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             if self.HEADERS[column] == "تاریخ اظهارنامه مرتبط":
                 item.setTextAlignment(
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
                 )
+            if self.HEADERS[column] == "نام فایل مرتبط":
+                item.setData(Qt.ItemDataRole.UserRole, candidate)
             self.table.setItem(row, column, item)
-        date_editor = QLineEdit(values[self.HEADERS.index("تاریخ اظهارنامه مرتبط")])
-        date_editor.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        date_editor.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.table.setCellWidget(
-            row, self.HEADERS.index("تاریخ اظهارنامه مرتبط"), date_editor
-        )
         open_button = QPushButton("بازکردن")
         if candidate:
             open_button.clicked.connect(
@@ -551,12 +602,16 @@ class RecipientReviewPage(QWizardPage):
             lambda _checked=False, marker=self.table.item(row, 0):
             self.table.removeRow(marker.row())
         )
-        self.table.setCellWidget(row, len(self.HEADERS) - 1, remove_button)
+        self.table.setCellWidget(row, self.HEADERS.index("حذف"), remove_button)
+        self.table.blockSignals(signals_blocked)
+        self.table.setSortingEnabled(sorting)
 
     def candidates(self) -> tuple[RecipientCandidate, ...]:
         result = []
         for row in range(self.table.rowCount()):
-            original = self.table.item(row, 1).data(Qt.ItemDataRole.UserRole)
+            original = self.table.item(
+                row, self.HEADERS.index("نام فایل مرتبط")
+            ).data(Qt.ItemDataRole.UserRole)
             if not isinstance(original, RecipientCandidate):
                 original = RecipientCandidate(source_path=Path("manual"))
 
@@ -570,47 +625,44 @@ class RecipientReviewPage(QWizardPage):
 
             updated = replace(
                 original,
-                notice_number=value("شماره ابلاغیه"),
-                related_declaration_number=value("شماره اظهارنامه مرتبط"),
+                related_declaration_number=value("شماره اظهارنامه"),
                 related_declaration_date=value("تاریخ اظهارنامه مرتبط"),
-                role=_ROLE_VALUE.get(value("نقش"), value("نقش")),
-                person_type=_PERSON_TYPE_VALUE.get(
-                    value("نوع شخص"), value("نوع شخص")
-                ),
                 full_name=value("نام و نام خانوادگی"),
                 first_name=value("نام"),
                 last_name=value("نام خانوادگی"),
                 father_name=value("نام پدر"),
-                gender=value("جنسیت"),
-                job_title=value("شغل"),
                 national_id=value("کد ملی"),
-                employee_code=value("کد پرسنلی"),
-                birth_date=value("تاریخ تولد"),
-                postal_code=value("کدپستی"),
                 address=value("آدرس"),
             )
-            self.table.item(row, 1).setData(Qt.ItemDataRole.UserRole, updated)
+            self.table.item(
+                row, self.HEADERS.index("نام فایل مرتبط")
+            ).setData(Qt.ItemDataRole.UserRole, updated)
             result.append(updated)
         return tuple(result)
 
     def _remove_selected(self) -> None:
-        rows = {
-            row for row in range(self.table.rowCount())
-            if self.table.item(row, 0).checkState() == Qt.CheckState.Checked
-        }
-        rows.update(index.row() for index in self.table.selectedIndexes())
+        rows = {index.row() for index in self.table.selectedIndexes()}
         rows = sorted(rows, reverse=True)
         for row in rows:
             self.table.removeRow(row)
 
-    @staticmethod
-    def _status(candidate: RecipientCandidate | None) -> str:
-        if candidate is None:
-            return "ورود دستی"
-        if candidate.issues:
-            return "نیازمند اصلاح"
-        return "نیازمند تأیید"
-
+    def _date_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() != self.HEADERS.index("تاریخ اظهارنامه مرتبط"):
+            return
+        display, _parsed = _parse_related_date(item.text())
+        days = _days_since_related_date(display)
+        self.table.blockSignals(True)
+        try:
+            if item.text() != display:
+                item.setText(display)
+            days_item = self.table.item(
+                item.row(), self.HEADERS.index("تعداد روز گذشته از آن تاریخ")
+            )
+            days_item.setData(
+                Qt.ItemDataRole.DisplayRole, days if days is not None else ""
+            )
+        finally:
+            self.table.blockSignals(False)
 
 class PreprocessingPage(QWizardPage):
     HEADERS = (
@@ -1285,14 +1337,22 @@ class LoginPage(QWizardPage):
             return
 
         self._save_credentials()
+        self.python_output.clear()
+        self.append_output(
+            "اقدام جاری: آزمایش ورود به سامانه ثنا؛ اقدام بعدی: تأیید منوی اظهارنامه"
+        )
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             run_login_check(self._credentials())
         except LiveBrowserError as exc:
+            self.append_output(f"آزمایش ورود متوقف شد: {exc}")
             QMessageBox.warning(self, "ورود ناموفق", str(exc))
             return
         finally:
             QApplication.restoreOverrideCursor()
+        self.append_output(
+            "ورود و منوی اظهارنامه تأیید شد؛ عملیات ثبت انجام نشد."
+        )
         QMessageBox.information(
             self,
             "ورود موفق",
@@ -1314,6 +1374,13 @@ class LoginPage(QWizardPage):
             self.legal_identity.text(),
             self.otp.text(),
             remember=self.remember_credentials.isChecked(),
+        )
+
+    def append_output(self, message: str) -> None:
+        self.python_output.append(message)
+        self.python_output.ensureCursorVisible()
+        QApplication.processEvents(
+            QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
         )
 
 
@@ -1365,10 +1432,11 @@ class RecipientWizard(QWizard):
     def _register_declarations(self, credentials: LoginCredentials) -> bool:
         output = self.login_page.python_output
         output.clear()
-        output.append("شروع آماده‌سازی اظهارنامه‌ها...")
+        report = self.login_page.append_output
+        report("شروع آماده‌سازی اظهارنامه‌ها...")
         candidates = self.preprocessing_page.candidates()
         if not candidates:
-            output.append("خطا: هیچ مخاطبی برای پردازش وجود ندارد.")
+            report("خطا: هیچ مخاطبی برای پردازش وجود ندارد.")
             QMessageBox.warning(self, "مخاطب وجود ندارد", "حداقل یک ردیف لازم است.")
             return False
         try:
@@ -1379,11 +1447,11 @@ class RecipientWizard(QWizard):
                 lookup_dir=self._lookup_dir,
             )
         except LookupResolutionError as exc:
-            output.append(f"خطای کدهای ثنا: {exc}")
+            report(f"خطای کدهای ثنا: {exc}")
             QMessageBox.warning(self, "کدهای ثنا ناقص", str(exc))
             return False
 
-        output.append(f"تعداد اظهارنامه‌های آماده: {len(drafts)}")
+        report(f"تعداد اظهارنامه‌های آماده: {len(drafts)}")
 
         answer = QMessageBox.question(
             self,
@@ -1395,7 +1463,7 @@ class RecipientWizard(QWizard):
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
-            output.append("عملیات توسط کاربر لغو شد.")
+            report("عملیات توسط کاربر لغو شد.")
             return False
 
         first_login = True
@@ -1435,11 +1503,12 @@ class RecipientWizard(QWizard):
             ) == QMessageBox.StandardButton.Yes
 
         try:
-            output.append("شروع عملیات مرورگر...")
+            report("شروع عملیات مرورگر...")
             results = run_live_upload_batch(
                 drafts,
                 credentials_provider,
                 final_confirmation,
+                progress=report,
             )
             successful = 0
             failures = []
@@ -1452,7 +1521,7 @@ class RecipientWizard(QWizard):
                     failures.append(
                         f"ردیف {index} ({name}): {result.message or result.status}"
                     )
-                    output.append(failures[-1])
+                    report(failures[-1])
                     continue
                 try:
                     save_verified_result(
@@ -1462,16 +1531,16 @@ class RecipientWizard(QWizard):
                     )
                 except ResultPersistenceError as exc:
                     failures.append(f"ردیف {index}: {exc}")
-                    output.append(failures[-1])
+                    report(failures[-1])
                 else:
                     successful += 1
-                    output.append(
+                    report(
                         f"ردیف {index}: ثبت موفق با کد رهگیری "
                         f"{result.tracking_code}"
                     )
         except (LiveBrowserError, ValueError) as exc:
-            output.append("\n--- traceback ---")
-            output.append(traceback.format_exc())
+            report("\n--- traceback ---")
+            report(traceback.format_exc())
             QMessageBox.critical(self, "ثبت متوقف شد", str(exc))
             return False
 
@@ -1489,7 +1558,7 @@ class RecipientWizard(QWizard):
             "ثبت کامل شد",
             f"تعداد {successful} اظهارنامه با کد رهگیری معتبر ثبت شد.",
         )
-        output.append(f"پردازش کامل شد. موفق: {successful}")
+        report(f"پردازش کامل شد. موفق: {successful}")
         return True
 
     def _page_changed(self, page_id: int) -> None:

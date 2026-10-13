@@ -44,6 +44,12 @@ class LoginCredentials:
 
 
 _BatchItem = TypeVar("_BatchItem")
+ProgressCallback = Callable[[str], None]
+
+
+def _report(progress: ProgressCallback | None, message: str) -> None:
+    if progress is not None:
+        progress(message)
 
 
 class ReusableLoginSession:
@@ -76,6 +82,7 @@ def run_authenticated_batch(
     session: ReusableLoginSession,
     credentials_provider: Callable[[], LoginCredentials | None],
     process_item: Callable[[_BatchItem, object], None],
+    before_item: Callable[[_BatchItem], None] | None = None,
 ) -> None:
     """Process each item once, reauthenticating only before a new item.
 
@@ -84,6 +91,8 @@ def run_authenticated_batch(
     """
 
     for item in items:
+        if before_item is not None:
+            before_item(item)
         session.ensure_authenticated(credentials_provider)
         process_item(item, session.page)
 
@@ -159,6 +168,7 @@ def run_live_upload_batch(
     *,
     headless: bool = False,
     timeout_ms: int = 60_000,
+    progress: ProgressCallback | None = None,
 ) -> tuple[UploadResult, ...]:
     """Open one Chrome context and execute the reviewed batch exactly once."""
 
@@ -180,6 +190,7 @@ def run_live_upload_batch(
                 credentials_provider,
                 final_confirmation,
                 timeout_ms=timeout_ms,
+                progress=progress,
             )
         finally:
             context.close()
@@ -234,6 +245,7 @@ class PlaywrightAttachmentPage:
         apply_button = self.page.locator("#btnApplyNo0")
         apply_button.wait_for(state="visible", timeout=self.timeout_ms)
         apply_button.click()
+        apply_button.wait_for(state="hidden", timeout=self.timeout_ms)
 
     def _close_success_dialog(self) -> None:
         _close_success_dialog(self.page, self.timeout_ms)
@@ -255,7 +267,19 @@ class PlaywrightDeclarationPage:
 
         page = self.page
         page.locator("#menu4Container").click()
+        page.locator("#rdbSetPetition").wait_for(
+            state="visible", timeout=self.timeout_ms
+        )
         page.locator("#rdbSetPetition").click()
+        page.wait_for_function(
+            """() => {
+                const visible = element => Boolean(element)
+                    && element.offsetParent !== null;
+                return visible(document.querySelector('#chkAgreement'))
+                    || visible(document.querySelector('#txtUnitCode'));
+            }""",
+            timeout=self.timeout_ms,
+        )
         agreement = page.locator("#chkAgreement")
         if agreement.is_visible():
             if not agreement.is_checked():
@@ -291,6 +315,9 @@ class PlaywrightDeclarationPage:
         except Exception as exc:
             raise LiveBrowserError("declaration_edit_step_not_unique") from exc
         edit_step.click()
+        page.locator("#btnNext").wait_for(
+            state="visible", timeout=self.timeout_ms
+        )
 
         value = draft.fields.get("related_declaration_number", "").strip()
         if value:
@@ -349,6 +376,9 @@ class PlaywrightRecipientPage:
         add_button = page.locator("#btnAddSection")
         add_button.wait_for(state="visible", timeout=self.timeout_ms)
         add_button.click()
+        page.locator("#txtRealIrName").wait_for(
+            state="visible", timeout=self.timeout_ms
+        )
         national_id = fields.get("recipient_national_id", "").strip()
         if national_id:
             page.locator("#txtRealIrNationalityCode1").fill(national_id)
@@ -542,6 +572,7 @@ class PlaywrightSubmissionPage:
         if not any(marker in text for marker in ("تایید اطلاعات", "موفق")):
             raise LiveBrowserError("draft_not_ready_for_signature")
         dialog.locator("button.confirm").click()
+        dialog.wait_for(state="hidden", timeout=self.timeout_ms)
 
     def submit_signature(self, *, final_confirmed: bool = False) -> str:
         """Perform the irreversible signature click and return tracking code."""
@@ -558,6 +589,7 @@ class PlaywrightSubmissionPage:
         if "اظهارنامه با موفقیت ثبت شد" not in dialog.inner_text():
             raise LiveBrowserError("final_submission_not_verified")
         dialog.locator("button.confirm").click()
+        dialog.wait_for(state="hidden", timeout=self.timeout_ms)
 
         body_text = self.page.locator("body").inner_text(timeout=self.timeout_ms)
         return extract_tracking_code(body_text)
@@ -593,6 +625,7 @@ class PlaywrightContentPage:
             raise LiveBrowserError("declaration_subject_not_exact")
         choices.first.click()
         page.locator("#btnNext").click()
+        page.locator("#chk7").wait_for(state="visible", timeout=self.timeout_ms)
 
     def select_other_evidence_and_save(self) -> None:
         checkbox = self.page.locator("#chk7")
@@ -610,6 +643,9 @@ class PlaywrightContentPage:
             raise LiveBrowserError("declaration_textarea_not_unique")
         textareas.first.fill(description)
         self.page.locator("#btnNext").click()
+        self.page.locator("#btnSave").wait_for(
+            state="visible", timeout=self.timeout_ms
+        )
         self.page.locator("#btnSave").click()
         _close_success_dialog(self.page, self.timeout_ms)
 
@@ -623,10 +659,12 @@ class PlaywrightDeclarationUploader:
         final_confirmation: Callable[[DeclarationDraft], bool],
         *,
         timeout_ms: int = 60_000,
+        progress: ProgressCallback | None = None,
     ) -> None:
         self.page = page
         self.final_confirmation = final_confirmation
         self.timeout_ms = timeout_ms
+        self.progress = progress
 
     def upload(self, draft: DeclarationDraft) -> UploadResult:
         _validate_live_draft(draft)
@@ -634,15 +672,39 @@ class PlaywrightDeclarationUploader:
         subject = draft.fields.get("declaration_subject", "").strip()
         description = draft.fields.get("declaration_text", "").strip()
 
+        _report(
+            self.progress,
+            "اقدام جاری: بازکردن فرم اظهارنامه؛ اقدام بعدی: ثبت اطلاعات مخاطب",
+        )
         PlaywrightDeclarationPage(
             self.page, timeout_ms=self.timeout_ms
         ).open_draft_wizard(draft)
+        _report(
+            self.progress,
+            "فرم اظهارنامه آماده شد؛ اقدام جاری: ثبت اطلاعات مخاطب",
+        )
         recipient.fill_natural_person(draft)
+        _report(
+            self.progress,
+            "اطلاعات مخاطب آماده شد؛ اقدام بعدی: ثبت موضوع اظهارنامه",
+        )
 
         content = PlaywrightContentPage(self.page, timeout_ms=self.timeout_ms)
         content.select_subject(subject)
+        _report(
+            self.progress,
+            "موضوع اظهارنامه ثبت شد؛ اقدام بعدی: ثبت دلایل و مستندات",
+        )
         content.select_other_evidence_and_save()
+        _report(
+            self.progress,
+            "دلایل و مستندات ذخیره شد؛ اقدام بعدی: ثبت شرح اظهارنامه",
+        )
         content.fill_description_and_save(description)
+        _report(
+            self.progress,
+            "شرح اظهارنامه ذخیره شد؛ اقدام بعدی: بررسی پیوست‌ها",
+        )
 
         if draft.attachments:
             attachment_page = PlaywrightAttachmentPage(
@@ -650,14 +712,32 @@ class PlaywrightDeclarationUploader:
             )
             attachment_page.open_attachments()
             run_attachment_workflow(draft.attachments, attachment_page)
+            _report(
+                self.progress,
+                f"تعداد {len(draft.attachments)} پیوست پردازش شد؛ "
+                "اقدام بعدی: کنترل آمادگی امضا",
+            )
+        else:
+            _report(
+                self.progress,
+                "پیوستی وجود ندارد؛ اقدام بعدی: کنترل آمادگی امضا",
+            )
 
         submission = PlaywrightSubmissionPage(
             self.page, timeout_ms=self.timeout_ms
         )
         submission.open_signature()
         submission.verify_ready_for_signature()
+        _report(
+            self.progress,
+            "آمادگی امضا تأیید شد؛ اقدام جاری: انتظار تأیید نهایی اپراتور",
+        )
         tracking_code = submission.submit_signature(
             final_confirmed=self.final_confirmation(draft)
+        )
+        _report(
+            self.progress,
+            "ثبت نهایی با کد رهگیری معتبر تأیید شد؛ اقدام بعدی: ذخیره نتیجه",
         )
         return UploadResult(status="success", tracking_code=tracking_code)
 
@@ -669,6 +749,7 @@ def upload_authenticated_batch(
     final_confirmation: Callable[[DeclarationDraft], bool],
     *,
     timeout_ms: int = 60_000,
+    progress: ProgressCallback | None = None,
 ) -> tuple[UploadResult, ...]:
     """Upload drafts once on one reusable page, reauthenticating between items."""
 
@@ -689,11 +770,16 @@ def upload_authenticated_batch(
         item: tuple[int, DeclarationDraft], current_page: object
     ) -> None:
         index, draft = item
+        item_progress = lambda message: _report(
+            progress, f"[ردیف {index + 1} از {len(draft_list)}] {message}"
+        )
+        item_progress("نشست ورود تأیید شد؛ اقدام بعدی: بازکردن فرم اظهارنامه")
         try:
             result = PlaywrightDeclarationUploader(
                 current_page,
                 final_confirmation,
                 timeout_ms=timeout_ms,
+                progress=item_progress,
             ).upload(draft)
         except LiveBrowserError:
             raise
@@ -701,7 +787,17 @@ def upload_authenticated_batch(
             raise LiveBrowserError("site_response_ambiguous") from exc
         results[index] = result
 
-    run_authenticated_batch(valid_drafts, session, credentials_provider, upload_one)
+    run_authenticated_batch(
+        valid_drafts,
+        session,
+        credentials_provider,
+        upload_one,
+        before_item=lambda item: _report(
+            progress,
+            f"[ردیف {item[0] + 1} از {len(draft_list)}] "
+            "اقدام جاری: بررسی نشست ورود",
+        ),
+    )
     return tuple(result for result in results if result is not None)
 
 
@@ -740,6 +836,7 @@ def _close_success_dialog(page: object, timeout_ms: int) -> None:
     if not any(marker in dialog.inner_text() for marker in ("موفقیت", "موفق", "ثبت شد")):
         raise LiveBrowserError("site_operation_rejected")
     dialog.locator("button.confirm").click()
+    dialog.wait_for(state="hidden", timeout=timeout_ms)
 
 
 def _login_failure_code(page: object) -> str:

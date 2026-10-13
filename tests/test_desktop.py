@@ -1,6 +1,7 @@
 import os
 import json
 import unittest
+from datetime import date
 from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -22,6 +23,7 @@ from sana_declaration_uploader.desktop import (
     RecipientReviewPage,
     RecipientWizard,
     _build_desktop_drafts,
+    _days_since_related_date,
     _load_attachment_settings,
     _load_declaration_settings,
     _load_login_settings,
@@ -131,24 +133,19 @@ class RecipientWizardTests(unittest.TestCase):
             address="نشانی اولیه",
         ),))
 
-        page.table.item(0, page.HEADERS.index("شغل")).setText("بازنشسته")
         page.table.item(0, page.HEADERS.index("آدرس")).setText("نشانی اصلاح‌شده")
 
         candidate = page.candidates()[0]
-        self.assertEqual(candidate.job_title, "بازنشسته")
+        self.assertEqual(candidate.job_title, "کارمند")
         self.assertEqual(candidate.address, "نشانی اصلاح‌شده")
 
         page.set_candidates(page.candidates())
-        self.assertEqual(
-            page.table.item(0, page.HEADERS.index("شغل")).text(),
-            "بازنشسته",
-        )
         self.assertEqual(
             page.table.item(0, page.HEADERS.index("آدرس")).text(),
             "نشانی اصلاح‌شده",
         )
 
-    def test_review_rows_can_be_removed_by_checkbox_or_row_button(self) -> None:
+    def test_review_rows_can_be_removed_by_selection_or_row_button(self) -> None:
         page = RecipientReviewPage()
         page.set_candidates((
             RecipientCandidate(source_path=Path("one.docx"), full_name="شخص اول"),
@@ -156,9 +153,7 @@ class RecipientWizardTests(unittest.TestCase):
             RecipientCandidate(source_path=Path("three.docx"), full_name="شخص سوم"),
         ))
 
-        page.table.item(0, page.HEADERS.index("انتخاب")).setCheckState(
-            Qt.CheckState.Checked
-        )
+        page.table.selectRow(0)
         page._remove_selected()
         self.assertEqual(
             [candidate.full_name for candidate in page.candidates()],
@@ -259,7 +254,7 @@ class RecipientWizardTests(unittest.TestCase):
             "نیازمند تکمیل",
         )
 
-    def test_review_hides_deferred_columns_and_numbers_every_page(self) -> None:
+    def test_review_uses_requested_column_order_and_numbers_every_page(self) -> None:
         wizard = RecipientWizard()
 
         self.assertEqual(
@@ -275,14 +270,24 @@ class RecipientWizardTests(unittest.TestCase):
             ],
             [f"مرحله {number} از ۵" for number in "۱۲۳۴۵"],
         )
-        for header in (
-            "جنسیت", "کدپستی", "تاریخ تولد", "شغل", "نقش", "نوع شخص",
-        ):
-            self.assertTrue(
-                wizard.review_page.table.isColumnHidden(
-                    wizard.review_page.HEADERS.index(header)
-                )
-            )
+        self.assertEqual(wizard.review_page.HEADERS, (
+            "حذف", "بازکردن", "تاریخ اظهارنامه مرتبط",
+            "تعداد روز گذشته از آن تاریخ", "نام و نام خانوادگی", "نام پدر",
+            "کد ملی", "شماره اظهارنامه", "آدرس", "شاهد استخراج", "نام",
+            "نام خانوادگی", "نام فایل مرتبط",
+        ))
+        self.assertTrue(wizard.review_page.table.isSortingEnabled())
+        self.assertTrue(wizard.review_page.table.wordWrap())
+        self.assertLess(
+            wizard.review_page.table.columnWidth(
+                wizard.review_page.HEADERS.index("نام پدر")
+            ),
+            wizard.review_page.table.columnWidth(
+                wizard.review_page.HEADERS.index("نام و نام خانوادگی")
+            ),
+        )
+        for removed in ("شماره ابلاغیه", "شغل", "کد پرسنلی"):
+            self.assertNotIn(removed, wizard.review_page.HEADERS)
 
     def test_review_opens_source_and_displays_date_left_to_right(self) -> None:
         with TemporaryDirectory() as directory:
@@ -302,11 +307,14 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertTrue(
                 date_item.textAlignment() & Qt.AlignmentFlag.AlignLeft
             )
-            self.assertEqual(
-                page.table.cellWidget(
-                    0, page.HEADERS.index("تاریخ اظهارنامه مرتبط")
-                ).layoutDirection(),
-                Qt.LayoutDirection.LeftToRight,
+            self.assertIsNone(page.table.cellWidget(
+                0, page.HEADERS.index("تاریخ اظهارنامه مرتبط")
+            ))
+            self.assertIsInstance(
+                page.table.item(
+                    0, page.HEADERS.index("تعداد روز گذشته از آن تاریخ")
+                ).data(Qt.ItemDataRole.DisplayRole),
+                int,
             )
             with patch(
                 "sana_declaration_uploader.desktop.QDesktopServices.openUrl"
@@ -316,6 +324,31 @@ class RecipientWizardTests(unittest.TestCase):
                 ).click()
 
             open_url.assert_called_once()
+
+    def test_review_normalizes_and_sorts_related_dates(self) -> None:
+        page = RecipientReviewPage()
+        page.set_candidates((
+            RecipientCandidate(
+                source_path=Path("later.docx"),
+                full_name="بعدی",
+                related_declaration_date="10/06/1405",
+            ),
+            RecipientCandidate(
+                source_path=Path("earlier.docx"),
+                full_name="قبلی",
+                related_declaration_date="۱۴۰۵/۰۱/۰۲",
+            ),
+        ))
+
+        date_column = page.HEADERS.index("تاریخ اظهارنامه مرتبط")
+        page.table.sortItems(date_column, Qt.SortOrder.AscendingOrder)
+
+        self.assertEqual(page.table.item(0, date_column).text(), "1405/01/02")
+        self.assertEqual(page.table.item(1, date_column).text(), "1405/06/10")
+        self.assertEqual(
+            _days_since_related_date("1405/01/02", today=date(2026, 10, 13)),
+            205,
+        )
 
     def test_preprocessing_edit_resolves_codes_and_row_can_be_removed(self) -> None:
         wizard = RecipientWizard()
@@ -650,6 +683,10 @@ class RecipientWizardTests(unittest.TestCase):
             UploadResult(status="failed", message="recipient_person_type_not_supported"),
         )
 
+        def run_batch(*_args, progress=None, **_kwargs):
+            progress("[ردیف 1 از 2] اقدام جاری: ثبت اطلاعات مخاطب")
+            return results
+
         with (
             patch.object(wizard.preprocessing_page, "candidates", return_value=candidates),
             patch.object(wizard.content_page, "payloads", return_value={}),
@@ -657,7 +694,10 @@ class RecipientWizardTests(unittest.TestCase):
             patch.object(
                 QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
             ),
-            patch("sana_declaration_uploader.desktop.run_live_upload_batch", return_value=results),
+            patch(
+                "sana_declaration_uploader.desktop.run_live_upload_batch",
+                side_effect=run_batch,
+            ),
             patch("sana_declaration_uploader.desktop.save_verified_result") as save,
             patch.object(QMessageBox, "warning") as warning,
         ):
@@ -672,6 +712,10 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertIn("ناموفق: 1", warning.call_args.args[2])
         self.assertIn("recipient_person_type_not_supported", warning.call_args.args[2])
         self.assertIn("ردیف 1: ثبت موفق", wizard.login_page.python_output.toPlainText())
+        self.assertIn(
+            "اقدام جاری: ثبت اطلاعات مخاطب",
+            wizard.login_page.python_output.toPlainText(),
+        )
         self.assertIn(
             "recipient_person_type_not_supported",
             wizard.login_page.python_output.toPlainText(),

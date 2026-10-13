@@ -211,7 +211,9 @@ class DeclarationPageTests(unittest.TestCase):
             [call[0:2] for call in page.calls],
             [
                 ("click", "#menu4Container"),
+                ("wait_for", "#rdbSetPetition"),
                 ("click", "#rdbSetPetition"),
+                ("wait_for_function", 60000),
                 ("click", "#chkAgreement"),
                 ("click", "#frmSetPetitions button"),
                 ("wait_for", "#txtUnitCode"),
@@ -229,6 +231,7 @@ class DeclarationPageTests(unittest.TestCase):
                     "//div[contains(@class, 'main-step')]"
                     "//h5[normalize-space()='ثبت و اصلاح اظهارنامه']",
                 ),
+                ("wait_for", "#btnNext"),
                 ("click", "#rdbReplayToDeclaration"),
                 ("wait_for", "#replayToDeclaration"),
                 ("fill", "#replayToDeclaration"),
@@ -256,7 +259,7 @@ class DeclarationPageTests(unittest.TestCase):
 
     def test_stops_before_opening_wizard_when_ministry_unit_is_not_resolved(self):
         page = _Page()
-        page.wait_for_function = Mock(side_effect=TimeoutError)
+        page.wait_for_function = Mock(side_effect=(None, TimeoutError))
         draft = DeclarationDraft(source_dir=Path("input"), fields={})
 
         with self.assertRaisesRegex(
@@ -475,6 +478,40 @@ class DeclarationUploaderTests(unittest.TestCase):
         submit.assert_called_once_with(final_confirmed=True)
         self.assertEqual(confirmations, [draft])
         self.assertEqual(result.tracking_code, "1405220000000001")
+
+    def test_reports_current_and_next_stage_after_readiness(self):
+        page = _Page()
+        draft = DeclarationDraft(
+            source_dir=Path("input"),
+            fields={"declaration_subject": "موضوع", "declaration_text": "شرح"},
+        )
+        progress = []
+
+        with (
+            patch("sana_declaration_uploader.live_browser._validate_live_draft"),
+            patch.object(PlaywrightRecipientPage, "validate"),
+            patch.object(PlaywrightDeclarationPage, "open_draft_wizard"),
+            patch.object(PlaywrightRecipientPage, "fill_natural_person"),
+            patch.object(PlaywrightContentPage, "select_subject"),
+            patch.object(PlaywrightContentPage, "select_other_evidence_and_save"),
+            patch.object(PlaywrightContentPage, "fill_description_and_save"),
+            patch.object(PlaywrightSubmissionPage, "open_signature"),
+            patch.object(PlaywrightSubmissionPage, "verify_ready_for_signature"),
+            patch.object(
+                PlaywrightSubmissionPage,
+                "submit_signature",
+                return_value="1405220000000001",
+            ),
+        ):
+            PlaywrightDeclarationUploader(
+                page,
+                lambda _draft: True,
+                progress=progress.append,
+            ).upload(draft)
+
+        self.assertIn("اقدام جاری: بازکردن فرم اظهارنامه", progress[0])
+        self.assertIn("اطلاعات مخاطب آماده شد", "\n".join(progress))
+        self.assertIn("اقدام بعدی: ذخیره نتیجه", progress[-1])
 
     def test_authenticated_batch_reuses_page_for_each_draft(self):
         page = _Page()
