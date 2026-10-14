@@ -394,7 +394,6 @@ class PlaywrightRecipientPage:
         "city",
         "city_id",
         "city_code",
-        "recipient_main_street",
     )
     GENDER_SELECTORS = {
         "مرد": "#rdbRealIrMale",
@@ -470,7 +469,14 @@ class PlaywrightRecipientPage:
         if selected != expected:
             raise LiveBrowserError("recipient_lookup_selection_not_verified")
 
-        page.locator("#txtBasicAvenue").fill(fields["recipient_main_street"])
+        main_street = (
+            fields.get("recipient_main_street", "").strip()
+            or fields["city"].strip()
+        )
+        main_street_input = page.locator("#txtBasicAvenue")
+        main_street_input.fill(main_street)
+        if main_street_input.input_value().strip() != main_street:
+            raise LiveBrowserError("recipient_main_street_not_set")
         address = fields.get("recipient_address", "").strip()
         if address:
             page.locator(
@@ -490,11 +496,7 @@ class PlaywrightRecipientPage:
             raise LiveBrowserError("recipient_person_type_not_supported")
         missing = [
             name for name in self.REQUIRED_FIELDS
-            if (
-                fields.get(name, "") == ""
-                if name == "recipient_main_street"
-                else not fields.get(name, "").strip()
-            )
+            if not fields.get(name, "").strip()
         ]
         if missing:
             raise LiveBrowserError(f"recipient_fields_incomplete:{','.join(missing)}")

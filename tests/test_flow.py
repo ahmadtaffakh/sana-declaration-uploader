@@ -100,7 +100,7 @@ class FlowTests(unittest.TestCase):
             self.assertEqual(draft.fields["county"], "شهرستان تهران")
             self.assertEqual(draft.fields["city"], "تهران")
             self.assertEqual(draft.fields["person_type"], "حقیقی")
-            self.assertEqual(draft.fields["recipient_main_street"], "-")
+            self.assertEqual(draft.fields["recipient_main_street"], "تهران")
             self.assertEqual(draft.fields["declaration_text"], "شرح اظهارنامه")
             self.assertEqual(draft.attachments[0].path, root / "agency.pdf")
 

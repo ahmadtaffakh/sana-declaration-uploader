@@ -63,12 +63,8 @@ def _validate_contract_fields(
             "province",
             "county",
             "city",
-            "recipient_main_street",
         ):
-            value = fields.get(name, "")
-            if (name == "recipient_main_street" and value == "") or (
-                name != "recipient_main_street" and not value.strip()
-            ):
+            if not fields.get(name, "").strip():
                 errors.append(f"field_missing:{name}")
     else:
         errors.append(f"data_source_invalid:{data_source}")

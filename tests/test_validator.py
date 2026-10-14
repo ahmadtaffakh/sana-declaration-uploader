@@ -7,7 +7,7 @@ from sana_declaration_uploader.validator import validate_draft
 
 
 class ValidatorTests(unittest.TestCase):
-    def test_single_space_main_street_satisfies_site_field_without_address(self) -> None:
+    def test_empty_main_street_is_allowed_for_browser_fallback(self) -> None:
         with TemporaryDirectory() as directory:
             fields = {
                 "recipient_id": "r1",
@@ -26,7 +26,7 @@ class ValidatorTests(unittest.TestCase):
                 "city": "City",
                 "city_id": "city-1",
                 "city_code": "1",
-                "recipient_main_street": " ",
+                "recipient_main_street": "",
                 "declaration_subject": "Subject",
                 "declaration_text": "Text",
             }

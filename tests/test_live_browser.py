@@ -40,6 +40,11 @@ class _Locator:
 
     def fill(self, value):
         self.page.calls.append(("fill", self.selector, value))
+        self.page.input_values[self.selector] = value
+
+    def input_value(self):
+        self.page.calls.append(("input_value", self.selector))
+        return self.page.input_values.get(self.selector, "")
 
     def press(self, key):
         self.page.calls.append(("press", self.selector, key))
@@ -86,6 +91,7 @@ class _Page:
         self.calls = []
         self.authenticated = False
         self.inner_texts = {}
+        self.input_values = {}
         self.wait_failures = set()
 
     def goto(self, url, **kwargs):
@@ -513,14 +519,37 @@ class RecipientPageTests(unittest.TestCase):
             for call in page.calls
         ))
 
-    def test_single_space_is_allowed_for_required_main_street(self):
+    def test_blank_main_street_is_filled_with_city_and_verified(self):
         page = _Page()
 
         PlaywrightRecipientPage(page).fill_natural_person(
             self._draft(recipient_main_street=" ", recipient_address="")
         )
 
-        self.assertIn(("fill", "#txtBasicAvenue", " "), page.calls)
+        self.assertIn(("fill", "#txtBasicAvenue", "شهر نمونه"), page.calls)
+        self.assertIn(("input_value", "#txtBasicAvenue"), page.calls)
+
+    def test_unset_main_street_stops_before_subject_navigation(self):
+        page = _Page()
+        original_locator = page.locator
+        main_street = Mock()
+        main_street.input_value.return_value = ""
+        page.locator = lambda selector: (
+            main_street if selector == "#txtBasicAvenue" else original_locator(selector)
+        )
+
+        with self.assertRaisesRegex(
+            LiveBrowserError, "recipient_main_street_not_set"
+        ):
+            PlaywrightRecipientPage(page).fill_natural_person(
+                self._draft(recipient_main_street="")
+            )
+
+        main_street.fill.assert_called_once_with("شهر نمونه")
+        self.assertFalse(any(
+            "normalize-space()='موضوع اظهارنامه'" in str(call)
+            for call in page.calls
+        ))
 
     def test_missing_recipient_data_stops_before_browser_activity(self):
         page = _Page()
