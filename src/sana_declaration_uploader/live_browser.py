@@ -474,7 +474,25 @@ class PlaywrightRecipientPage:
             or fields["city"].strip()
         )
         main_street_input = page.locator("#txtBasicAvenue")
-        main_street_input.fill(main_street)
+        try:
+            main_street_input.click()
+            main_street_input.press("Control+A")
+            main_street_input.press("Backspace")
+            main_street_input.press_sequentially(main_street, delay=100)
+            main_street_input.press("Tab")
+            page.wait_for_function(
+                """expected => {
+                    const input = document.querySelector('#txtBasicAvenue');
+                    if (!input || input.value.trim() !== expected) return false;
+                    const scope = angular.element(input).scope();
+                    const value = scope?.viewModel?.currentPetitionPerson?.BasicAvenue;
+                    return String(value || '').trim() === expected;
+                }""",
+                arg=main_street,
+                timeout=self.timeout_ms,
+            )
+        except Exception as exc:
+            raise LiveBrowserError("recipient_main_street_not_set") from exc
         if main_street_input.input_value().strip() != main_street:
             raise LiveBrowserError("recipient_main_street_not_set")
         address = fields.get("recipient_address", "").strip()
@@ -482,6 +500,21 @@ class PlaywrightRecipientPage:
             page.locator(
                 "textarea[ng-model='viewModel.currentPetitionPerson.HomeAddress']"
             ).fill(address)
+        page.locator("#btnNext").click()
+        try:
+            page.wait_for_function(
+                """() => {
+                    const visible = element => Boolean(element)
+                        && element.getClientRects().length > 0
+                        && getComputedStyle(element).visibility !== 'hidden';
+                    return visible(document.querySelector('.sweet-alert'))
+                        || !visible(document.querySelector('#txtBasicAvenue'));
+                }""",
+                timeout=self.timeout_ms,
+            )
+        except Exception as exc:
+            raise LiveBrowserError("recipient_registration_not_completed") from exc
+        _raise_visible_site_error(page)
         _open_form_step(
             page,
             "موضوع اظهارنامه",

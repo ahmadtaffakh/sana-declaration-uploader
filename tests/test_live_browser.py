@@ -48,6 +48,14 @@ class _Locator:
 
     def press(self, key):
         self.page.calls.append(("press", self.selector, key))
+        if key == "Backspace":
+            self.page.input_values[self.selector] = ""
+
+    def press_sequentially(self, value, **kwargs):
+        self.page.calls.append(
+            ("press_sequentially", self.selector, value, kwargs.get("delay"))
+        )
+        self.page.input_values[self.selector] = value
 
     def click(self, **_kwargs):
         self.page.calls.append(("click", self.selector))
@@ -366,16 +374,16 @@ class RecipientPageTests(unittest.TestCase):
         self.assertIn(("fill", "#txtRealIrName", "نام"), page.calls)
         self.assertIn(("fill", "#txtRealIrFamily", "خانوادگی"), page.calls)
         self.assertIn(("click", "#rdbRealIrMale"), page.calls)
-        self.assertEqual(
-            [call for call in page.calls if call[0:2] == ("click", "#btnNext")],
-            [],
-        )
+        next_click = ("click", "#btnNext")
+        self.assertEqual(page.calls.count(next_click), 1)
         subject_step = (
             "//*[@ng-repeat='step in navCtrl.currentStep.innerSteps']"
             "[.//*[contains(concat(' ', normalize-space(@class), ' '), ' step ') "
             "and normalize-space()='موضوع اظهارنامه']]"
         )
-        self.assertIn(("click", f"{subject_step} >> .step.ng-binding"), page.calls)
+        subject_click = ("click", f"{subject_step} >> .step.ng-binding")
+        self.assertIn(subject_click, page.calls)
+        self.assertLess(page.calls.index(next_click), page.calls.index(subject_click))
         self.assertIn(
             (
                 "wait_for_function",
@@ -402,19 +410,18 @@ class RecipientPageTests(unittest.TestCase):
         self.assertLess(city_wait, city_choice)
         self.assertIn('.ui-select-container[name="${name}"]', script)
 
-    def test_opens_recorded_natural_person_tab_without_next_button(self):
+    def test_opens_natural_person_tab_before_registering_recipient(self):
         page = _Page()
 
         PlaywrightRecipientPage(page).fill_natural_person(self._draft())
 
         tab_click = ("click", self.RECORDED_NATURAL_PERSON_TAB)
         add_click = ("click", "#btnAddSection")
+        next_click = ("click", "#btnNext")
         self.assertIn(tab_click, page.calls)
         self.assertLess(page.calls.index(tab_click), page.calls.index(add_click))
-        self.assertEqual(
-            [call for call in page.calls if call[0:2] == ("click", "#btnNext")],
-            [],
-        )
+        self.assertEqual(page.calls.count(next_click), 1)
+        self.assertLess(page.calls.index(add_click), page.calls.index(next_click))
 
     def test_tab_navigation_failure_stops_before_adding_recipient(self):
         page = _Page()
@@ -526,7 +533,22 @@ class RecipientPageTests(unittest.TestCase):
             self._draft(recipient_main_street=" ", recipient_address="")
         )
 
-        self.assertIn(("fill", "#txtBasicAvenue", "شهر نمونه"), page.calls)
+        self.assertIn(("click", "#txtBasicAvenue"), page.calls)
+        self.assertIn(("press", "#txtBasicAvenue", "Control+A"), page.calls)
+        self.assertIn(("press", "#txtBasicAvenue", "Backspace"), page.calls)
+        self.assertIn(
+            ("press_sequentially", "#txtBasicAvenue", "شهر نمونه", 100),
+            page.calls,
+        )
+        self.assertIn(("press", "#txtBasicAvenue", "Tab"), page.calls)
+        self.assertIn(
+            (
+                "wait_for_function",
+                60000,
+                "شهر نمونه",
+            ),
+            page.calls,
+        )
         self.assertIn(("input_value", "#txtBasicAvenue"), page.calls)
 
     def test_unset_main_street_stops_before_subject_navigation(self):
@@ -545,7 +567,31 @@ class RecipientPageTests(unittest.TestCase):
                 self._draft(recipient_main_street="")
             )
 
-        main_street.fill.assert_called_once_with("شهر نمونه")
+        main_street.press_sequentially.assert_called_once_with(
+            "شهر نمونه", delay=100
+        )
+        self.assertFalse(any(
+            "normalize-space()='موضوع اظهارنامه'" in str(call)
+            for call in page.calls
+        ))
+
+    def test_unconfirmed_recipient_registration_stops_before_subject(self):
+        page = _Page()
+        original_wait_for_function = page.wait_for_function
+
+        def wait_for_function(script, **kwargs):
+            if "|| !visible(document.querySelector('#txtBasicAvenue'))" in script:
+                raise TimeoutError
+            return original_wait_for_function(script, **kwargs)
+
+        page.wait_for_function = wait_for_function
+
+        with self.assertRaisesRegex(
+            LiveBrowserError, "recipient_registration_not_completed"
+        ):
+            PlaywrightRecipientPage(page).fill_natural_person(self._draft())
+
+        self.assertEqual(page.calls.count(("click", "#btnNext")), 1)
         self.assertFalse(any(
             "normalize-space()='موضوع اظهارنامه'" in str(call)
             for call in page.calls
