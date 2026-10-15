@@ -53,7 +53,7 @@ class ValidatorTests(unittest.TestCase):
 
             self.assertEqual(validate_draft(draft), ())
 
-    def test_attachment_outside_source_fails_closed(self) -> None:
+    def test_existing_attachment_outside_source_is_allowed(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
             source_dir = root / "source"
@@ -68,7 +68,7 @@ class ValidatorTests(unittest.TestCase):
                 ),
             )
 
-            self.assertIn(
+            self.assertNotIn(
                 "attachment_outside_source:outside.pdf",
                 validate_draft(draft),
             )

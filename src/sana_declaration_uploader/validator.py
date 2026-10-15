@@ -30,10 +30,6 @@ def validate_draft(draft: DeclarationDraft) -> tuple[str, ...]:
 
         if not path.is_file():
             errors.append(f"attachment_missing:{path.name}")
-        try:
-            path.relative_to(source_root)
-        except ValueError:
-            errors.append(f"attachment_outside_source:{path.name}")
         if not attachment.title.strip():
             errors.append(f"attachment_title_missing:{path.name}")
         if not attachment.kind.strip():
