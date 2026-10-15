@@ -499,6 +499,17 @@ class RecipientPageTests(unittest.TestCase):
             for call in page.calls
         ))
 
+    def test_clicks_next_on_representative_from_confirmed_active_step(self):
+        page = _Page()
+        with patch(
+            "sana_declaration_uploader.live_browser._wait_for_any_active_form_step",
+            side_effect=("نماینده", "موضوع اظهارنامه"),
+        ):
+            PlaywrightRecipientPage(page).fill_natural_person(self._draft())
+
+        self.assertEqual(page.calls.count(("click", "#btnNext")), 2)
+        self.assertIn(("wait_for_timeout", 500), page.calls)
+
     def test_subject_transition_failure_stops_after_representative_next(self):
         page = _Page()
         original_wait_for_function = page.wait_for_function
@@ -562,7 +573,7 @@ class RecipientPageTests(unittest.TestCase):
             for call in page.calls
         ))
 
-    def test_blank_main_street_is_filled_with_city_and_verified(self):
+    def test_blank_main_street_and_address_use_unknown_fallback(self):
         page = _Page()
 
         PlaywrightRecipientPage(page).fill_natural_person(
@@ -573,13 +584,13 @@ class RecipientPageTests(unittest.TestCase):
         self.assertIn(("press", "#txtBasicAvenue", "Control+A"), page.calls)
         self.assertIn(("press", "#txtBasicAvenue", "Backspace"), page.calls)
         self.assertIn(
-            ("press_sequentially", "#txtBasicAvenue", "شهر نمونه", 100),
+            ("press_sequentially", "#txtBasicAvenue", "نامشخص", 100),
             page.calls,
         )
         self.assertIn(("press", "#txtBasicAvenue", "Tab"), page.calls)
         self.assertIn(("input_value", "#txtBasicAvenue"), page.calls)
         self.assertNotIn(
-            ("wait_for_function", 60000, "شهر نمونه"),
+            ("wait_for_function", 60000, "نامشخص"),
             page.calls,
         )
 
@@ -622,7 +633,7 @@ class RecipientPageTests(unittest.TestCase):
             )
 
         main_street.press_sequentially.assert_called_once_with(
-            "شهر نمونه", delay=100
+            "نامشخص", delay=100
         )
         self.assertFalse(any(
             "normalize-space()='موضوع اظهارنامه'" in str(call)

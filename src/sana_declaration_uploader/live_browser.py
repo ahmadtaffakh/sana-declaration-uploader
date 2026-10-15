@@ -488,7 +488,7 @@ class PlaywrightRecipientPage:
         main_street = (
             fields.get("recipient_main_street", "").strip()
             or fields.get("recipient_address", "").strip()
-            or fields["city"].strip()
+            or "نامشخص"
         )[:30].strip()
         main_street_input = page.locator("#txtBasicAvenue")
         main_street_input.click()
@@ -505,20 +505,19 @@ class PlaywrightRecipientPage:
             ).fill(address)
         next_button = page.locator("#btnNext")
         next_button.click()
-        _wait_for_any_active_form_step(
+        active_step = _wait_for_any_active_form_step(
             page,
             {"وکیل", "نماینده", "موضوع اظهارنامه"},
             self.timeout_ms,
             failure_code="recipient_next_step_not_active",
         )
         for _ in range(3):
-            active_step = _active_form_step(page, {"وکیل", "نماینده"})
-            if active_step is None:
+            if active_step not in {"وکیل", "نماینده"}:
                 break
             next_button.click()
             page.wait_for_timeout(500)
             try:
-                _wait_for_any_active_form_step(
+                active_step = _wait_for_any_active_form_step(
                     page,
                     {"وکیل", "نماینده", "موضوع اظهارنامه"},
                     self.timeout_ms,
@@ -534,7 +533,7 @@ class PlaywrightRecipientPage:
                     self.timeout_ms,
                 )
                 return
-        if _active_form_step(page, {"موضوع اظهارنامه"}) is None:
+        if active_step != "موضوع اظهارنامه":
             _open_form_step(
                 page,
                 "موضوع اظهارنامه",
