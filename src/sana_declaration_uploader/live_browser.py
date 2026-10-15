@@ -372,6 +372,7 @@ class PlaywrightDeclarationPage:
             related_number.fill(value)
         next_button = page.locator("#btnNext")
         next_button.click()
+        page.wait_for_timeout(500)
         _wait_for_active_form_step(
             page,
             "اظهارکننده",
@@ -379,6 +380,7 @@ class PlaywrightDeclarationPage:
             failure_code="declarant_step_not_active",
         )
         next_button.click()
+        page.wait_for_timeout(500)
         _wait_for_active_form_step(
             page,
             "مخاطب",
@@ -513,7 +515,16 @@ class PlaywrightRecipientPage:
             active_step = _active_form_step(page, {"وکیل", "نماینده"})
             if active_step is None:
                 break
+            if active_step == "نماینده":
+                _open_form_step(
+                    page,
+                    "موضوع اظهارنامه",
+                    "#btnAddSection",
+                    self.timeout_ms,
+                )
+                return
             next_button.click()
+            page.wait_for_timeout(500)
             _wait_for_any_active_form_step(
                 page,
                 {"وکیل", "نماینده", "موضوع اظهارنامه"},
@@ -521,7 +532,12 @@ class PlaywrightRecipientPage:
                 failure_code="representative_next_step_not_active",
             )
         if _active_form_step(page, {"موضوع اظهارنامه"}) is None:
-            raise LiveBrowserError("subject_step_not_active")
+            _open_form_step(
+                page,
+                "موضوع اظهارنامه",
+                "#btnAddSection",
+                self.timeout_ms,
+            )
         page.locator("#btnAddSection").wait_for(
             state="visible", timeout=self.timeout_ms
         )
@@ -869,6 +885,14 @@ class PlaywrightSubmissionPage:
         dialog.locator("button.confirm").click()
         dialog.wait_for(state="hidden", timeout=self.timeout_ms)
 
+        tracking_field = self.page.locator("#txtPetitionNo")
+        try:
+            if tracking_field.count() == 1:
+                value = tracking_field.input_value().strip()
+                if value:
+                    return extract_tracking_code(f"کد رهگیری: {value}")
+        except Exception:
+            pass
         body_text = self.page.locator("body").inner_text(timeout=self.timeout_ms)
         return extract_tracking_code(body_text)
 
@@ -960,6 +984,7 @@ class PlaywrightContentPage:
         except Exception as exc:
             raise LiveBrowserError("declaration_subject_selection_failed") from exc
         page.locator("#btnNext").click()
+        page.wait_for_timeout(500)
         try:
             page.wait_for_function(
                 """() => {
