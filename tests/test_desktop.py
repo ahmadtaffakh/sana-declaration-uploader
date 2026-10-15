@@ -4,7 +4,7 @@ import threading
 import time
 import unittest
 from datetime import date
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -656,6 +656,97 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertEqual(
                 payloads[0]["attachments"], payloads[1]["attachments"]
             )
+
+    def test_api_test_draft_contains_only_the_active_recipient(self) -> None:
+        page = DeclarationContentPage()
+        candidates = (
+            RecipientCandidate(
+                source_path=Path("one.docx"), full_name="شخص اول"
+            ),
+            RecipientCandidate(
+                source_path=Path("two.docx"), full_name="شخص دوم"
+            ),
+        )
+        page.set_candidates(candidates)
+        page.recipient_combo.setCurrentIndex(1)
+        page.subject.setText("موضوع نفر دوم")
+        page.description.setPlainText("شرح نفر دوم")
+        draft = DeclarationDraft(source_dir=Path("source"), fields={})
+
+        with (
+            patch(
+                "sana_declaration_uploader.desktop.resolve_lookup_fields",
+                return_value={
+                    "province": "استان",
+                    "province_id": "province-id",
+                    "province_code": "province-code",
+                    "county": "شهرستان",
+                    "county_id": "county-id",
+                    "county_code": "county-code",
+                    "city": "شهر",
+                    "city_id": "city-id",
+                    "city_code": "city-code",
+                },
+            ) as resolve_locations,
+            patch(
+                "sana_declaration_uploader.desktop._build_desktop_drafts",
+                return_value=(draft,),
+            ) as build_drafts,
+        ):
+            result = page.active_draft(Path("lookups"))
+
+        self.assertIsNot(result, draft)
+        build_drafts.assert_called_once()
+        args, kwargs = build_drafts.call_args
+        self.assertEqual(args[0], (candidates[1],))
+        self.assertEqual(args[1][0]["subject"], "موضوع نفر دوم")
+        self.assertEqual(args[1][0]["description"], "شرح نفر دوم")
+        self.assertFalse(kwargs["shared"])
+        resolve_locations.assert_called_once_with(
+            {
+                "job_title": "آزاد",
+                "province": "",
+                "county": "",
+                "city": "",
+            },
+            Path("lookups"),
+        )
+        self.assertEqual(result.fields["city_code"], "city-code")
+
+    def test_api_test_button_requires_complete_credentials(self) -> None:
+        wizard = RecipientWizard()
+        callback = Mock()
+        wizard.login_page.api_test_callback = callback
+        for field in (
+            wizard.login_page.national_code,
+            wizard.login_page.password,
+            wizard.login_page.legal_identity,
+            wizard.login_page.otp,
+        ):
+            field.clear()
+
+        with patch.object(QMessageBox, "warning") as warning:
+            wizard.login_page.api_test_button.click()
+
+        callback.assert_not_called()
+        warning.assert_called_once()
+
+    def test_api_test_button_calls_single_item_callback(self) -> None:
+        wizard = RecipientWizard()
+        callback = Mock()
+        wizard.login_page.api_test_callback = callback
+        page = wizard.login_page
+        page.national_code.setText("national")
+        page.password.setText("password")
+        page.legal_identity.setText("identity")
+        page.otp.setText("otp")
+
+        with patch.object(page, "_save_credentials"):
+            page.api_test_button.click()
+
+        callback.assert_called_once_with(
+            LoginCredentials("national", "password", "identity", "otp")
+        )
 
     def test_declaration_fields_survive_back_navigation_and_reentry(self) -> None:
         with TemporaryDirectory() as directory, patch(

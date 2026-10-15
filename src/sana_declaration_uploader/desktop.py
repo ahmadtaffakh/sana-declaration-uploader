@@ -51,6 +51,8 @@ from .live_browser import (
     run_live_upload_batch,
     run_login_check,
 )
+from .api_test_flow import run_live_setpetitiondata_test
+from .petition_api import load_setpetitiondata_template
 from .lookups import LookupResolutionError, resolve_lookup_fields
 from .models import DeclarationDraft, RecipientCandidate
 from .preprocessing import preprocess_candidates
@@ -211,6 +213,14 @@ def _attachment_settings_path() -> Path:
 
 def _declaration_settings_path() -> Path:
     return _settings_dir() / "declaration-defaults.json"
+
+
+def _setpetitiondata_template_path() -> Path:
+    return _settings_dir() / "setpetitiondata-template.json"
+
+
+def _setpetitiondata_request_text_path() -> Path:
+    return _settings_dir() / "setpetitiondata-request.txt"
 
 
 def _load_default_settings(
@@ -1121,6 +1131,46 @@ class DeclarationContentPage(QWizardPage):
             for key, value in self._payloads.items()
         }
 
+    def active_draft(self, lookup_dir: Path) -> DeclarationDraft:
+        index = self.recipient_combo.currentData()
+        if index is None or not 0 <= int(index) < len(self._candidates):
+            raise ValueError("api_test_recipient_not_selected")
+        candidate = self._candidates[int(index)]
+        location = resolve_lookup_fields(
+            {
+                "job_title": "آزاد",
+                "province": candidate.province,
+                "county": candidate.county,
+                "city": candidate.city,
+            },
+            lookup_dir,
+        )
+        if any(
+            not location.get(f"{field}_code", "").strip()
+            for field in ("province", "county", "city")
+        ):
+            raise LookupResolutionError("recipient_location_codes_missing")
+        payload = self.payloads().get(int(index), {})
+        draft = _build_desktop_drafts(
+            (candidate,),
+            {0: payload},
+            shared=False,
+            lookup_dir=lookup_dir,
+        )[0]
+        fields = dict(draft.fields)
+        fields.update(
+            {
+                key: value
+                for key, value in location.items()
+                if key in {
+                    "province", "province_id", "province_code",
+                    "county", "county_id", "county_code",
+                    "city", "city_id", "city_code",
+                }
+            }
+        )
+        return replace(draft, fields=fields)
+
     def _description_scope_changed(self, _shared: bool) -> None:
         current = self._editor_payload()
         for payload in self._payloads.values():
@@ -1319,6 +1369,7 @@ class LoginPage(QWizardPage):
         super().__init__()
         self.registration_callback = None
         self.login_check_callback = None
+        self.api_test_callback = None
         self.setTitle("<b>مرحله ۵ از ۵ — ورود امن به سامانه ثنا</b>")
         self.setSubTitle(
             "ورود را جداگانه آزمایش کنید یا پس از بازبینی، پردازش و ثبت را شروع کنید."
@@ -1354,8 +1405,18 @@ class LoginPage(QWizardPage):
 
         self.test_login_button = QPushButton("آزمایش ورود بدون ثبت")
         self.test_login_button.clicked.connect(self._test_login)
+        self.api_test_button = QPushButton(
+            "آزمایش ثبت موقت API برای مخاطب فعال"
+        )
+        self.api_test_button.clicked.connect(self._test_api_registration)
+        self.api_template_button = QPushButton("انتخاب قالب ثابت SetPetitionData")
+        self.api_template_button.clicked.connect(self._choose_api_template)
+        self.api_template_status = QLabel()
+        self._refresh_api_template_status()
         test_row = QHBoxLayout()
         test_row.addWidget(self.test_login_button)
+        test_row.addWidget(self.api_template_button)
+        test_row.addWidget(self.api_test_button)
         test_row.addStretch()
 
         self.python_output = QTextEdit()
@@ -1372,6 +1433,7 @@ class LoginPage(QWizardPage):
         layout.addWidget(guidance)
         layout.addWidget(form_group)
         layout.addLayout(test_row)
+        layout.addWidget(self.api_template_status)
         layout.addWidget(QLabel("گزارش اجرای عملیات (قابل انتخاب و کپی):"))
         layout.addWidget(self.python_output)
         layout.addStretch()
@@ -1380,6 +1442,43 @@ class LoginPage(QWizardPage):
             self.national_code, self.password, self.legal_identity, self.otp
         ):
             field.textChanged.connect(lambda: self.completeChanged.emit())
+
+    def _refresh_api_template_status(self) -> None:
+        self.api_template_status.setText(
+            "قالب SetPetitionData آماده است."
+            if _setpetitiondata_template_path().is_file()
+            else "قالب ثابت را یک‌بار انتخاب کنید."
+        )
+
+    def _choose_api_template(self) -> None:
+        source, _ = QFileDialog.getOpenFileName(
+            self,
+            "انتخاب payload نمونه SetPetitionData",
+            str(Path.home()),
+            "JSON یا متن درخواست (*.json *.txt);;همه فایل‌ها (*.*)",
+        )
+        if not source:
+            return
+        try:
+            template = load_setpetitiondata_template(Path(source))
+            target = _setpetitiondata_template_path()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                json.dumps(template, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            QMessageBox.warning(
+                self, "قالب نامعتبر", f"قالب ذخیره نشد: {exc}"
+            )
+            return
+        self._refresh_api_template_status()
+        QMessageBox.information(
+            self,
+            "قالب ذخیره شد",
+            "قالب در تنظیمات محلی همین دستگاه ذخیره شد؛ اطلاعات مخاطب، شرح و "
+            "کدهای مکان هنگام اجرا جایگزین می‌شوند.",
+        )
 
     def isComplete(self) -> bool:
         return all(
@@ -1421,6 +1520,24 @@ class LoginPage(QWizardPage):
             )
             return
         self.login_check_callback(self._credentials())
+
+    def _test_api_registration(self) -> None:
+        if self.api_test_callback is None:
+            QMessageBox.warning(
+                self,
+                "آزمایش API در دسترس نیست",
+                "مسیر آزمایش API مقداردهی نشده است.",
+            )
+            return
+        if not self.isComplete():
+            QMessageBox.warning(
+                self,
+                "اطلاعات ورود ناقص",
+                "برای آزمایش ثبت موقت، همهٔ اطلاعات ورود و OTP را کامل کنید.",
+            )
+            return
+        self._save_credentials()
+        self.api_test_callback(self._credentials())
 
     def _credentials(self) -> LoginCredentials:
         return LoginCredentials(
@@ -1495,6 +1612,7 @@ class LoginPage(QWizardPage):
 class RecipientWizard(QWizard):
     otp_requested = Signal(object)
     final_confirmation_requested = Signal(object, object)
+    api_confirmation_requested = Signal(object, object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -1510,6 +1628,7 @@ class RecipientWizard(QWizard):
         self.login_page = LoginPage()
         self.login_page.registration_callback = self._register_declarations
         self.login_page.login_check_callback = self._start_login_check
+        self.login_page.api_test_callback = self._start_api_test
         self.files_page_id = self.addPage(self.files_page)
         self.review_page_id = self.addPage(self.review_page)
         self.preprocessing_page_id = self.addPage(self.preprocessing_page)
@@ -1529,6 +1648,7 @@ class RecipientWizard(QWizard):
         self.currentIdChanged.connect(self._page_changed)
         self.otp_requested.connect(self._show_otp_prompt)
         self.final_confirmation_requested.connect(self._show_final_confirmation)
+        self.api_confirmation_requested.connect(self._show_api_confirmation)
         self.setButtonLayout([
             QWizard.WizardButton.BackButton,
             QWizard.WizardButton.NextButton,
@@ -1653,6 +1773,7 @@ class RecipientWizard(QWizard):
         ):
             self.button(role).setEnabled(enabled)
         self.login_page.test_login_button.setEnabled(enabled)
+        self.login_page.api_test_button.setEnabled(enabled)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._background_thread is not None:
@@ -1733,6 +1854,107 @@ class RecipientWizard(QWizard):
             QMessageBox.StandardButton.No,
         )
         response.put(answer == QMessageBox.StandardButton.Yes)
+
+    @Slot(object, object)
+    def _show_api_confirmation(
+        self,
+        draft: DeclarationDraft,
+        response: Queue,
+    ) -> None:
+        name = " ".join(
+            value for value in (
+                draft.fields.get("recipient_first_name", ""),
+                draft.fields.get("recipient_last_name", ""),
+            ) if value
+        )
+        answer = QMessageBox.question(
+            self,
+            "تأیید ثبت موقت آزمایشی با API",
+            f"درخواست ثبت موقت فقط برای مخاطب «{name}» یک‌بار ارسال شود؟\n"
+            "پیوست و امضای نهایی انجام نمی‌شود. اگر نتیجه مبهم باشد، درخواست "
+            "تکرار نخواهد شد.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        response.put(answer == QMessageBox.StandardButton.Yes)
+
+    def _start_api_test(self, credentials: LoginCredentials) -> None:
+        try:
+            petition_template = load_setpetitiondata_template(
+                _setpetitiondata_template_path()
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            QMessageBox.warning(self, "قالب SetPetitionData موجود نیست", str(exc))
+            return
+        try:
+            draft = self.content_page.active_draft(self._lookup_dir)
+        except (ValueError, LookupResolutionError) as exc:
+            QMessageBox.warning(self, "پیش‌نویس آزمایشی نامعتبر", str(exc))
+            return
+        self.login_page.start_log()
+        report = self.login_page.append_output
+        report(
+            "آزمایش API برای یک مخاطب فعال آغاز شد؛ پیوست و امضای نهایی اجرا نمی‌شود.",
+            level="system",
+        )
+
+        def task(progress: Callable[[str], None]) -> object:
+            progress("در حال راه‌اندازی مرورگر برای آزمایش یک‌موردی...")
+
+            def confirm() -> bool:
+                response: Queue = Queue(maxsize=1)
+                self.api_confirmation_requested.emit(draft, response)
+                return bool(response.get())
+
+            return run_live_setpetitiondata_test(
+                draft,
+                credentials,
+                confirm,
+                petition_template,
+                _setpetitiondata_request_text_path(),
+                progress=progress,
+            )
+
+        def succeeded(result: object) -> None:
+            if result is None:
+                report("ارسال آزمایشی توسط کاربر لغو شد؛ درخواستی ثبت نشد.", level="warning")
+                return
+            report(
+                "ثبت موقت آزمایشی موفق بود؛ "
+                f"کد رهگیری: {result.tracking_code}؛ "
+                f"شماره اظهارنامه: {result.petition_number}",
+                level="success",
+            )
+            QMessageBox.information(
+                self,
+                "ثبت موقت آزمایشی موفق",
+                "درخواست یک‌موردی با موفقیت پاسخ گرفت.\n"
+                f"کد رهگیری: {result.tracking_code}\n"
+                f"شماره اظهارنامه: {result.petition_number}\n"
+                "این مسیر پیوست یا امضای نهایی را انجام نداده است.",
+            )
+
+        def failed(exc: Exception, details: str) -> None:
+            report(f"آزمایش API متوقف شد: {exc}", level="error")
+            report("ردیابی کامل خطا:", level="debug")
+            report(details, level="debug")
+            report(
+                f"متن درخواست: {_setpetitiondata_request_text_path()}\n"
+                f"دستور curl: "
+                f"{_setpetitiondata_request_text_path().with_name('setpetitiondata-request.curl.txt')}\n"
+                f"کد کنسول: "
+                f"{_setpetitiondata_request_text_path().with_name('setpetitiondata-request.console.txt')}",
+                level="debug",
+            )
+            QMessageBox.warning(self, "آزمایش API ناموفق", str(exc))
+
+        self._start_background(
+            "آزمایش ثبت موقت یک اظهارنامه با API...",
+            task,
+            succeeded,
+            failed,
+            lambda message: report(message, level="progress"),
+        )
 
     def _register_declarations(self, credentials: LoginCredentials) -> bool:
         self.login_page.start_log()
