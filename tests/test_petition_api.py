@@ -9,6 +9,7 @@ from sana_declaration_uploader.petition_api import (
     SET_PETITION_DATA_URL,
     SetPetitionDataClient,
     SetPetitionDataError,
+    _sanitize_address,
     build_setpetitiondata_payload,
     load_setpetitiondata_template,
     parse_set_petition_data_result,
@@ -18,27 +19,17 @@ from sana_declaration_uploader.petition_api import (
 
 
 class SetPetitionDataClientTests(unittest.TestCase):
-    @staticmethod
-    def _success_response():
-        return Mock(
-            status=200,
-            text=Mock(return_value=(
-                "1405220409964381;74469;"
-                "E421AC18584E486B8EFA9B1CA98C8389"
-            )),
-        )
-
     def test_posts_wrapped_payload_once_and_parses_result(self):
-        request = Mock()
-        request.post.return_value = Mock(
-            status=200,
-            text=Mock(return_value=(
+        page = Mock()
+        page.evaluate.return_value = {
+            "status": 200,
+            "text": (
                 "1405220409964381;74469;"
                 "E421AC18584E486B8EFA9B1CA98C8389"
-            )),
-        )
+            ),
+        }
 
-        result = SetPetitionDataClient(request).submit(
+        result = SetPetitionDataClient(page).submit(
             {"PetitionTypeCode": "110", "Description": "متن"}
         )
 
@@ -47,10 +38,12 @@ class SetPetitionDataClientTests(unittest.TestCase):
         self.assertEqual(
             result.petition_id, "E421AC18584E486B8EFA9B1CA98C8389"
         )
-        request.post.assert_called_once()
-        args, kwargs = request.post.call_args
-        self.assertEqual(args[0], SET_PETITION_DATA_URL)
-        envelope = json.loads(kwargs["data"])
+        page.evaluate.assert_called_once()
+        expression, argument = page.evaluate.call_args.args
+        self.assertIn("fetch(url", expression)
+        self.assertIn("credentials: 'include'", expression)
+        self.assertEqual(argument["url"], SET_PETITION_DATA_URL)
+        envelope = json.loads(argument["body"])
         self.assertEqual(
             json.loads(envelope["data"]),
             {"PetitionTypeCode": "110", "Description": "متن"},
@@ -75,38 +68,44 @@ class SetPetitionDataClientTests(unittest.TestCase):
         self.assertIn("responseText", script)
 
     def test_does_not_retry_transport_errors(self):
-        request = Mock()
-        request.post.side_effect = TimeoutError("sensitive transport detail")
+        page = Mock()
+        page.evaluate.side_effect = TimeoutError("sensitive transport detail")
 
         with self.assertRaisesRegex(
             SetPetitionDataError, "set_petition_data_transport_ambiguous"
         ):
-            SetPetitionDataClient(request).submit({"Description": "متن"})
+            SetPetitionDataClient(page).submit({"Description": "متن"})
 
-        request.post.assert_called_once()
+        page.evaluate.assert_called_once()
 
     def test_one_item_helper_uses_authenticated_page_context(self):
-        request = Mock()
-        request.post.return_value = self._success_response()
-        page = Mock(context=Mock(request=request))
+        page = Mock()
+        page.evaluate.return_value = {
+            "status": 200,
+            "text": (
+                "1405220409964381;74469;"
+                "E421AC18584E486B8EFA9B1CA98C8389"
+            ),
+        }
 
         result = submit_one_petition_data(page, {"PetitionTypeCode": "110"})
 
         self.assertEqual(result.petition_number, "74469")
-        request.post.assert_called_once()
+        page.evaluate.assert_called_once()
 
     def test_rejects_http_failure_without_exposing_response_body(self):
-        request = Mock()
-        request.post.return_value = Mock(status=500, text=Mock(
-            return_value="private response"
-        ))
+        page = Mock()
+        page.evaluate.return_value = {
+            "status": 500,
+            "text": "private response",
+        }
 
         with self.assertRaisesRegex(
             SetPetitionDataError, "set_petition_data_http_failed"
         ):
-            SetPetitionDataClient(request).submit({"Description": "متن"})
+            SetPetitionDataClient(page).submit({"Description": "متن"})
 
-        request.post.assert_called_once()
+        page.evaluate.assert_called_once()
 
     def test_rejects_malformed_result(self):
         with self.assertRaisesRegex(
@@ -198,6 +197,35 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
         self.assertEqual(recipient["ProvinceTitle"], "شهرستان")
         self.assertEqual(recipient["CityId"], "T1")
         self.assertEqual(template["Description"], "old description")
+
+    def test_sanitizes_both_address_fields(self):
+        draft = self._draft()
+        draft.fields.update({
+            "recipient_main_street": "خيابان الف. Tel: 021123456",
+            "recipient_address": "کوچه ب کد پستی: 1234567890",
+        })
+
+        recipient = build_setpetitiondata_payload(
+            self._template(), draft
+        )["theJSSPetitionPerson"][1]
+
+        self.assertEqual(recipient["BasicAvenue"], "خيابان الف")
+        self.assertEqual(recipient["HomeAddress"], "کوچه ب")
+        self.assertLessEqual(len(recipient["BasicAvenue"]), 10)
+        self.assertLessEqual(len(recipient["HomeAddress"]), 10)
+        self.assertNotIn("Tel", recipient["BasicAvenue"])
+        self.assertNotIn("پستی", recipient["HomeAddress"])
+
+    def test_sanitizer_removes_phone_postal_code_and_trailing_period(self):
+        self.assertEqual(
+            _sanitize_address("نشانی اصلی. تلفن تماس: 021123456"),
+            "نشانی اصلی",
+        )
+        self.assertEqual(
+            _sanitize_address("خیابان فرعی. کدپستی 1234567890"),
+            "خیابان فرع",
+        )
+        self.assertEqual(_sanitize_address("123456789."), "123456789")
 
     def test_requires_one_recipient_role(self):
         template = self._template()

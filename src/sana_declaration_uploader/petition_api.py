@@ -8,7 +8,6 @@ from dataclasses import dataclass
 import json
 import re
 from pathlib import Path
-from typing import Protocol
 
 from .models import DeclarationDraft
 
@@ -23,8 +22,18 @@ _PETITION_ID = re.compile(r"^(?:[0-9a-fA-F]{32}|"
                           r"[0-9a-fA-F]{12})$")
 
 
-class _RequestContext(Protocol):
-    def post(self, url: str, **kwargs: object) -> object: ...
+def _sanitize_address(text: str, max_length: int = 10) -> str:
+    """Remove contact details and trailing punctuation, then limit the address."""
+
+    cleaned = re.sub(
+        r"(?:تلفن\s*تماس|tel)\s*[:：]?\s*[^\r\n]*", "", text,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"کد\s*پستی\s*[:：]?\s*[^\r\n]*", "", cleaned
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:max(0, max_length)].rstrip(" .،؛,:;-/\\")
 
 
 @dataclass(frozen=True)
@@ -39,16 +48,15 @@ class SetPetitionDataError(RuntimeError):
 
 
 class SetPetitionDataClient:
-    """Call SetPetitionData once using a caller-provided authenticated context.
+    """Call SetPetitionData once through the authenticated browser page.
 
-    Pass the request context belonging to the logged-in browser context so its
-    session cookies are reused. The payload is the portal's inner petition
-    model; this class wraps it in the observed ``data``/``isAuthenticate``
-    envelope and deliberately does not retry ambiguous writes.
+    The payload is the portal's inner petition model; this class wraps it in
+    the observed ``data``/``isAuthenticate`` envelope and deliberately does
+    not retry ambiguous writes.
     """
 
-    def __init__(self, request_context: _RequestContext) -> None:
-        self.request_context = request_context
+    def __init__(self, page: object) -> None:
+        self.page = page
 
     def submit(
         self, petition_data: Mapping[str, object]
@@ -89,32 +97,43 @@ class SetPetitionDataClient:
 
     def _post_body(self, body: str) -> SetPetitionDataResult:
         try:
-            response = self.request_context.post(
-                SET_PETITION_DATA_URL,
-                data=body,
-                headers={
-                    "content-type": "application/json;charset=UTF-8",
-                    "accept": "application/json, text/plain, */*",
-                    "x-requested-with": "XMLHttpRequest",
-                    "origin": "https://person.adliran.ir",
-                    "referer": "https://person.adliran.ir/LegalPerson/Index",
-                },
+            response = self.page.evaluate(
+                """async ({ url, body }) => {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: {
+                            'accept': 'application/json, text/plain, */*',
+                            'content-type': 'application/json;charset=UTF-8',
+                            'x-requested-with': 'XMLHttpRequest',
+                        },
+                        body,
+                    });
+                    return {
+                        status: response.status,
+                        text: await response.text(),
+                    };
+                }""",
+                {"url": SET_PETITION_DATA_URL, "body": body},
             )
         except Exception:
             raise SetPetitionDataError(
                 "set_petition_data_transport_ambiguous"
             ) from None
 
-        status = getattr(response, "status", None)
-        if not isinstance(status, int) or not 200 <= status < 300:
-            raise SetPetitionDataError("set_petition_data_http_failed")
-        try:
-            raw_result = response.text().strip()
-        except Exception:
+        if not isinstance(response, dict):
             raise SetPetitionDataError(
                 "set_petition_data_response_unreadable"
-            ) from None
-        return parse_set_petition_data_result(raw_result)
+            )
+        status = response.get("status")
+        if not isinstance(status, int) or not 200 <= status < 300:
+            raise SetPetitionDataError("set_petition_data_http_failed")
+        raw_result = response.get("text")
+        if not isinstance(raw_result, str):
+            raise SetPetitionDataError(
+                "set_petition_data_response_unreadable"
+            )
+        return parse_set_petition_data_result(raw_result.strip())
 
 
 def submit_one_petition_data(
@@ -126,13 +145,7 @@ def submit_one_petition_data(
     makes exactly one write attempt. The page must already be authenticated.
     """
 
-    try:
-        request_context = page.context.request
-    except Exception:
-        raise SetPetitionDataError(
-            "set_petition_data_authenticated_context_unavailable"
-        ) from None
-    return SetPetitionDataClient(request_context).submit(petition_data)
+    return SetPetitionDataClient(page).submit(petition_data)
 
 
 def load_setpetitiondata_template(path: Path) -> dict[str, object]:
@@ -255,9 +268,12 @@ def build_setpetitiondata_payload(
         "Family": fields.get("recipient_last_name", ""),
         "FatherName": fields.get("recipient_father_name", ""),
         "IdentityNo": fields.get("recipient_national_id", ""),
-        "BasicAvenue": fields.get("recipient_main_street", "")
-        or fields["city"],
-        "HomeAddress": fields.get("recipient_address", ""),
+        "BasicAvenue": _sanitize_address(
+            fields.get("recipient_main_street", "") or fields["city"]
+        ),
+        "HomeAddress": _sanitize_address(
+            fields.get("recipient_address", "")
+        ),
         "PostallCode": fields.get("recipient_postal_code", ""),
         # Portal payload uses State for province and Province for county.
         "StateId": fields["province_code"],
