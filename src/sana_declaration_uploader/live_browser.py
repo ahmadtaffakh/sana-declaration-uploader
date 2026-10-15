@@ -370,7 +370,21 @@ class PlaywrightDeclarationPage:
             related_number = page.locator("#replayToDeclaration")
             related_number.wait_for(state="visible", timeout=self.timeout_ms)
             related_number.fill(value)
-        page.locator("#btnNext").click()
+        next_button = page.locator("#btnNext")
+        next_button.click()
+        _wait_for_active_form_step(
+            page,
+            "اظهارکننده",
+            self.timeout_ms,
+            failure_code="declarant_step_not_active",
+        )
+        next_button.click()
+        _wait_for_active_form_step(
+            page,
+            "مخاطب",
+            self.timeout_ms,
+            failure_code="recipient_step_not_active",
+        )
         page.locator(NATURAL_PERSON_TAB_SELECTOR).wait_for(
             state="visible", timeout=self.timeout_ms
         )
@@ -461,38 +475,25 @@ class PlaywrightRecipientPage:
         except Exception as exc:
             raise LiveBrowserError("recipient_lookup_selection_failed") from exc
         expected = {
-            "job": fields["job_title"].strip(),
-            "province": fields["province"].strip(),
-            "county": fields["county"].strip(),
-            "city": fields["city"].strip(),
+            "job": fields["job_id"].strip(),
+            "province": fields["province_id"].strip(),
+            "county": fields["county_id"].strip(),
+            "city": fields["city_id"].strip(),
         }
         if selected != expected:
             raise LiveBrowserError("recipient_lookup_selection_not_verified")
 
         main_street = (
             fields.get("recipient_main_street", "").strip()
+            or fields.get("recipient_address", "").strip()
             or fields["city"].strip()
-        )
+        )[:30].strip()
         main_street_input = page.locator("#txtBasicAvenue")
-        try:
-            main_street_input.click()
-            main_street_input.press("Control+A")
-            main_street_input.press("Backspace")
-            main_street_input.press_sequentially(main_street, delay=100)
-            main_street_input.press("Tab")
-            page.wait_for_function(
-                """expected => {
-                    const input = document.querySelector('#txtBasicAvenue');
-                    if (!input || input.value.trim() !== expected) return false;
-                    const scope = angular.element(input).scope();
-                    const value = scope?.viewModel?.currentPetitionPerson?.BasicAvenue;
-                    return String(value || '').trim() === expected;
-                }""",
-                arg=main_street,
-                timeout=self.timeout_ms,
-            )
-        except Exception as exc:
-            raise LiveBrowserError("recipient_main_street_not_set") from exc
+        main_street_input.click()
+        main_street_input.press("Control+A")
+        main_street_input.press("Backspace")
+        main_street_input.press_sequentially(main_street, delay=100)
+        main_street_input.press("Tab")
         if main_street_input.input_value().strip() != main_street:
             raise LiveBrowserError("recipient_main_street_not_set")
         address = fields.get("recipient_address", "").strip()
@@ -500,26 +501,29 @@ class PlaywrightRecipientPage:
             page.locator(
                 "textarea[ng-model='viewModel.currentPetitionPerson.HomeAddress']"
             ).fill(address)
-        page.locator("#btnNext").click()
-        try:
-            page.wait_for_function(
-                """() => {
-                    const visible = element => Boolean(element)
-                        && element.getClientRects().length > 0
-                        && getComputedStyle(element).visibility !== 'hidden';
-                    return visible(document.querySelector('.sweet-alert'))
-                        || !visible(document.querySelector('#txtBasicAvenue'));
-                }""",
-                timeout=self.timeout_ms,
-            )
-        except Exception as exc:
-            raise LiveBrowserError("recipient_registration_not_completed") from exc
-        _raise_visible_site_error(page)
-        _open_form_step(
+        next_button = page.locator("#btnNext")
+        next_button.click()
+        _wait_for_any_active_form_step(
             page,
-            "موضوع اظهارنامه",
-            "#btnAddSection",
+            {"وکیل", "نماینده", "موضوع اظهارنامه"},
             self.timeout_ms,
+            failure_code="recipient_next_step_not_active",
+        )
+        for _ in range(3):
+            active_step = _active_form_step(page, {"وکیل", "نماینده"})
+            if active_step is None:
+                break
+            next_button.click()
+            _wait_for_any_active_form_step(
+                page,
+                {"وکیل", "نماینده", "موضوع اظهارنامه"},
+                self.timeout_ms,
+                failure_code="representative_next_step_not_active",
+            )
+        if _active_form_step(page, {"موضوع اظهارنامه"}) is None:
+            raise LiveBrowserError("subject_step_not_active")
+        page.locator("#btnAddSection").wait_for(
+            state="visible", timeout=self.timeout_ms
         )
 
     def validate(self, draft: DeclarationDraft) -> None:
@@ -574,6 +578,7 @@ _SELECT_RECIPIENT_LOOKUPS = """async payload => {
     const findById = (items, id) => Array.isArray(items)
         ? items.find(item => String(item.Id || '') === String(id || ''))
         : null;
+    const selectedId = scope => String(scope.$select.selected?.Id || '');
     const result = {};
 
     const jobContainer = containers[0];
@@ -586,8 +591,7 @@ _SELECT_RECIPIENT_LOOKUPS = """async payload => {
         {Id: payload.job.id, Title: payload.job.label, Code: payload.job.code},
         false
     ));
-    const jobMatch = jobContainer.querySelector('.ui-select-match-text');
-    result.job = jobMatch ? jobMatch.textContent.trim() : '';
+    result.job = selectedId(jobScope);
 
     const stateScope = selectScope('state');
     const viewModel = stateScope.viewModel;
@@ -611,14 +615,9 @@ _SELECT_RECIPIENT_LOOKUPS = """async payload => {
     );
     choose('city', city);
 
-    for (const [name, control] of [
-        ['province', 'state'],
-        ['county', 'province'],
-        ['city', 'city'],
-    ]) {
-        const match = container(control).querySelector('.ui-select-match-text');
-        result[name] = match ? match.textContent.trim() : '';
-    }
+    result.province = selectedId(selectScope('state'));
+    result.county = selectedId(selectScope('province'));
+    result.city = selectedId(selectScope('city'));
     return result;
 }"""
 
@@ -645,8 +644,33 @@ def _open_form_step(
 
     try:
         step.locator(".step.ng-binding").click()
+        _wait_for_active_form_step(
+            page,
+            title,
+            timeout_ms,
+            failure_code=f"form_step_navigation_failed:{title}",
+        )
+        page.locator(ready_selector).wait_for(
+            state="visible", timeout=timeout_ms
+        )
+    except Exception as exc:
+        raise LiveBrowserError(f"form_step_navigation_failed:{title}") from exc
+
+
+def _wait_for_active_form_step(
+    page: object,
+    title: str,
+    timeout_ms: int,
+    *,
+    failure_code: str,
+) -> None:
+    try:
         page.wait_for_function(
             r"""title => {
+                const visible = element => Boolean(element)
+                    && element.getClientRects().length > 0
+                    && getComputedStyle(element).visibility !== 'hidden';
+                if (visible(document.querySelector('.sweet-alert'))) return true;
                 const normalize = value => (value || '')
                     .replace(/\u0643/g, '\u06a9')
                     .replace(/[\u064a\u0649]/g, '\u06cc')
@@ -666,11 +690,62 @@ def _open_form_step(
             arg=title,
             timeout=timeout_ms,
         )
-        page.locator(ready_selector).wait_for(
-            state="visible", timeout=timeout_ms
+    except Exception as exc:
+        raise LiveBrowserError(failure_code) from exc
+    _raise_visible_site_error(page)
+
+
+def _active_form_step(page: object, titles: set[str]) -> str | None:
+    return page.evaluate(
+        """titles => {
+            const normalize = value => (value || '').replace(/\\s+/g, ' ').trim();
+            for (const item of document.querySelectorAll(
+                '[ng-repeat="step in navCtrl.currentStep.innerSteps"]'
+            )) {
+                const label = item.querySelector('.step.ng-binding');
+                const status = item.querySelector('[jud-static-include] > div');
+                const title = normalize(label?.textContent);
+                if (status?.classList.contains('hover') && titles.includes(title)) {
+                    return title;
+                }
+            }
+            return null;
+        }""",
+        list(titles),
+    )
+
+
+def _wait_for_any_active_form_step(
+    page: object,
+    titles: set[str],
+    timeout_ms: int,
+    *,
+    failure_code: str,
+) -> str:
+    try:
+        page.wait_for_function(
+            """titles => {
+                const normalize = value => (value || '').replace(/\\s+/g, ' ').trim();
+                return [...document.querySelectorAll(
+                    '[ng-repeat="step in navCtrl.currentStep.innerSteps"]'
+                )].some(item => {
+                    const title = normalize(
+                        item.querySelector('.step.ng-binding')?.textContent
+                    );
+                    const status = item.querySelector('[jud-static-include] > div');
+                    return titles.includes(title) && status?.classList.contains('hover');
+                });
+            }""",
+            arg=list(titles),
+            timeout=timeout_ms,
         )
     except Exception as exc:
-        raise LiveBrowserError(f"form_step_navigation_failed:{title}") from exc
+        raise LiveBrowserError(failure_code) from exc
+    _raise_visible_site_error(page)
+    active = _active_form_step(page, titles)
+    if active is None:
+        raise LiveBrowserError(failure_code)
+    return active
 
 
 def _wait_for_transition(
@@ -826,7 +901,15 @@ class PlaywrightContentPage:
             "سایر" if site_subject == "سایر موضوعات اظهارنامه" else subject
         )
         page = self.page
-        page.locator("#btnAddSection").click()
+        add_button = page.locator("#btnAddSection")
+        add_button.wait_for(state="visible", timeout=self.timeout_ms)
+        add_button.click()
+        _wait_for_transition(
+            page,
+            self.timeout_ms,
+            ready_selector="#jssPetitionRelief1",
+            failure_code="declaration_subject_form_not_opened",
+        )
         control = page.locator("#jssPetitionRelief1")
         try:
             control.locator("button.ui-select-toggle").click()
@@ -845,15 +928,54 @@ class PlaywrightContentPage:
         if choices.first.inner_text().strip() != site_subject:
             raise LiveBrowserError("declaration_subject_not_exact")
         try:
-            choices.first.click()
-            selected = control.locator(".ui-select-match-text")
-            selected.wait_for(state="visible", timeout=self.timeout_ms)
-            if selected.inner_text().strip() != site_subject:
-                raise LiveBrowserError("declaration_subject_not_selected")
+            if site_subject == "سایر موضوعات اظهارنامه":
+                selected = page.evaluate(
+                    """({label}) => {
+                        const control = document.querySelector('#jssPetitionRelief1');
+                        const scope = control && angular.element(control).scope();
+                        const option = [...control.querySelectorAll(
+                            '.ui-select-choices-row'
+                        )].find(row => row.textContent.trim() === label);
+                        const optionScope = option && angular.element(option).scope();
+                        const item = optionScope?.$item
+                            || scope?.$select.items?.find(item =>
+                                String(item.Title || '').trim() === label
+                            );
+                        if (!scope?.$select || !item) return '';
+                        scope.$apply(() => scope.$select.select(item, false));
+                        return String(scope.$select.selected?.Title || '');
+                    }""",
+                    {"label": site_subject},
+                )
+                if selected != site_subject:
+                    raise LiveBrowserError("declaration_subject_not_selected")
+            else:
+                choices.first.click()
+                selected = control.locator(".ui-select-match-text")
+                selected.wait_for(state="visible", timeout=self.timeout_ms)
+                if selected.inner_text().strip() != site_subject:
+                    raise LiveBrowserError("declaration_subject_not_selected")
         except LiveBrowserError:
             raise
         except Exception as exc:
             raise LiveBrowserError("declaration_subject_selection_failed") from exc
+        page.locator("#btnNext").click()
+        try:
+            page.wait_for_function(
+                """() => {
+                    const visible = element => Boolean(element)
+                        && element.getClientRects().length > 0
+                        && getComputedStyle(element).visibility !== 'hidden';
+                    return visible(document.querySelector('.sweet-alert'))
+                        || !visible(document.querySelector('#jssPetitionRelief1'));
+                }""",
+                timeout=self.timeout_ms,
+            )
+        except Exception as exc:
+            raise LiveBrowserError(
+                "declaration_subject_registration_not_completed"
+            ) from exc
+        _raise_visible_site_error(page)
         _open_form_step(
             page,
             "شرح",

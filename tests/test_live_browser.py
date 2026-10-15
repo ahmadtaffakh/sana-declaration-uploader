@@ -110,8 +110,12 @@ class _Page:
 
     def evaluate(self, script, payload):
         self.calls.append(("evaluate", payload))
+        if isinstance(payload, list):
+            return "موضوع اظهارنامه" if "موضوع اظهارنامه" in payload else None
+        if isinstance(payload, dict) and "label" in payload:
+            return payload["label"]
         return {
-            name: values["label"]
+            name: values["id"]
             for name, values in payload.items()
         }
 
@@ -271,6 +275,9 @@ class DeclarationPageTests(unittest.TestCase):
                 ("wait_for", "#replayToDeclaration"),
                 ("fill", "#replayToDeclaration"),
                 ("click", "#btnNext"),
+                ("wait_for_function", 60000),
+                ("click", "#btnNext"),
+                ("wait_for_function", 60000),
                 (
                     "wait_for",
                     "div.margin-bottom-5 > div > div > div:nth-of-type(1) "
@@ -279,6 +286,24 @@ class DeclarationPageTests(unittest.TestCase):
             ],
         )
         self.assertNotIn(("click", "#legalIranianPerson"), page.calls)
+
+    def test_stops_before_second_next_when_declarant_step_is_not_active(self):
+        page = _Page()
+        original_wait_for_function = page.wait_for_function
+
+        def wait_for_function(script, **kwargs):
+            if kwargs.get("arg") == "اظهارکننده":
+                raise TimeoutError
+            return original_wait_for_function(script, **kwargs)
+
+        page.wait_for_function = wait_for_function
+
+        with self.assertRaisesRegex(LiveBrowserError, "declarant_step_not_active"):
+            PlaywrightDeclarationPage(page).open_draft_wizard(
+                DeclarationDraft(source_dir=Path("input"), fields={})
+            )
+
+        self.assertEqual(page.calls.count(("click", "#btnNext")), 1)
 
     def test_enters_ministry_court_unit_code_before_opening_wizard(self):
         page = _Page()
@@ -375,21 +400,17 @@ class RecipientPageTests(unittest.TestCase):
         self.assertIn(("fill", "#txtRealIrFamily", "خانوادگی"), page.calls)
         self.assertIn(("click", "#rdbRealIrMale"), page.calls)
         next_click = ("click", "#btnNext")
-        self.assertEqual(page.calls.count(next_click), 1)
-        subject_step = (
-            "//*[@ng-repeat='step in navCtrl.currentStep.innerSteps']"
-            "[.//*[contains(concat(' ', normalize-space(@class), ' '), ' step ') "
-            "and normalize-space()='موضوع اظهارنامه']]"
+        self.assertEqual(page.calls.count(next_click), 2)
+        self.assertLess(
+            page.calls.index(("input_value", "#txtBasicAvenue")),
+            page.calls.index(next_click),
         )
-        subject_click = ("click", f"{subject_step} >> .step.ng-binding")
-        self.assertIn(subject_click, page.calls)
-        self.assertLess(page.calls.index(next_click), page.calls.index(subject_click))
         self.assertIn(
-            (
-                "wait_for_function",
-                60000,
-                {"readySelector": None, "stepTitle": "موضوع اظهارنامه"},
-            ),
+            ("wait_for_function", 60000, "نماینده"),
+            page.calls,
+        )
+        self.assertIn(
+            ("wait_for_function", 60000, "موضوع اظهارنامه"),
             page.calls,
         )
         self.assertIn(("wait_for", "#btnAddSection", "visible"), page.calls)
@@ -409,6 +430,26 @@ class RecipientPageTests(unittest.TestCase):
         self.assertLess(county_choice, city_wait)
         self.assertLess(city_wait, city_choice)
         self.assertIn('.ui-select-container[name="${name}"]', script)
+        self.assertIn("scope.$select.selected?.Id", script)
+        self.assertNotIn(".ui-select-match-text", script)
+
+    def test_lookup_verification_uses_selected_ids(self):
+        page = _Page()
+        original_evaluate = page.evaluate
+
+        def evaluate(script, payload):
+            selected = original_evaluate(script, payload)
+            selected["city"] = "wrong-city-id"
+            return selected
+
+        page.evaluate = evaluate
+
+        with self.assertRaisesRegex(
+            LiveBrowserError, "recipient_lookup_selection_not_verified"
+        ):
+            PlaywrightRecipientPage(page).fill_natural_person(self._draft())
+
+        self.assertNotIn(("click", "#txtBasicAvenue"), page.calls)
 
     def test_opens_natural_person_tab_before_registering_recipient(self):
         page = _Page()
@@ -420,7 +461,7 @@ class RecipientPageTests(unittest.TestCase):
         next_click = ("click", "#btnNext")
         self.assertIn(tab_click, page.calls)
         self.assertLess(page.calls.index(tab_click), page.calls.index(add_click))
-        self.assertEqual(page.calls.count(next_click), 1)
+        self.assertEqual(page.calls.count(next_click), 2)
         self.assertLess(page.calls.index(add_click), page.calls.index(next_click))
 
     def test_tab_navigation_failure_stops_before_adding_recipient(self):
@@ -443,43 +484,38 @@ class RecipientPageTests(unittest.TestCase):
         tab.click.assert_called_once_with(timeout=60_000)
         self.assertNotIn(("click", "#btnAddSection"), page.calls)
 
-    def test_clicks_subject_label_without_rejecting_parent_status_class(self):
+    def test_representative_next_reaches_subject_without_direct_tab_click(self):
         page = _Page()
 
         PlaywrightRecipientPage(page).fill_natural_person(self._draft())
 
+        self.assertEqual(page.calls.count(("click", "#btnNext")), 2)
+        self.assertIn(("wait_for_function", 60000, "نماینده"), page.calls)
         self.assertIn(
-            (
-                "click",
-                "//*[@ng-repeat='step in navCtrl.currentStep.innerSteps']"
-                "[.//*[contains(concat(' ', normalize-space(@class), ' '), ' step ') "
-                "and normalize-space()='موضوع اظهارنامه']] >> .step.ng-binding",
-            ),
-            page.calls,
+            ("wait_for_function", 60000, "موضوع اظهارنامه"), page.calls
         )
-        self.assertFalse(any(call[0] == "get_attribute" for call in page.calls))
+        self.assertFalse(any(
+            "normalize-space()='موضوع اظهارنامه'" in str(call)
+            for call in page.calls
+        ))
 
-    def test_subject_label_click_failure_stops_navigation(self):
+    def test_subject_transition_failure_stops_after_representative_next(self):
         page = _Page()
-        original_locator = page.locator
-        subject_step = Mock()
-        subject_step.count.return_value = 1
-        subject_label = Mock()
-        subject_label.click.side_effect = TimeoutError
-        subject_step.locator.return_value = subject_label
-        page.locator = lambda selector: (
-            subject_step
-            if "normalize-space()='موضوع اظهارنامه'" in selector
-            else original_locator(selector)
-        )
+        original_wait_for_function = page.wait_for_function
+
+        def wait_for_function(script, **kwargs):
+            if kwargs.get("arg") == "موضوع اظهارنامه":
+                raise TimeoutError
+            return original_wait_for_function(script, **kwargs)
+
+        page.wait_for_function = wait_for_function
 
         with self.assertRaisesRegex(
-            LiveBrowserError, "form_step_navigation_failed:موضوع اظهارنامه"
+            LiveBrowserError, "subject_step_not_active"
         ):
             PlaywrightRecipientPage(page).fill_natural_person(self._draft())
 
-        subject_step.locator.assert_called_once_with(".step.ng-binding")
-        subject_label.click.assert_called_once_with()
+        self.assertEqual(page.calls.count(("click", "#btnNext")), 2)
 
     def test_reports_recipient_residence_error_without_waiting_for_subject(self):
         page = _Page()
@@ -541,15 +577,33 @@ class RecipientPageTests(unittest.TestCase):
             page.calls,
         )
         self.assertIn(("press", "#txtBasicAvenue", "Tab"), page.calls)
+        self.assertIn(("input_value", "#txtBasicAvenue"), page.calls)
+        self.assertNotIn(
+            ("wait_for_function", 60000, "شهر نمونه"),
+            page.calls,
+        )
+
+    def test_blank_main_street_is_filled_with_truncated_address(self):
+        page = _Page()
+        address = "نشانی بسیار طولانی برای کنترل محدودیت خیابان اصلی"
+        expected = address[:30].strip()
+
+        PlaywrightRecipientPage(page).fill_natural_person(
+            self._draft(recipient_main_street="", recipient_address=address)
+        )
+
+        self.assertIn(
+            ("press_sequentially", "#txtBasicAvenue", expected, 100),
+            page.calls,
+        )
         self.assertIn(
             (
-                "wait_for_function",
-                60000,
-                "شهر نمونه",
+                "fill",
+                "textarea[ng-model='viewModel.currentPetitionPerson.HomeAddress']",
+                address,
             ),
             page.calls,
         )
-        self.assertIn(("input_value", "#txtBasicAvenue"), page.calls)
 
     def test_unset_main_street_stops_before_subject_navigation(self):
         page = _Page()
@@ -564,7 +618,7 @@ class RecipientPageTests(unittest.TestCase):
             LiveBrowserError, "recipient_main_street_not_set"
         ):
             PlaywrightRecipientPage(page).fill_natural_person(
-                self._draft(recipient_main_street="")
+                self._draft(recipient_main_street="", recipient_address="")
             )
 
         main_street.press_sequentially.assert_called_once_with(
@@ -575,19 +629,19 @@ class RecipientPageTests(unittest.TestCase):
             for call in page.calls
         ))
 
-    def test_unconfirmed_recipient_registration_stops_before_subject(self):
+    def test_unconfirmed_recipient_transition_stops_before_representative_next(self):
         page = _Page()
         original_wait_for_function = page.wait_for_function
 
         def wait_for_function(script, **kwargs):
-            if "|| !visible(document.querySelector('#txtBasicAvenue'))" in script:
+            if kwargs.get("arg") == "نماینده":
                 raise TimeoutError
             return original_wait_for_function(script, **kwargs)
 
         page.wait_for_function = wait_for_function
 
         with self.assertRaisesRegex(
-            LiveBrowserError, "recipient_registration_not_completed"
+            LiveBrowserError, "representative_step_not_active"
         ):
             PlaywrightRecipientPage(page).fill_natural_person(self._draft())
 
@@ -923,7 +977,7 @@ class ContentPageTests(unittest.TestCase):
 
         self.assertEqual(page.calls, [])
 
-    def test_subject_opens_description_tab_without_next_or_evidence(self):
+    def test_subject_is_registered_before_opening_description_tab(self):
         page = _Page()
         page.inner_texts[self.SUBJECT_CHOICE] = "موضوع"
         page.inner_texts[self.SUBJECT_SELECTED] = "موضوع"
@@ -946,9 +1000,17 @@ class ContentPageTests(unittest.TestCase):
             ("wait_for", self.DESCRIPTION_EDITOR, "visible"),
             page.calls,
         )
-        self.assertFalse(any(
-            call[0:2] == ("click", "#btnNext") for call in page.calls
-        ))
+        next_click = ("click", "#btnNext")
+        description_click = ("click", f"{self.DESCRIPTION_STEP} >> .step.ng-binding")
+        self.assertEqual(page.calls.count(next_click), 1)
+        self.assertLess(
+            page.calls.index(("click", self.SUBJECT_CHOICE)),
+            page.calls.index(next_click),
+        )
+        self.assertLess(
+            page.calls.index(next_click),
+            page.calls.index(description_click),
+        )
         self.assertFalse(any("#chk7" in str(call) for call in page.calls))
 
     def test_subject_waits_for_an_exact_visible_choice(self):
@@ -958,6 +1020,17 @@ class ContentPageTests(unittest.TestCase):
 
         PlaywrightContentPage(page).select_subject("سایر موضوعات")
 
+        self.assertIn(("wait_for", "#btnAddSection", "visible"), page.calls)
+        self.assertLess(
+            page.calls.index(("click", "#btnAddSection")),
+            page.calls.index(
+                (
+                    "wait_for_function",
+                    60000,
+                    {"readySelector": "#jssPetitionRelief1", "stepTitle": None},
+                )
+            ),
+        )
         self.assertIn(
             ("click", "#jssPetitionRelief1 >> button.ui-select-toggle"),
             page.calls,
@@ -969,6 +1042,31 @@ class ContentPageTests(unittest.TestCase):
         self.assertIn(("wait_for", self.SUBJECT_CHOICE, "visible"), page.calls)
         self.assertIn(("click", self.SUBJECT_CHOICE), page.calls)
         self.assertIn(("wait_for", self.SUBJECT_SELECTED, "visible"), page.calls)
+
+    def test_subject_form_must_open_after_add(self):
+        page = _Page()
+        original_wait_for_function = page.wait_for_function
+
+        def wait_for_function(script, **kwargs):
+            target = kwargs.get("arg")
+            if isinstance(target, dict) and target.get("readySelector") == (
+                "#jssPetitionRelief1"
+            ):
+                raise TimeoutError
+            return original_wait_for_function(script, **kwargs)
+
+        page.wait_for_function = wait_for_function
+
+        with self.assertRaisesRegex(
+            LiveBrowserError, "declaration_subject_form_not_opened"
+        ):
+            PlaywrightContentPage(page).select_subject("سایر موضوعات")
+
+        self.assertIn(("click", "#btnAddSection"), page.calls)
+        self.assertNotIn(
+            ("click", "#jssPetitionRelief1 >> button.ui-select-toggle"),
+            page.calls,
+        )
 
     def test_missing_subject_choice_stops_before_description_navigation(self):
         page = _Page()
@@ -993,6 +1091,30 @@ class ContentPageTests(unittest.TestCase):
         ):
             PlaywrightContentPage(page).select_subject("سایر موضوعات")
 
+        self.assertFalse(any(
+            "normalize-space()='شرح'" in str(call) for call in page.calls
+        ))
+
+    def test_unconfirmed_subject_registration_stops_before_description(self):
+        page = _Page()
+        page.inner_texts[self.SUBJECT_CHOICE] = "سایر موضوعات اظهارنامه"
+        page.inner_texts[self.SUBJECT_SELECTED] = "سایر موضوعات اظهارنامه"
+        original_wait_for_function = page.wait_for_function
+
+        def wait_for_function(script, **kwargs):
+            if "!visible(document.querySelector('#jssPetitionRelief1'))" in script:
+                raise TimeoutError
+            return original_wait_for_function(script, **kwargs)
+
+        page.wait_for_function = wait_for_function
+
+        with self.assertRaisesRegex(
+            LiveBrowserError,
+            "declaration_subject_registration_not_completed",
+        ):
+            PlaywrightContentPage(page).select_subject("سایر موضوعات")
+
+        self.assertEqual(page.calls.count(("click", "#btnNext")), 1)
         self.assertFalse(any(
             "normalize-space()='شرح'" in str(call) for call in page.calls
         ))
