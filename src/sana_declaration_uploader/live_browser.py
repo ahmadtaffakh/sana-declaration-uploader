@@ -515,7 +515,18 @@ class PlaywrightRecipientPage:
             active_step = _active_form_step(page, {"وکیل", "نماینده"})
             if active_step is None:
                 break
-            if active_step == "نماینده":
+            next_button.click()
+            page.wait_for_timeout(500)
+            try:
+                _wait_for_any_active_form_step(
+                    page,
+                    {"وکیل", "نماینده", "موضوع اظهارنامه"},
+                    self.timeout_ms,
+                    failure_code="representative_next_step_not_active",
+                )
+            except LiveBrowserError:
+                if active_step != "نماینده":
+                    raise
                 _open_form_step(
                     page,
                     "موضوع اظهارنامه",
@@ -523,14 +534,6 @@ class PlaywrightRecipientPage:
                     self.timeout_ms,
                 )
                 return
-            next_button.click()
-            page.wait_for_timeout(500)
-            _wait_for_any_active_form_step(
-                page,
-                {"وکیل", "نماینده", "موضوع اظهارنامه"},
-                self.timeout_ms,
-                failure_code="representative_next_step_not_active",
-            )
         if _active_form_step(page, {"موضوع اظهارنامه"}) is None:
             _open_form_step(
                 page,
