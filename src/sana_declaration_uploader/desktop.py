@@ -11,6 +11,7 @@ from pathlib import Path
 from queue import Queue
 import sys
 from threading import Event
+import textwrap
 import traceback
 from typing import Callable
 
@@ -75,6 +76,8 @@ _ATTACHMENT_DEFAULTS = {
     "attachment_title": "",
     "attachment_number": "شماره مدرک",
     "attachment_date": "۱۴۰۵/۰۷/۲۰",
+    "shared_description": "",
+    "shared_attachments": "true",
 }
 _DECLARATION_DEFAULTS = {
     "subject": "سایر موضوعات",
@@ -290,6 +293,8 @@ def _save_attachment_settings(
     document_number: str,
     document_date: str,
     *,
+    shared_description: bool = True,
+    shared_attachments: bool = True,
     path: Path | None = None,
 ) -> None:
     target = path or _attachment_settings_path()
@@ -300,6 +305,8 @@ def _save_attachment_settings(
             "attachment_title": title.strip(),
             "attachment_number": document_number.strip(),
             "attachment_date": document_date.strip(),
+            "shared_description": str(shared_description).lower(),
+            "shared_attachments": str(shared_attachments).lower(),
         },
     )
 
@@ -480,6 +487,21 @@ def _days_since_related_date(value: str, *, today: date | None = None) -> int | 
     return ((today or date.today()) - parsed).days
 
 
+def _two_line_preview(value: str, width: int = 52) -> str:
+    lines = textwrap.wrap(value.strip(), width=width, break_long_words=True)
+    if len(lines) <= 2:
+        return "\n".join(lines)
+    second = lines[1]
+    return f"{lines[0]}\n{second[:max(1, width - 1)].rstrip()}…"
+
+
+def _saved_registration(source_path: Path) -> dict[str, str] | None:
+    try:
+        return read_saved_result(source_path.parent, source_path)
+    except ResultPersistenceError:
+        return {"tracking_code": "رسید نامعتبر", "registered_at": ""}
+
+
 class FileSelectionPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
@@ -555,7 +577,25 @@ class FileSelectionPage(QWizardPage):
             self.file_list.addItem(item)
             existing.add(str(resolved))
         self._update_file_count()
+        self.refresh_registration_results()
         self.completeChanged.emit()
+
+    def refresh_registration_results(self) -> None:
+        for index in range(self.file_list.count()):
+            item = self.file_list.item(index)
+            source_path = Path(item.data(Qt.ItemDataRole.UserRole))
+            result = _saved_registration(source_path)
+            item.setBackground(QColor("#FFF0C2") if result else QColor())
+            if result:
+                code = result["tracking_code"] or "نامشخص"
+                registered = _registration_date_display(result["registered_at"])
+                item.setText(f"{source_path.name} — کد رهگیری: {code} — تاریخ ثبت: {registered}")
+                item.setToolTip(
+                    f"فایل: {source_path}\nکد رهگیری: {code}\nتاریخ ثبت: {registered}"
+                )
+            else:
+                item.setText(source_path.name)
+                item.setToolTip(str(source_path))
 
     def _remove_selected(self) -> None:
         for item in self.file_list.selectedItems():
@@ -584,6 +624,8 @@ class RecipientReviewPage(QWizardPage):
         "نام",
         "نام خانوادگی",
         "نام فایل مرتبط",
+        "کد رهگیری",
+        "تاریخ ثبت",
     )
     COLUMN_WIDTHS = {
         "حذف": 48,
@@ -599,6 +641,8 @@ class RecipientReviewPage(QWizardPage):
         "نام": 110,
         "نام خانوادگی": 135,
         "نام فایل مرتبط": 175,
+        "کد رهگیری": 160,
+        "تاریخ ثبت": 110,
     }
 
     def __init__(self) -> None:
@@ -679,13 +723,20 @@ class RecipientReviewPage(QWizardPage):
             (candidate.first_name or suggested_first) if candidate else "",
             (candidate.last_name or suggested_last) if candidate else "",
             candidate.source_path.name if candidate else "دستی",
+            "",
+            "",
         )
         for column, value in enumerate(values):
             item = QTableWidgetItem()
             item.setData(Qt.ItemDataRole.DisplayRole, value if value is not None else "")
+            header_name = self.HEADERS[column]
+            if header_name in ("آدرس", "شاهد استخراج"):
+                full_text = str(value or "")
+                item.setText(_two_line_preview(full_text))
+                item.setToolTip(full_text)
             if self.HEADERS[column] in (
                 "حذف", "بازکردن", "تعداد روز گذشته از آن تاریخ",
-                "شاهد استخراج", "نام فایل مرتبط",
+                "شاهد استخراج", "نام فایل مرتبط", "کد رهگیری", "تاریخ ثبت",
             ):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             if self.HEADERS[column] == "تاریخ اظهارنامه مرتبط":
@@ -717,6 +768,25 @@ class RecipientReviewPage(QWizardPage):
         self.table.setCellWidget(row, self.HEADERS.index("حذف"), remove_widget)
         self.table.blockSignals(signals_blocked)
         self.table.setSortingEnabled(sorting)
+        self.refresh_registration_results()
+
+    def refresh_registration_results(self) -> None:
+        for row in range(self.table.rowCount()):
+            source_item = self.table.item(row, self.HEADERS.index("نام فایل مرتبط"))
+            candidate = source_item.data(Qt.ItemDataRole.UserRole) if source_item else None
+            if not isinstance(candidate, RecipientCandidate):
+                continue
+            result = _saved_registration(candidate.source_path)
+            if result is None:
+                continue
+            code_item = self.table.item(row, self.HEADERS.index("کد رهگیری"))
+            date_item = self.table.item(row, self.HEADERS.index("تاریخ ثبت"))
+            code_item.setText(result["tracking_code"] or "نامشخص")
+            date_item.setText(_registration_date_display(result["registered_at"]))
+            for column in range(self.table.columnCount()):
+                item = self.table.item(row, column)
+                if item is not None:
+                    item.setBackground(QColor("#FFF0C2"))
 
     def candidates(self) -> tuple[RecipientCandidate, ...]:
         result = []
@@ -1097,11 +1167,17 @@ class DeclarationContentPage(QWizardPage):
         self.shared_checkbox = QCheckBox(
             "موضوع و شرح برای همهٔ اشخاص مشترک است"
         )
-        self.shared_checkbox.setChecked(True)
+        self.shared_checkbox.setChecked(
+            self._attachment_defaults.get("shared_description", "true").lower()
+            != "false"
+        )
         self.shared_attachments_checkbox = QCheckBox(
             "فایل‌ها و مشخصات پیوست برای همهٔ اشخاص مشترک است"
         )
-        self.shared_attachments_checkbox.setChecked(True)
+        self.shared_attachments_checkbox.setChecked(
+            self._attachment_defaults.get("shared_attachments", "true").lower()
+            == "true"
+        )
         self.recipient_combo = QComboBox()
         self.active_recipient_label = QLabel()
         self.active_recipient_label.setStyleSheet(
@@ -1236,12 +1312,22 @@ class DeclarationContentPage(QWizardPage):
                 (str(payload["subject"]), str(payload["description"]))
                 for payload in seeded
             }
-            use_shared_description = len(shared_content) <= 1
+            saved_shared_description = self._attachment_defaults.get(
+                "shared_description", ""
+            ).lower()
+            use_shared_description = (
+                len(shared_content) <= 1
+                if not saved_shared_description
+                else saved_shared_description == "true"
+            )
             self.shared_checkbox.blockSignals(True)
             self.shared_checkbox.setChecked(use_shared_description)
             self.shared_checkbox.blockSignals(False)
             self.shared_attachments_checkbox.blockSignals(True)
-            self.shared_attachments_checkbox.setChecked(True)
+            self.shared_attachments_checkbox.setChecked(
+                self._attachment_defaults.get("shared_attachments", "true").lower()
+                == "true"
+            )
             self.shared_attachments_checkbox.blockSignals(False)
             self._payloads.update(
                 (index, self._copy_payload(payload))
@@ -1326,6 +1412,7 @@ class DeclarationContentPage(QWizardPage):
             payload["subject"] = current["subject"]
             payload["description"] = current["description"]
         self._load_active()
+        self._save_attachment_defaults()
 
     def _attachment_scope_changed(self, _shared: bool) -> None:
         current = self._editor_payload()
@@ -1336,6 +1423,7 @@ class DeclarationContentPage(QWizardPage):
             ):
                 payload[name] = current[name]
         self._load_active()
+        self._save_attachment_defaults()
 
     def _rebuild_recipient_combo(self) -> None:
         self.recipient_combo.blockSignals(True)
@@ -1460,11 +1548,13 @@ class DeclarationContentPage(QWizardPage):
                 )
                 return False
         self._save_declaration_defaults()
+        self._save_attachment_defaults()
         return True
 
     def cleanupPage(self) -> None:
         self._save_active()
         self._save_declaration_defaults()
+        self._save_attachment_defaults()
 
     def _empty_payload(self) -> dict[str, object]:
         return {
@@ -1491,12 +1581,18 @@ class DeclarationContentPage(QWizardPage):
             "attachment_title": self.attachment_title.text().strip(),
             "attachment_number": self.attachment_number.text().strip(),
             "attachment_date": self.attachment_date.text().strip(),
+            "shared_description": str(self.shared_checkbox.isChecked()).lower(),
+            "shared_attachments": str(
+                self.shared_attachments_checkbox.isChecked()
+            ).lower(),
         }
         _save_attachment_settings(
             self._attachment_defaults["attachment_kind"],
             self._attachment_defaults["attachment_title"],
             self._attachment_defaults["attachment_number"],
             self._attachment_defaults["attachment_date"],
+            shared_description=self.shared_checkbox.isChecked(),
+            shared_attachments=self.shared_attachments_checkbox.isChecked(),
         )
 
     @staticmethod
@@ -1833,6 +1929,13 @@ class RecipientWizard(QWizard):
         self._background_progress: Callable[[str], None] | None = None
         self._background_result: object | None = None
         self._background_error: tuple[Exception, str] | None = None
+        self._file_extraction_thread: QThread | None = None
+        self._file_extraction_worker: _BackgroundWorker | None = None
+        self._file_extraction_dialog: QProgressDialog | None = None
+        self._file_extraction_result: object | None = None
+        self._file_extraction_error: tuple[Exception, str] | None = None
+        self._file_extraction_succeeded: Callable[[object], None] | None = None
+        self._file_extraction_failed: Callable[[Exception, str], None] | None = None
         self._registration_stop_event: Event | None = None
         self.currentIdChanged.connect(self._page_changed)
         self.otp_requested.connect(self._show_otp_prompt)
@@ -1918,6 +2021,8 @@ class RecipientWizard(QWizard):
             self._api_browser_ready = True
             self._api_request_queue = None
             self.preprocessing_page.refresh_registration_results()
+            self.review_page.refresh_registration_results()
+            self.files_page.refresh_registration_results()
             self.login_page.append_output(
                 "درخواست API ناموفق شد؛ مرورگر برای بررسی باز می‌ماند. "
                 "درخواست تازه تا بستن مرورگر پذیرفته نمی‌شود.",
@@ -1929,6 +2034,8 @@ class RecipientWizard(QWizard):
         if message == "__api_browser_ready_to_close__":
             self._api_browser_ready = True
             self.preprocessing_page.refresh_registration_results()
+            self.review_page.refresh_registration_results()
+            self.files_page.refresh_registration_results()
             self.login_page.append_output(
                 "درخواست فعلی پایان یافت؛ نشست مرورگر باز و آمادهٔ درخواست بعدی است. "
                 "برای بستن نشست «خروج از مرورگر» را بزنید.",
@@ -2006,13 +2113,10 @@ class RecipientWizard(QWizard):
     def _set_api_session_controls_enabled(
         self, *, allow_requests: bool = True
     ) -> None:
-        for role in (
-            QWizard.WizardButton.BackButton,
-            QWizard.WizardButton.NextButton,
-            QWizard.WizardButton.FinishButton,
-            QWizard.WizardButton.CancelButton,
-        ):
-            self.button(role).setEnabled(False)
+        self.button(QWizard.WizardButton.BackButton).setEnabled(True)
+        self.button(QWizard.WizardButton.NextButton).setEnabled(True)
+        self.button(QWizard.WizardButton.FinishButton).setEnabled(False)
+        self.button(QWizard.WizardButton.CancelButton).setEnabled(False)
         self.login_page.api_test_button.setEnabled(allow_requests)
         self.login_page.close_browser_button.setEnabled(True)
         self.login_page.close_browser_button.setVisible(True)
@@ -2401,6 +2505,8 @@ class RecipientWizard(QWizard):
 
         if failures or stopped:
             self.preprocessing_page.refresh_registration_results()
+            self.review_page.refresh_registration_results()
+            self.files_page.refresh_registration_results()
             QMessageBox.warning(
                 self,
                 (
@@ -2419,6 +2525,8 @@ class RecipientWizard(QWizard):
             return successful > 0 and stopped == 0
 
         self.preprocessing_page.refresh_registration_results()
+        self.review_page.refresh_registration_results()
+        self.files_page.refresh_registration_results()
         QMessageBox.information(
             self,
             "ثبت کامل شد",
@@ -2431,6 +2539,7 @@ class RecipientWizard(QWizard):
         if page_id == self.files_page_id:
             self._loaded_paths = ()
             self._preprocess_source = ()
+            self.files_page.refresh_registration_results()
             return
         if page_id == self.preprocessing_page_id:
             source = self.review_page.candidates()
@@ -2446,6 +2555,7 @@ class RecipientWizard(QWizard):
         if page_id != self.review_page_id:
             return
         selected_paths = tuple(self.files_page.selected_paths())
+        self.review_page.refresh_registration_results()
         if selected_paths == self._loaded_paths:
             return
 
@@ -2463,12 +2573,82 @@ class RecipientWizard(QWizard):
             self.review_page.set_candidates(())
             QMessageBox.warning(self, "خطا در استخراج", str(exc))
 
-        self._start_background(
-            "در حال بارگذاری و استخراج فایل‌ها...",
-            task,
-            succeeded,
-            failed,
-        )
+        if self._api_session_active() and self._background_thread is not None:
+            self._start_session_extraction(task, succeeded, failed)
+        else:
+            self._start_background(
+                "در حال بارگذاری و استخراج فایل‌ها...",
+                task,
+                succeeded,
+                failed,
+            )
+
+    def _start_session_extraction(
+        self,
+        task: Callable[[Callable[[str], None]], object],
+        succeeded: Callable[[object], None],
+        failed: Callable[[Exception, str], None],
+    ) -> None:
+        if self._file_extraction_thread is not None:
+            return
+        dialog = QProgressDialog("در حال خواندن و استخراج فایل‌های جدید...", "", 0, 0, self)
+        dialog.setCancelButton(None)
+        dialog.setWindowTitle("استخراج فایل‌ها")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        thread = QThread(self)
+        worker = _BackgroundWorker(task)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._session_extraction_succeeded)
+        worker.failed.connect(self._session_extraction_failed)
+        worker.succeeded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._session_extraction_thread_finished)
+        self._file_extraction_thread = thread
+        self._file_extraction_worker = worker
+        self._file_extraction_dialog = dialog
+        self._file_extraction_result = None
+        self._file_extraction_error = None
+        self._file_extraction_succeeded = succeeded
+        self._file_extraction_failed = failed
+        dialog.show()
+        thread.start()
+
+    @Slot(object)
+    def _session_extraction_succeeded(self, result: object) -> None:
+        self._file_extraction_result = result
+
+    @Slot(object, str)
+    def _session_extraction_failed(self, exc: Exception, details: str) -> None:
+        self._file_extraction_error = (exc, details)
+
+    @Slot()
+    def _session_extraction_thread_finished(self) -> None:
+        result, error = self._file_extraction_result, self._file_extraction_error
+        succeeded = self._file_extraction_succeeded
+        failed = self._file_extraction_failed
+        self._file_extraction_thread = None
+        self._file_extraction_worker = None
+        self._file_extraction_result = None
+        self._file_extraction_error = None
+        self._file_extraction_succeeded = None
+        self._file_extraction_failed = None
+        if self._file_extraction_dialog is not None:
+            self._file_extraction_dialog.close()
+            self._file_extraction_dialog.deleteLater()
+            self._file_extraction_dialog = None
+        if error is not None:
+            if failed is not None:
+                failed(*error)
+        else:
+            if succeeded is not None:
+                succeeded(result)
 
 
 def main() -> int:

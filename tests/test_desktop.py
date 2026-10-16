@@ -455,7 +455,7 @@ class RecipientWizardTests(unittest.TestCase):
             "حذف", "بازکردن", "تاریخ اظهارنامه مرتبط",
             "تعداد روز گذشته از آن تاریخ", "نام و نام خانوادگی", "نام پدر",
             "کد ملی", "شماره اظهارنامه", "آدرس", "شاهد استخراج", "نام",
-            "نام خانوادگی", "نام فایل مرتبط",
+            "نام خانوادگی", "نام فایل مرتبط", "کد رهگیری", "تاریخ ثبت",
         ))
         self.assertTrue(wizard.review_page.table.isSortingEnabled())
         self.assertTrue(wizard.review_page.table.wordWrap())
@@ -681,19 +681,30 @@ class RecipientWizardTests(unittest.TestCase):
         page.close()
 
     def test_common_content_is_seeded_for_each_person_when_scope_changes(self) -> None:
-        page = DeclarationContentPage()
-        page.set_candidates((
-            RecipientCandidate(source_path=Path("one.pdf"), full_name="شخص اول"),
-            RecipientCandidate(source_path=Path("two.pdf"), full_name="شخص دوم"),
-        ))
-        page.description.setPlainText("شرح مشترک")
+        with patch(
+            "sana_declaration_uploader.desktop._load_attachment_settings",
+            return_value={
+                "attachment_kind": "سایر دلایل و مستندات",
+                "attachment_title": "",
+                "attachment_number": "شماره مدرک",
+                "attachment_date": "۱۴۰۵/۰۷/۲۰",
+                "shared_description": "true",
+                "shared_attachments": "true",
+            },
+        ):
+            page = DeclarationContentPage()
+            page.set_candidates((
+                RecipientCandidate(source_path=Path("one.pdf"), full_name="شخص اول"),
+                RecipientCandidate(source_path=Path("two.pdf"), full_name="شخص دوم"),
+            ))
+            page.description.setPlainText("شرح مشترک")
 
-        page.shared_checkbox.setChecked(False)
+            page.shared_checkbox.setChecked(False)
 
-        payloads = page.payloads()
-        self.assertEqual(payloads[0]["description"], "شرح مشترک")
-        self.assertEqual(payloads[1]["description"], "شرح مشترک")
-        self.assertTrue(page.recipient_combo.isEnabled())
+            payloads = page.payloads()
+            self.assertEqual(payloads[0]["description"], "شرح مشترک")
+            self.assertEqual(payloads[1]["description"], "شرح مشترک")
+            self.assertTrue(page.recipient_combo.isEnabled())
 
     def test_content_page_uses_compact_right_side_fields_and_tall_description(self) -> None:
         page = DeclarationContentPage()
@@ -913,7 +924,7 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertIs(wizard._api_browser_close_event, close_event)
         self.assertFalse(wizard.login_page.close_browser_button.isEnabled())
 
-    def test_open_api_session_only_enables_request_and_close_actions(self) -> None:
+    def test_open_api_session_allows_navigation_for_new_file_extraction(self) -> None:
         wizard = RecipientWizard()
         wizard._api_browser_ready = True
 
@@ -921,10 +932,119 @@ class RecipientWizardTests(unittest.TestCase):
 
         self.assertTrue(wizard.login_page.api_test_button.isEnabled())
         self.assertTrue(wizard.login_page.close_browser_button.isEnabled())
+        self.assertTrue(wizard.button(QWizard.WizardButton.BackButton).isEnabled())
+        self.assertTrue(wizard.button(QWizard.WizardButton.NextButton).isEnabled())
         self.assertFalse(
             wizard.button(QWizard.WizardButton.FinishButton).isEnabled()
         )
         self.assertTrue(wizard.login_page.stop_button.isHidden())
+
+    def test_new_file_extraction_uses_separate_worker_while_api_session_is_open(self) -> None:
+        with TemporaryDirectory() as directory:
+            source_path = Path(directory) / "new.txt"
+            source_path.write_text("متن", encoding="utf-8")
+            wizard = RecipientWizard()
+            wizard._api_request_queue = object()
+            wizard._api_browser_close_event = threading.Event()
+            wizard._background_thread = object()
+            wizard.files_page._add_paths((source_path,))
+
+            with (
+                patch.object(wizard, "_start_session_extraction") as start_extraction,
+                patch.object(wizard, "_start_background") as start_background,
+            ):
+                wizard._page_changed(wizard.review_page_id)
+
+            start_extraction.assert_called_once()
+            start_background.assert_not_called()
+
+    def test_separate_file_extraction_worker_returns_result_on_ui_thread(self) -> None:
+        wizard = RecipientWizard()
+        results = []
+        failures = []
+
+        wizard._start_session_extraction(
+            lambda _progress: ("candidate",), results.append,
+            lambda exc, _details: failures.append(exc),
+        )
+        deadline = time.monotonic() + 3.0
+        while wizard._file_extraction_thread is not None and time.monotonic() < deadline:
+            self.app.processEvents()
+            thread = wizard._file_extraction_thread
+            if thread is not None:
+                thread.wait(10)
+        self.app.processEvents()
+
+        self.assertIsNone(wizard._file_extraction_thread)
+        self.assertEqual(results, [("candidate",)])
+        self.assertEqual(failures, [])
+
+    def test_review_page_shows_saved_tracking_and_two_line_tooltips(self) -> None:
+        with TemporaryDirectory() as directory:
+            source_path = Path(directory) / "input.docx"
+            (Path(directory) / "results.json").write_text(json.dumps({
+                "schema_version": 1,
+                "declarations": {
+                    "input.docx": {"registrations": [{
+                        "tracking_code": "1405111222333444",
+                        "registered_at": "2026-10-16T10:20:00+03:30",
+                    }]}
+                },
+            }), encoding="utf-8")
+            address = "نشانی نمونه " * 30
+            evidence = "شاخص استخراج نمونه " * 30
+            page = RecipientReviewPage()
+            page.set_candidates((RecipientCandidate(
+                source_path=source_path,
+                address=address,
+                evidence=evidence,
+            ),))
+
+            table = page.table
+            self.assertEqual(
+                table.item(0, page.HEADERS.index("کد رهگیری")).text(),
+                "1405111222333444",
+            )
+            self.assertEqual(
+                table.item(0, page.HEADERS.index("تاریخ ثبت")).text(), "1405/07/24"
+            )
+            self.assertEqual(
+                table.item(0, page.HEADERS.index("آدرس")).toolTip(), address
+            )
+            self.assertEqual(
+                table.item(0, page.HEADERS.index("شاهد استخراج")).toolTip(), evidence
+            )
+            for header in ("آدرس", "شاهد استخراج"):
+                self.assertLessEqual(
+                    table.item(0, page.HEADERS.index(header)).text().count("\n"), 1
+                )
+            self.assertEqual(
+                table.item(0, page.HEADERS.index("نام و نام خانوادگی"))
+                .background().color().name(),
+                "#fff0c2",
+            )
+
+    def test_file_selection_page_shows_saved_tracking_result(self) -> None:
+        with TemporaryDirectory() as directory:
+            source_path = Path(directory) / "input.txt"
+            source_path.write_text("متن", encoding="utf-8")
+            (Path(directory) / "results.json").write_text(json.dumps({
+                "schema_version": 1,
+                "declarations": {
+                    "input.txt": {"registrations": [{
+                        "tracking_code": "1405111222333444",
+                        "registered_at": "2026-10-16T10:20:00+03:30",
+                    }]}
+                },
+            }), encoding="utf-8")
+            wizard = RecipientWizard()
+
+            wizard.files_page._add_paths((source_path,))
+
+            item = wizard.files_page.file_list.item(0)
+            self.assertIn("1405111222333444", item.text())
+            self.assertIn("1405/07/24", item.text())
+            self.assertEqual(item.background().color().name(), "#fff0c2")
 
     def test_declaration_fields_survive_back_navigation_and_reentry(self) -> None:
         with (
@@ -1014,7 +1134,8 @@ class RecipientWizardTests(unittest.TestCase):
 
             _save_attachment_settings(
                 "نوع دلخواه", "عنوان دلخواه", "شماره دلخواه",
-                "۱۴۰۵/۰۷/۲۱", path=path
+                "۱۴۰۵/۰۷/۲۱", shared_description=False,
+                shared_attachments=False, path=path
             )
 
             self.assertEqual(_load_attachment_settings(path), {
@@ -1022,7 +1143,18 @@ class RecipientWizardTests(unittest.TestCase):
                 "attachment_title": "عنوان دلخواه",
                 "attachment_number": "شماره دلخواه",
                 "attachment_date": "۱۴۰۵/۰۷/۲۱",
+                "shared_description": "false",
+                "shared_attachments": "false",
             })
+
+            defaults = _load_attachment_settings(path)
+            with patch(
+                "sana_declaration_uploader.desktop._load_attachment_settings",
+                return_value=defaults,
+            ):
+                page = DeclarationContentPage()
+            self.assertFalse(page.shared_checkbox.isChecked())
+            self.assertFalse(page.shared_attachments_checkbox.isChecked())
 
     def test_declaration_defaults_are_persisted_for_the_next_run(self) -> None:
         with TemporaryDirectory() as directory:
@@ -1047,6 +1179,8 @@ class RecipientWizardTests(unittest.TestCase):
                     "attachment_title": "",
                     "attachment_number": "شماره مدرک",
                     "attachment_date": "۱۴۰۵/۰۷/۲۰",
+                    "shared_description": "",
+                    "shared_attachments": "true",
                 },
             ),
             (
@@ -1080,6 +1214,8 @@ class RecipientWizardTests(unittest.TestCase):
                 "attachment_title": "",
                 "attachment_number": "شماره مدرک",
                 "attachment_date": "۱۴۰۵/۰۷/۲۰",
+                "shared_description": "",
+                "shared_attachments": "true",
             })
 
             declaration_path = Path(directory) / "declaration-defaults.json"
@@ -1147,7 +1283,9 @@ class RecipientWizardTests(unittest.TestCase):
             page.attachment_title.editingFinished.emit()
 
             save.assert_called_once_with(
-                "نوع جدید", "عنوان جدید", "۴۲", "۱۴۰۵/۰۷/۲۲"
+                "نوع جدید", "عنوان جدید", "۴۲", "۱۴۰۵/۰۷/۲۲",
+                shared_description=True,
+                shared_attachments=True,
             )
 
     def test_finish_invokes_registration_instead_of_login_check(self) -> None:
