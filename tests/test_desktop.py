@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from sana_declaration_uploader.desktop import (
     DeclarationContentPage,
+    PreprocessingPage,
     RecipientReviewPage,
     RecipientWizard,
     _build_desktop_drafts,
@@ -599,6 +600,21 @@ class RecipientWizardTests(unittest.TestCase):
         )
         self.assertTrue(wizard.review_page.table.alternatingRowColors())
         self.assertTrue(wizard.preprocessing_page.table.alternatingRowColors())
+
+    def test_preprocessing_delete_action_is_compact_and_right_aligned(self) -> None:
+        page = PreprocessingPage()
+        page.resize(900, 500)
+        page.show()
+        self.app.processEvents()
+
+        button = page.findChild(QPushButton, "TableIconButton")
+        self.assertIsNotNone(button)
+        assert button is not None
+        self.assertEqual(button.size(), QSize(24, 24))
+        self.assertEqual(button.text(), "")
+        self.assertEqual(button.toolTip(), "حذف ردیف")
+        self.assertGreater(button.mapTo(page, button.rect().topLeft()).x(), page.width() // 2)
+        page.close()
 
     def test_common_content_is_seeded_for_each_person_when_scope_changes(self) -> None:
         page = DeclarationContentPage()

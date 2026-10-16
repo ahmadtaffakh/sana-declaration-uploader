@@ -454,17 +454,25 @@ def extract_address_details(
     postal_code = postal_match.group(1) if postal_match else ""
 
     remainder = normalized
-    cursor = 0
-    for location in (province, county, city):
-        value = _normalize_text(location).strip()
-        value = re.sub(r"^(?:استان|شهرستان|شهر)\s*", "", value)
-        if not value:
-            continue
-        match = re.search(rf"(?<!\w){re.escape(value)}(?!\w)", remainder[cursor:])
-        if match:
-            cursor += match.end()
-    if cursor:
-        remainder = remainder[cursor:]
+    locations = tuple(
+        value for value in (
+            province.removeprefix("استان "),
+            county.removeprefix("شهرستان "),
+            city.removeprefix("شهر "),
+            province,
+            county,
+            f"شهر {city.removeprefix('شهر ')}" if city else "",
+            city,
+        ) if value
+    )
+    for location in sorted(
+        {_normalize_text(value).strip() for value in locations if value.strip()},
+        key=len,
+        reverse=True,
+    ):
+        remainder = re.sub(
+            rf"(?<!\w){re.escape(location)}(?!\w)", " ", remainder
+        )
 
     street_match = re.search(
         r"خیابان\s*اصلی\s*[:：\-]?\s*(.*)", remainder
@@ -473,6 +481,15 @@ def extract_address_details(
     street = re.sub(
         r"(?:کد\s*پستی|کدپستی)\s*[:：\-]?\s*[0-9]{10}", "", street
     )
+    street = re.sub(
+        r"(?:تلفن|موبایل|همراه|شماره\s*تماس)\s*[:：\-]?.*$", "", street
+    )
+    street = re.sub(
+        r"(?:،|,|\s+)(?:پلاک|واحد|طبقه|منزل|ساختمان)\s*[:：\-]?.*$",
+        "",
+        street,
+    )
+    street = re.sub(r"\s+", " ", street)
     street = street.strip(" \t\r\n-‐‑‒–—،,؛.:")
     return street or "خیابان اصلی", postal_code
 

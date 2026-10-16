@@ -775,7 +775,9 @@ class PreprocessingPage(QWizardPage):
         self._lookup_dir = Path(__file__).resolve().parents[2] / "lookups"
         self.table.itemChanged.connect(self._location_changed)
 
-        remove_button = QPushButton("حذف ردیف")
+        remove_widget, remove_button = _table_icon_action(
+            QStyle.StandardPixmap.SP_TrashIcon, "حذف ردیف"
+        )
         remove_button.clicked.connect(self._remove_selected)
 
         guidance = QLabel(
@@ -790,7 +792,7 @@ class PreprocessingPage(QWizardPage):
         layout = QVBoxLayout(self)
         layout.addWidget(guidance)
         layout.addWidget(self.table)
-        layout.addWidget(remove_button)
+        layout.addWidget(remove_widget, alignment=Qt.AlignmentFlag.AlignRight)
 
     def set_candidates(self, candidates: tuple[RecipientCandidate, ...]) -> None:
         self.table.blockSignals(True)

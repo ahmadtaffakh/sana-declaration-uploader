@@ -38,6 +38,26 @@ class RecipientExtractionTests(unittest.TestCase):
         )
         self.assertEqual(extract_address_details(""), ("خیابان اصلی", ""))
 
+    def test_main_street_removes_city_and_non_street_address_parts(self) -> None:
+        self.assertEqual(
+            extract_address_details(
+                "شهر تهران، خیابان اصلی تهران، خیابان ولیعصر، پلاک ۱۲، "
+                "واحد ۳، تلفن: ۰۲۱۱۲۳۴۵۶۷۸",
+                city="شهر تهران",
+            ),
+            ("خیابان ولیعصر", ""),
+        )
+
+    def test_main_street_keeps_street_name_and_cleans_separators(self) -> None:
+        self.assertEqual(
+            extract_address_details(
+                "استان تهران - شهرستان تهران - شهر تهران - خیابان اصلی: "
+                "تهران، بلوار کشاورز، پلاک ۱۰ - کدپستی ۱۲۳۴۵۶۷۸۹۰",
+                "استان تهران", "شهرستان تهران", "تهران",
+            ),
+            ("بلوار کشاورز", "1234567890"),
+        )
+
     def test_cleans_organization_prefix_and_keeps_multiword_given_name(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "declarations.docx"
