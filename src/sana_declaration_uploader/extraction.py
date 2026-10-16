@@ -372,6 +372,8 @@ def _split_natural_name(value: str, person_type: str) -> tuple[str, str]:
     if person_type == "legal":
         return "", ""
     parts = value.split()
+    if len(parts) >= 4:
+        return parts[0], " ".join(parts[1:])
     return (" ".join(parts[:-1]), parts[-1]) if len(parts) >= 2 else (value.strip(), "")
 
 

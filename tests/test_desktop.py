@@ -479,6 +479,19 @@ class RecipientWizardTests(unittest.TestCase):
 
             open_url.assert_called_once()
 
+    def test_review_splits_long_full_name_before_compound_family_name(self) -> None:
+        page = RecipientReviewPage()
+        page.set_candidates((RecipientCandidate(
+            source_path=Path("sample.docx"),
+            full_name="مریم شمسیان جهان بخش",
+        ),))
+
+        self.assertEqual(page.table.item(0, page.HEADERS.index("نام")).text(), "مریم")
+        self.assertEqual(
+            page.table.item(0, page.HEADERS.index("نام خانوادگی")).text(),
+            "شمسیان جهان بخش",
+        )
+
     def test_review_row_actions_use_compact_accessible_icons(self) -> None:
         page = RecipientReviewPage()
         page.set_candidates((RecipientCandidate(

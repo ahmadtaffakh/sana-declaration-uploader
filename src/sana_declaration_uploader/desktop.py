@@ -346,6 +346,8 @@ def _split_full_name(full_name: str) -> tuple[str, str]:
     parts = full_name.split()
     if len(parts) < 2:
         return (full_name.strip(), "")
+    if len(parts) >= 4:
+        return (parts[0], " ".join(parts[1:]))
     return (" ".join(parts[:-1]), parts[-1])
 
 

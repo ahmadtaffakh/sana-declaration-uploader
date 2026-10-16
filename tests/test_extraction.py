@@ -7,6 +7,7 @@ from docx import Document
 
 from sana_declaration_uploader.extraction import (
     DocumentExtractionError,
+    _split_natural_name,
     extract_address_details,
     extract_recipient,
     extract_recipient_candidates,
@@ -15,6 +16,12 @@ from sana_declaration_uploader.extraction import (
 
 
 class RecipientExtractionTests(unittest.TestCase):
+    def test_splits_four_word_name_as_given_name_and_compound_family_name(self) -> None:
+        self.assertEqual(
+            _split_natural_name("مریم شمسیان جهان بخش", "natural"),
+            ("مریم", "شمسیان جهان بخش"),
+        )
+
     def test_extracts_street_and_postal_code_after_city(self) -> None:
         address = (
             "استان خوزستان - شهرستان امیدیه - شهر امیدیه - "
