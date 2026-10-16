@@ -6,6 +6,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+from queue import Empty, Queue
 from threading import Event
 from typing import Mapping
 import unicodedata
@@ -21,13 +22,14 @@ from .live_browser import (
     login_self_service,
 )
 from .lookups import LookupResolutionError, resolve_captured_jurisdiction_fields
-from .models import DeclarationDraft
+from .models import DeclarationDraft, UploadResult
 from .petition_api import (
     SetPetitionDataResult,
     build_setpetitiondata_payload,
     save_setpetitiondata_debug_text,
     submit_one_petition_data,
 )
+from .results import RESULTS_FILENAME, save_verified_result
 
 
 def run_live_setpetitiondata_batch(
@@ -41,6 +43,11 @@ def run_live_setpetitiondata_batch(
     headless: bool = False,
     timeout_ms: int = 60_000,
     progress: ProgressCallback | None = None,
+    on_result: Callable[[DeclarationDraft, SetPetitionDataResult], None] | None = None,
+    pending_requests: Queue | None = None,
+    reauth_credentials_provider: Callable[
+        [LoginCredentials], LoginCredentials | None
+    ] | None = None,
     close_browser_event: Event,
 ) -> tuple[SetPetitionDataResult, ...] | None:
     """Submit rows sequentially; advance only after a verified tracking code."""
@@ -54,30 +61,9 @@ def run_live_setpetitiondata_batch(
 
     if not drafts:
         raise LiveBrowserError("set_petition_data_recipients_missing")
-    petition_payloads = []
-    for index, draft in enumerate(drafts, start=1):
-        _validate_live_draft(draft)
-        try:
-            jurisdiction = resolve_captured_jurisdiction_fields(
-                draft.fields, lookup_dir
-            )
-        except LookupResolutionError as exc:
-            raise LiveBrowserError(str(exc)) from exc
-        payload_draft = replace(draft, fields={**draft.fields, **jurisdiction})
-        petition_data = build_setpetitiondata_payload(
-            petition_template, payload_draft
-        )
-        debug_path = _request_path_for_row(request_text_path, index, len(drafts))
-        body_path, command_path = save_setpetitiondata_debug_text(
-            petition_data, debug_path
-        )
-        petition_payloads.append(petition_data)
-        _report(
-            progress,
-            f"[ردیف {index} از {len(drafts)}] متن درخواست: {body_path}\n"
-            f"دستور curl: {command_path}\n"
-            f"کد کنسول: {body_path.with_name(f'{body_path.stem}.console.txt')}",
-        )
+    petition_payloads = _prepare_petition_payloads(
+        drafts, petition_template, request_text_path, lookup_dir, progress
+    )
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel="chrome", headless=headless)
         context = browser.new_context()
@@ -95,65 +81,55 @@ def run_live_setpetitiondata_batch(
             )
             if not confirm():
                 return None
-            results = []
-            for index, petition_data in enumerate(petition_payloads, start=1):
-                result = _run_logged_stage(
-                    progress,
-                    f"ثبت موقت SetPetitionData ردیف {index} از {len(drafts)}",
-                    lambda: submit_one_petition_data(page, petition_data),
-                )
-                results.append(result)
-                _report(
-                    progress,
-                    f"[ردیف {index} از {len(drafts)}] ثبت موفق؛ "
-                    f"کد رهگیری: {result.tracking_code}؛ "
-                    f"شماره اظهارنامه: {result.petition_number}",
-                )
-                draft = drafts[index - 1]
-                if draft.attachments:
+            current_credentials = [credentials]
+            ensure_authenticated = _authentication_guard(
+                page,
+                current_credentials,
+                reauth_credentials_provider,
+                timeout_ms,
+                progress,
+            )
+            results = _submit_petition_payloads(
+                page, drafts, petition_payloads, ensure_authenticated,
+                progress, on_result,
+            )
+            all_results = list(results)
+            while pending_requests is not None and not close_browser_event.is_set():
+                _report(progress, "__api_browser_ready_to_close__")
+                queued = None
+                while queued is None and not close_browser_event.is_set():
                     try:
-                        _attach_draft_files(
-                            page,
-                            petition_data,
-                            result,
-                            draft,
-                            index,
-                            len(drafts),
-                            progress,
-                        )
-                    except Exception as exc:
-                        detail = (
-                            str(exc)
-                            if isinstance(exc, (AttachmentApiError, LiveBrowserError))
-                            else type(exc).__name__
-                        )
-                        _report(
-                            progress,
-                            f"[ردیف {index} از {len(drafts)}] ثبت اظهارنامه موفق "
-                            f"است، اما پیوست کامل نشد؛ کد رهگیری: "
-                            f"{result.tracking_code}؛ شماره اظهارنامه: "
-                            f"{result.petition_number}؛ علت: {detail}. "
-                            "ردیف بعدی اجرا نمی‌شود؛ وضعیت پیوست را پیش از "
-                            "هر اقدام دوباره بررسی کنید.",
-                        )
-                        raise LiveBrowserError(
-                            "attachment_failed_after_petition_registered:"
-                            f"row={index}:tracking_code={result.tracking_code}:"
-                            f"petition_number={result.petition_number}:"
-                            f"cause={detail}"
-                        ) from exc
-                else:
-                    _report(
-                        progress,
-                        f"[ردیف {index} از {len(drafts)}] پیوستی انتخاب نشده؛ "
-                        "مرحله پیوست رد شد.",
-                    )
-            return tuple(results)
+                        queued = pending_requests.get(timeout=0.25)
+                    except Empty:
+                        continue
+                if queued is None:
+                    break
+                (
+                    queued_drafts, queued_credentials, queued_template,
+                    queued_path, queued_lookup_dir,
+                ) = queued
+                current_credentials[0] = queued_credentials
+                queued_payloads = _prepare_petition_payloads(
+                    queued_drafts, queued_template, queued_path,
+                    queued_lookup_dir, progress,
+                )
+                queued_results = _submit_petition_payloads(
+                    page, queued_drafts, queued_payloads, ensure_authenticated,
+                    progress, on_result,
+                )
+                all_results.extend(queued_results)
+            return tuple(all_results)
+        except Exception:
+            if page is not None and pending_requests is not None:
+                _report(progress, "__api_browser_failed__")
+                close_browser_event.wait()
+            raise
         finally:
             try:
                 if page is not None:
-                    _report(progress, "__api_browser_ready_to_close__")
-                    close_browser_event.wait()
+                    if pending_requests is None:
+                        _report(progress, "__api_browser_ready_to_close__")
+                        close_browser_event.wait()
             finally:
                 context.close()
                 browser.close()
@@ -183,6 +159,137 @@ def run_live_setpetitiondata_test(
         close_browser_event=close_browser_event,
     )
     return results[0] if results else None
+
+
+def _prepare_petition_payloads(
+    drafts: tuple[DeclarationDraft, ...],
+    petition_template: Mapping[str, object],
+    request_text_path: Path,
+    lookup_dir: Path,
+    progress: ProgressCallback | None,
+) -> list[Mapping[str, object]]:
+    if not drafts:
+        raise LiveBrowserError("set_petition_data_recipients_missing")
+    payloads = []
+    for index, draft in enumerate(drafts, start=1):
+        _validate_live_draft(draft)
+        try:
+            jurisdiction = resolve_captured_jurisdiction_fields(
+                draft.fields, lookup_dir
+            )
+        except LookupResolutionError as exc:
+            raise LiveBrowserError(str(exc)) from exc
+        payload = build_setpetitiondata_payload(
+            petition_template, replace(draft, fields={**draft.fields, **jurisdiction})
+        )
+        debug_path = _request_path_for_row(request_text_path, index, len(drafts))
+        body_path, command_path = save_setpetitiondata_debug_text(payload, debug_path)
+        payloads.append(payload)
+        _report(
+            progress,
+            f"[ردیف {index} از {len(drafts)}] متن درخواست: {body_path}\n"
+            f"دستور curl: {command_path}\n"
+            f"کد کنسول: {body_path.with_name(f'{body_path.stem}.console.txt')}",
+        )
+    return payloads
+
+
+def _authentication_guard(
+    page: object,
+    current_credentials: list[LoginCredentials],
+    credentials_provider: Callable[
+        [LoginCredentials], LoginCredentials | None
+    ] | None,
+    timeout_ms: int,
+    progress: ProgressCallback | None,
+) -> Callable[[], None]:
+    def ensure_authenticated() -> None:
+        try:
+            if page.locator("#menu4Container").is_visible():
+                return
+        except Exception:
+            pass
+        if credentials_provider is None:
+            raise LiveBrowserError("session_expired_credentials_required")
+        _report(progress, "نشست ثنا منقضی شده؛ برای ادامه ورود مجدد لازم است.")
+        credentials = credentials_provider(current_credentials[0])
+        if credentials is None:
+            raise LiveBrowserError("session_reauthentication_cancelled")
+        _run_logged_stage(
+            progress,
+            "ورود مجدد پس از پایان نشست",
+            lambda: login_self_service(
+                page, credentials.as_portal_fields(), timeout_ms=timeout_ms
+            ),
+        )
+        current_credentials[0] = credentials
+
+    return ensure_authenticated
+
+
+def _submit_petition_payloads(
+    page: object,
+    drafts: tuple[DeclarationDraft, ...],
+    petition_payloads: list[Mapping[str, object]],
+    ensure_authenticated: Callable[[], None],
+    progress: ProgressCallback | None,
+    on_result: Callable[[DeclarationDraft, SetPetitionDataResult], None] | None,
+) -> tuple[SetPetitionDataResult, ...]:
+    results = []
+    for index, petition_data in enumerate(petition_payloads, start=1):
+        ensure_authenticated()
+        result = _run_logged_stage(
+            progress,
+            f"ثبت موقت SetPetitionData ردیف {index} از {len(drafts)}",
+            lambda: submit_one_petition_data(page, petition_data),
+        )
+        results.append(result)
+        _report(
+            progress,
+            f"[ردیف {index} از {len(drafts)}] ثبت موفق؛ "
+            f"کد رهگیری: {result.tracking_code}؛ "
+            f"شماره اظهارنامه: {result.petition_number}",
+        )
+        draft = drafts[index - 1]
+        if on_result is not None:
+            on_result(draft, result)
+        elif draft.source_path is not None:
+            save_verified_result(
+                draft,
+                UploadResult("success", result.tracking_code),
+                filename=RESULTS_FILENAME,
+            )
+        if draft.attachments:
+            try:
+                _attach_draft_files(
+                    page, petition_data, result, draft, index, len(drafts), progress
+                )
+            except Exception as exc:
+                detail = (
+                    str(exc)
+                    if isinstance(exc, (AttachmentApiError, LiveBrowserError))
+                    else type(exc).__name__
+                )
+                _report(
+                    progress,
+                    f"[ردیف {index} از {len(drafts)}] ثبت اظهارنامه موفق است، "
+                    f"اما پیوست کامل نشد؛ کد رهگیری: {result.tracking_code}؛ "
+                    f"شماره اظهارنامه: {result.petition_number}؛ علت: {detail}. "
+                    "ردیف بعدی اجرا نمی‌شود؛ وضعیت پیوست را پیش از هر اقدام "
+                    "دوباره بررسی کنید.",
+                )
+                raise LiveBrowserError(
+                    "attachment_failed_after_petition_registered:"
+                    f"row={index}:tracking_code={result.tracking_code}:"
+                    f"petition_number={result.petition_number}:cause={detail}"
+                ) from exc
+        else:
+            _report(
+                progress,
+                f"[ردیف {index} از {len(drafts)}] پیوستی انتخاب نشده؛ "
+                "مرحله پیوست رد شد.",
+            )
+    return tuple(results)
 
 
 def _request_path_for_row(path: Path, index: int, total: int) -> Path:

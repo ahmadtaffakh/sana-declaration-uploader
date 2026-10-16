@@ -297,36 +297,17 @@ class RecipientWizardTests(unittest.TestCase):
                 "نام نمونه",
             )
 
-    def test_browser_login_check_runs_without_blocking_the_ui_thread(self) -> None:
-        wizard = RecipientWizard()
-        started = threading.Event()
-        release = threading.Event()
+    def test_last_page_keeps_essential_buttons_with_beginner_tooltips(self) -> None:
+        page = RecipientWizard().login_page
 
-        def login_check(_credentials):
-            started.set()
-            release.wait(2)
-
-        with (
-            patch(
-                "sana_declaration_uploader.desktop.run_login_check",
-                side_effect=login_check,
-            ),
-            patch.object(QMessageBox, "information"),
-        ):
-            wizard._start_login_check(
-                LoginCredentials("national", "password", "identity", "otp")
-            )
-            self.assertTrue(started.wait(1))
-            self.assertIsNotNone(wizard._background_thread)
-            self.assertFalse(wizard.login_page.test_login_button.isEnabled())
-            self.assertFalse(wizard.close())
-            release.set()
-            self._wait_for_background(wizard)
-
-        self.assertIn(
-            "ورود و منوی اظهارنامه تأیید شد",
-            wizard.login_page.python_output.toPlainText(),
-        )
+        self.assertFalse(hasattr(page, "test_login_button"))
+        self.assertTrue(page.api_test_button.toolTip())
+        self.assertFalse(page.api_test_button.isHidden())
+        self.assertTrue(page.api_template_button.toolTip())
+        self.assertTrue(page.close_browser_button.toolTip())
+        self.assertTrue(page.close_browser_button.isHidden())
+        self.assertTrue(page.stop_button.toolTip())
+        self.assertTrue(page.stop_button.isHidden())
 
     def test_preprocessing_location_edits_survive_reloading_the_same_rows(self) -> None:
         wizard = RecipientWizard()
@@ -902,6 +883,23 @@ class RecipientWizardTests(unittest.TestCase):
             LoginCredentials("national", "password", "identity", "otp")
         )
 
+    def test_api_test_button_allows_active_session_without_otp(self) -> None:
+        page = RecipientWizard().login_page
+        callback = Mock()
+        page.api_test_callback = callback
+        page.api_session_active_callback = lambda: True
+        page.national_code.setText("national")
+        page.password.setText("password")
+        page.legal_identity.setText("identity")
+        page.otp.clear()
+
+        with patch.object(page, "_save_credentials"):
+            page._test_api_registration()
+
+        callback.assert_called_once_with(
+            LoginCredentials("national", "password", "identity", "")
+        )
+
     def test_api_browser_close_button_releases_browser_wait(self) -> None:
         wizard = RecipientWizard()
         close_event = threading.Event()
@@ -912,12 +910,27 @@ class RecipientWizardTests(unittest.TestCase):
         wizard.login_page.close_browser_button.click()
 
         self.assertTrue(close_event.is_set())
-        self.assertIsNone(wizard._api_browser_close_event)
+        self.assertIs(wizard._api_browser_close_event, close_event)
         self.assertFalse(wizard.login_page.close_browser_button.isEnabled())
 
+    def test_open_api_session_only_enables_request_and_close_actions(self) -> None:
+        wizard = RecipientWizard()
+        wizard._api_browser_ready = True
+
+        wizard._set_api_session_controls_enabled()
+
+        self.assertTrue(wizard.login_page.api_test_button.isEnabled())
+        self.assertTrue(wizard.login_page.close_browser_button.isEnabled())
+        self.assertFalse(
+            wizard.button(QWizard.WizardButton.FinishButton).isEnabled()
+        )
+        self.assertTrue(wizard.login_page.stop_button.isHidden())
+
     def test_declaration_fields_survive_back_navigation_and_reentry(self) -> None:
-        with TemporaryDirectory() as directory, patch(
-            "sana_declaration_uploader.desktop._save_declaration_settings"
+        with (
+            TemporaryDirectory() as directory,
+            patch("sana_declaration_uploader.desktop._save_declaration_settings"),
+            patch("sana_declaration_uploader.desktop._save_attachment_settings"),
         ):
             attachment = Path(directory) / "attachment.pdf"
             attachment.write_bytes(b"%PDF-test")
@@ -972,20 +985,41 @@ class RecipientWizardTests(unittest.TestCase):
                 "otp": "otp",
             })
             self.assertEqual(_load_login_settings(path), raw)
+            with patch(
+                "sana_declaration_uploader.desktop._load_login_settings",
+                return_value=raw,
+            ):
+                self.assertEqual(RecipientWizard().login_page.otp.text(), "otp")
 
             _save_login_settings("", "", "", "", remember=False, path=path)
             self.assertFalse(path.exists())
+
+    def test_editing_otp_preserves_it_in_login_settings(self) -> None:
+        page = RecipientWizard().login_page
+        page.national_code.setText("national")
+        page.password.setText("password")
+        page.legal_identity.setText("legal")
+        page.otp.setText("new-otp")
+
+        with patch("sana_declaration_uploader.desktop._save_login_settings") as save:
+            page.otp.editingFinished.emit()
+
+        save.assert_called_once_with(
+            "national", "password", "legal", "new-otp", remember=True
+        )
 
     def test_attachment_defaults_are_persisted_for_the_next_run(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "attachment-defaults.json"
 
             _save_attachment_settings(
-                "نوع دلخواه", "شماره دلخواه", "۱۴۰۵/۰۷/۲۱", path=path
+                "نوع دلخواه", "عنوان دلخواه", "شماره دلخواه",
+                "۱۴۰۵/۰۷/۲۱", path=path
             )
 
             self.assertEqual(_load_attachment_settings(path), {
                 "attachment_kind": "نوع دلخواه",
+                "attachment_title": "عنوان دلخواه",
                 "attachment_number": "شماره دلخواه",
                 "attachment_date": "۱۴۰۵/۰۷/۲۱",
             })
@@ -1010,6 +1044,7 @@ class RecipientWizardTests(unittest.TestCase):
                 _load_attachment_settings,
                 {
                     "attachment_kind": "سایر دلایل و مستندات",
+                    "attachment_title": "",
                     "attachment_number": "شماره مدرک",
                     "attachment_date": "۱۴۰۵/۰۷/۲۰",
                 },
@@ -1042,6 +1077,7 @@ class RecipientWizardTests(unittest.TestCase):
             )
             self.assertEqual(_load_attachment_settings(attachment_path), {
                 "attachment_kind": "نوع دلخواه",
+                "attachment_title": "",
                 "attachment_number": "شماره مدرک",
                 "attachment_date": "۱۴۰۵/۰۷/۲۰",
             })
@@ -1083,6 +1119,7 @@ class RecipientWizardTests(unittest.TestCase):
     def test_attachment_fields_start_with_defaults_and_save_edits(self) -> None:
         defaults = {
             "attachment_kind": "سایر دلایل و مستندات",
+            "attachment_title": "عنوان ذخیره‌شده",
             "attachment_number": "شماره مدرک",
             "attachment_date": "۱۴۰۵/۰۷/۲۰",
         }
@@ -1097,17 +1134,21 @@ class RecipientWizardTests(unittest.TestCase):
         ):
             page = DeclarationContentPage()
             self.assertEqual(page.attachment_kind.text(), defaults["attachment_kind"])
+            self.assertEqual(page.attachment_title.text(), defaults["attachment_title"])
             self.assertEqual(
                 page.attachment_number.text(), defaults["attachment_number"]
             )
             self.assertEqual(page.attachment_date.text(), defaults["attachment_date"])
 
             page.attachment_kind.setText("نوع جدید")
+            page.attachment_title.setText("عنوان جدید")
             page.attachment_number.setText("۴۲")
             page.attachment_date.setText("۱۴۰۵/۰۷/۲۲")
-            page.attachment_date.editingFinished.emit()
+            page.attachment_title.editingFinished.emit()
 
-            save.assert_called_once_with("نوع جدید", "۴۲", "۱۴۰۵/۰۷/۲۲")
+            save.assert_called_once_with(
+                "نوع جدید", "عنوان جدید", "۴۲", "۱۴۰۵/۰۷/۲۲"
+            )
 
     def test_finish_invokes_registration_instead_of_login_check(self) -> None:
         wizard = RecipientWizard()
@@ -1124,10 +1165,10 @@ class RecipientWizardTests(unittest.TestCase):
 
         self.assertEqual(len(received), 1)
         self.assertEqual(received[0].otp, "otp")
-        self.assertIn(
-            "آزمایش ورود بدون ثبت",
-            [button.text() for button in page.findChildren(QPushButton)],
-        )
+        self.assertFalse(hasattr(page, "test_login_button"))
+        self.assertIn("ثبت موقت API برای همهٔ ردیف‌ها", [
+            button.text() for button in page.findChildren(QPushButton)
+        ])
 
     def test_registration_saves_successes_and_reports_failed_rows(self) -> None:
         wizard = RecipientWizard()

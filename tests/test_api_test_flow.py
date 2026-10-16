@@ -2,6 +2,7 @@ import sys
 import json
 import unittest
 from pathlib import Path
+from queue import Queue
 from tempfile import TemporaryDirectory
 from threading import Event
 from types import ModuleType, SimpleNamespace
@@ -36,10 +37,17 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
             SetPetitionDataResult("2" * 16, "13", "B" * 32),
         )
         drafts = (
-            DeclarationDraft(Path("."), {"declaration_text": "شرح اول"}),
-            DeclarationDraft(Path("."), {"declaration_text": "شرح دوم"}),
+            DeclarationDraft(
+                Path("."), {"declaration_text": "شرح اول"},
+                source_path=Path("اول.docx"),
+            ),
         )
-        draft = DeclarationDraft(Path("."), {"declaration_text": "شرح"})
+        queued_draft = DeclarationDraft(
+            Path("."), {"declaration_text": "شرح دوم"},
+            source_path=Path("دوم.docx"),
+        )
+        close_event = Event()
+        request_queue: Queue = Queue()
 
         with TemporaryDirectory() as directory:
             body_path = Path(directory) / "request.txt"
@@ -71,6 +79,9 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                     api_test_flow,
                     "submit_one_petition_data",
                 ) as submit,
+                patch.object(
+                    api_test_flow, "save_verified_result"
+                ) as save_result,
             ):
                 def submit_side_effect(_page, petition_data):
                     if petition_data["Description"] == "شرح دوم":
@@ -80,11 +91,19 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                                 for event in events
                             )
                         )
-                    return results[len(submit.call_args_list) - 1]
+                    result = results[len(submit.call_args_list) - 1]
+                    if len(submit.call_args_list) == 2:
+                        close_event.set()
+                    return result
 
                 submit.side_effect = submit_side_effect
-                close_event = Event()
-                close_event.set()
+                request_queue.put((
+                    (queued_draft,),
+                    LoginCredentials("n", "p", "l", "o"),
+                    {"Description": "template"},
+                    Path(directory) / "queued-request.txt",
+                    Path(directory),
+                ))
                 actual = api_test_flow.run_live_setpetitiondata_batch(
                     drafts,
                     LoginCredentials("n", "p", "l", "o"),
@@ -93,18 +112,13 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                     body_path,
                     lookup_dir=Path(directory),
                     progress=events.append,
+                    pending_requests=request_queue,
                     close_browser_event=close_event,
                 )
 
-            first_envelope = json.loads(
-                body_path.with_name("request-row-001.txt").read_text(
-                    encoding="utf-8"
-                )
-            )
+            first_envelope = json.loads(body_path.read_text(encoding="utf-8"))
             second_envelope = json.loads(
-                body_path.with_name("request-row-002.txt").read_text(
-                    encoding="utf-8"
-                )
+                (Path(directory) / "queued-request.txt").read_text(encoding="utf-8")
             )
             self.assertEqual(
                 json.loads(first_envelope["data"]),
@@ -119,6 +133,12 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         login.assert_called_once()
         self.assertEqual(build_payload.call_count, 2)
         self.assertEqual(submit.call_count, 2)
+        self.assertEqual(save_result.call_count, 2)
+        self.assertEqual(save_result.call_args_list[0].args[0], drafts[0])
+        self.assertEqual(
+            save_result.call_args_list[0].args[1].tracking_code,
+            results[0].tracking_code,
+        )
         self.assertEqual(
             submit.call_args_list[0].args[1],
             {"Description": "شرح اول"},
@@ -130,10 +150,32 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         self.assertTrue(any("کد رهگیری: " + "1" * 16 in e for e in events))
         self.assertTrue(any("کد رهگیری: " + "2" * 16 in e for e in events))
         page.goto.assert_not_called()
-        page.locator.assert_not_called()
+        self.assertEqual(page.locator.call_count, 2)
         self.assertIn("__api_browser_ready_to_close__", events)
         self.assertEqual(context.close.call_count, 1)
         browser.close.assert_called_once()
+
+    def test_expired_session_reauthenticates_before_the_next_write(self):
+        page = Mock()
+        page.locator.return_value.is_visible.side_effect = [False, True]
+        initial = LoginCredentials("n", "p", "l", "old")
+        refreshed = LoginCredentials("n", "p", "l", "fresh")
+        credentials = [initial]
+        provider = Mock(return_value=refreshed)
+        progress = []
+        guard = api_test_flow._authentication_guard(
+            page, credentials, provider, 60_000, progress.append
+        )
+
+        with patch.object(api_test_flow, "login_self_service") as login:
+            guard()
+            guard()
+
+        provider.assert_called_once_with(initial)
+        login.assert_called_once_with(
+            page, refreshed.as_portal_fields(), timeout_ms=60_000
+        )
+        self.assertEqual(credentials[0], refreshed)
 
     def test_attaches_to_same_petition_after_tracking_code(self):
         events = []
