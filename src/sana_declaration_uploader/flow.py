@@ -98,7 +98,8 @@ def _build_desktop_drafts(
         attachments = tuple(
             Attachment(
                 path=Path(path),
-                title=Path(path).stem,
+                title=str(payload.get("attachment_title", "")).strip()
+                or Path(path).stem,
                 kind=str(payload.get("attachment_kind", "")),
                 document_number=str(payload.get("attachment_number", "")),
                 document_date=str(payload.get("attachment_date", "")),

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
 from typing import Mapping
+import unicodedata
 
+from .attachment_api import AttachmentApiError, AttachmentClient, AttachmentType
 from .live_browser import (
     LiveBrowserError,
     LoginCredentials,
@@ -53,7 +56,7 @@ def run_live_setpetitiondata_batch(
         raise LiveBrowserError("set_petition_data_recipients_missing")
     petition_payloads = []
     for index, draft in enumerate(drafts, start=1):
-        _validate_live_draft(replace(draft, attachments=()))
+        _validate_live_draft(draft)
         try:
             jurisdiction = resolve_captured_jurisdiction_fields(
                 draft.fields, lookup_dir
@@ -106,6 +109,45 @@ def run_live_setpetitiondata_batch(
                     f"کد رهگیری: {result.tracking_code}؛ "
                     f"شماره اظهارنامه: {result.petition_number}",
                 )
+                draft = drafts[index - 1]
+                if draft.attachments:
+                    try:
+                        _attach_draft_files(
+                            page,
+                            petition_data,
+                            result,
+                            draft,
+                            index,
+                            len(drafts),
+                            progress,
+                        )
+                    except Exception as exc:
+                        detail = (
+                            str(exc)
+                            if isinstance(exc, (AttachmentApiError, LiveBrowserError))
+                            else type(exc).__name__
+                        )
+                        _report(
+                            progress,
+                            f"[ردیف {index} از {len(drafts)}] ثبت اظهارنامه موفق "
+                            f"است، اما پیوست کامل نشد؛ کد رهگیری: "
+                            f"{result.tracking_code}؛ شماره اظهارنامه: "
+                            f"{result.petition_number}؛ علت: {detail}. "
+                            "ردیف بعدی اجرا نمی‌شود؛ وضعیت پیوست را پیش از "
+                            "هر اقدام دوباره بررسی کنید.",
+                        )
+                        raise LiveBrowserError(
+                            "attachment_failed_after_petition_registered:"
+                            f"row={index}:tracking_code={result.tracking_code}:"
+                            f"petition_number={result.petition_number}:"
+                            f"cause={detail}"
+                        ) from exc
+                else:
+                    _report(
+                        progress,
+                        f"[ردیف {index} از {len(drafts)}] پیوستی انتخاب نشده؛ "
+                        "مرحله پیوست رد شد.",
+                    )
             return tuple(results)
         finally:
             try:
@@ -147,3 +189,117 @@ def _request_path_for_row(path: Path, index: int, total: int) -> Path:
     if total == 1:
         return path
     return path.with_name(f"{path.stem}-row-{index:03d}{path.suffix}")
+
+
+def _attach_draft_files(
+    page: object,
+    petition_data: Mapping[str, object],
+    result: SetPetitionDataResult,
+    draft: DeclarationDraft,
+    row_index: int,
+    row_count: int,
+    progress: ProgressCallback | None,
+) -> None:
+    """Attach this draft's files to the petition returned for the same row."""
+
+    prefix = f"[ردیف {row_index} از {row_count}]"
+    reliefs = _reliefs_for_attachment_lookup(
+        petition_data.get("theJSSPetitionRelief"), result.petition_id
+    )
+    lookup_client = AttachmentClient(
+        page,
+        result.petition_number,
+        result.petition_id,
+        progress=lambda message: _report(progress, f"{prefix} {message}"),
+    )
+    attachment_types = _run_logged_stage(
+        progress,
+        f"دریافت نوع‌های مجاز پیوست برای اظهارنامه {result.petition_number}",
+        lambda: lookup_client.get_valid_attachment_types(
+            reliefs,
+            petition_type_code=str(
+                petition_data.get("PetitionTypeCode") or "110"
+            ),
+        ),
+    )
+
+    for attachment_index, attachment in enumerate(draft.attachments, start=1):
+        attachment_type = _match_attachment_type(
+            attachment.kind, attachment_types
+        )
+        attachment_prefix = (
+            f"{prefix} [پیوست {attachment_index}/"
+            f"{len(draft.attachments)}]"
+        )
+        _report(
+            progress,
+            f"{attachment_prefix} نوع مجاز انتخاب شد: "
+            f"{attachment_type.title} (کد {attachment_type.code})؛ "
+            f"پسوند فایل: {attachment.path.suffix or 'نامشخص'}",
+        )
+        attachment_client = AttachmentClient(
+            page,
+            result.petition_number,
+            result.petition_id,
+            progress=lambda message, p=attachment_prefix: _report(
+                progress, f"{p} {message}"
+            ),
+        )
+        _run_logged_stage(
+            progress,
+            f"افزودن پیوست {attachment_index}/{len(draft.attachments)} "
+            f"به اظهارنامه {result.petition_number}",
+            lambda: attachment_client.register_attachment(
+                attachment_type,
+                document_number=attachment.document_number,
+                document_date=attachment.document_date,
+                file_path=attachment.path,
+                show_original=attachment.show_to_recipient,
+                document_title=attachment.title,
+            ),
+        )
+
+
+def _reliefs_for_attachment_lookup(
+    value: object, petition_id: str
+) -> list[Mapping[str, object]]:
+    if not isinstance(value, list) or not value:
+        raise LiveBrowserError("attachment_reliefs_missing")
+    reliefs: list[Mapping[str, object]] = []
+    for relief in value:
+        if not isinstance(relief, Mapping):
+            raise LiveBrowserError("attachment_relief_invalid")
+        copied = deepcopy(dict(relief))
+        copied["JSSPetitionId"] = petition_id
+        reliefs.append(copied)
+    return reliefs
+
+
+def _match_attachment_type(
+    requested_title: str, attachment_types: list[AttachmentType]
+) -> AttachmentType:
+    normalized = _normalize_attachment_title(requested_title)
+    matches = [
+        item for item in attachment_types
+        if _normalize_attachment_title(item.title) == normalized
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    available = ", ".join(
+        f"{item.title} ({item.code})" for item in attachment_types
+    ) or "هیچ نوعی برنگشت"
+    error = (
+        "attachment_type_not_unique"
+        if len(matches) > 1
+        else "attachment_type_not_valid_for_relief"
+    )
+    raise LiveBrowserError(
+        f"{error}:requested={requested_title!r};available={available}"
+    )
+
+
+def _normalize_attachment_title(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    normalized = normalized.replace("ي", "ی").replace("ك", "ک")
+    normalized = normalized.replace("\u200c", " ")
+    return " ".join(normalized.split())

@@ -1126,6 +1126,8 @@ class DeclarationContentPage(QWizardPage):
             self._attachment_defaults["attachment_date"]
         )
         self.attachment_date.setPlaceholderText("نمونه: ۱۴۰۵/۰۷/۲۰")
+        self.attachment_title = QLineEdit()
+        self.attachment_title.setPlaceholderText("عنوانی که در اظهارنامه نمایش داده می‌شود")
         for editor in (
             self.attachment_kind,
             self.attachment_number,
@@ -1171,6 +1173,7 @@ class DeclarationContentPage(QWizardPage):
         attachment_form = QFormLayout(attachment_fields)
         attachment_form.setContentsMargins(0, 0, 0, 0)
         attachment_form.addRow("نوع پیوست‌ها:", self.attachment_kind)
+        attachment_form.addRow("عنوان پیوست:", self.attachment_title)
         attachment_form.addRow("شماره پیوست‌ها:", self.attachment_number)
         attachment_form.addRow("تاریخ پیوست‌ها:", self.attachment_date)
 
@@ -1185,7 +1188,7 @@ class DeclarationContentPage(QWizardPage):
             "راهنما: اگر شرح و پیوست‌ها برای همه یکسان است، تیک بالا را روشن "
             "بگذارید و فقط یک‌بار اطلاعات را وارد کنید. در حالت اختصاصی، از فهرست "
             "«دامنهٔ محتوا» هر شخص را انتخاب و شرح و پیوست‌های همان ردیف را ثبت کنید. "
-            "نوع، شماره و تاریخ واردشده فعلاً برای همه پیوست‌های همان ردیف اعمال می‌شود."
+            "نوع، عنوان، شماره و تاریخ واردشده برای همه پیوست‌های همان ردیف اعمال می‌شود."
         )
         guidance.setObjectName("Guidance")
         guidance.setWordWrap(True)
@@ -1250,6 +1253,7 @@ class DeclarationContentPage(QWizardPage):
                 "description": str(value.get("description", "")),
                 "attachments": tuple(value.get("attachments", ())),
                 "attachment_kind": str(value.get("attachment_kind", "")),
+                "attachment_title": str(value.get("attachment_title", "")),
                 "attachment_number": str(value.get("attachment_number", "")),
                 "attachment_date": str(value.get("attachment_date", "")),
             }
@@ -1322,8 +1326,8 @@ class DeclarationContentPage(QWizardPage):
         current = self._editor_payload()
         for payload in self._payloads.values():
             for name in (
-                "attachments", "attachment_kind", "attachment_number",
-                "attachment_date",
+                "attachments", "attachment_kind", "attachment_title",
+                "attachment_number", "attachment_date",
             ):
                 payload[name] = current[name]
         self._load_active()
@@ -1366,8 +1370,8 @@ class DeclarationContentPage(QWizardPage):
                 if key == self._active_key:
                     continue
                 for name in (
-                    "attachments", "attachment_kind", "attachment_number",
-                    "attachment_date",
+                    "attachments", "attachment_kind", "attachment_title",
+                    "attachment_number", "attachment_date",
                 ):
                     payload[name] = current[name]
 
@@ -1377,6 +1381,7 @@ class DeclarationContentPage(QWizardPage):
             "description": self.description.toPlainText().strip(),
             "attachments": tuple(self._attachment_paths()),
             "attachment_kind": self.attachment_kind.text().strip(),
+            "attachment_title": self.attachment_title.text().strip(),
             "attachment_number": self.attachment_number.text().strip(),
             "attachment_date": self.attachment_date.text().strip(),
         }
@@ -1391,6 +1396,7 @@ class DeclarationContentPage(QWizardPage):
         self.subject.setText(str(payload.get("subject", "")))
         self.description.setPlainText(str(payload.get("description", "")))
         self.attachment_kind.setText(str(payload.get("attachment_kind", "")))
+        self.attachment_title.setText(str(payload.get("attachment_title", "")))
         self.attachment_number.setText(str(payload.get("attachment_number", "")))
         self.attachment_date.setText(str(payload.get("attachment_date", "")))
         self.attachment_list.clear()
@@ -1436,6 +1442,7 @@ class DeclarationContentPage(QWizardPage):
                 str(payload.get(name, "")).strip()
                 for name in (
                     "attachment_kind",
+                    "attachment_title",
                     "attachment_number",
                     "attachment_date",
                 )
@@ -1443,7 +1450,7 @@ class DeclarationContentPage(QWizardPage):
                 QMessageBox.warning(
                     self,
                     "مشخصات پیوست ناقص",
-                    f"نوع، شماره و تاریخ پیوست‌های {label} را کامل کنید.",
+                    f"نوع، عنوان، شماره و تاریخ پیوست‌های {label} را کامل کنید.",
                 )
                 return False
         self._save_declaration_defaults()
@@ -1457,6 +1464,7 @@ class DeclarationContentPage(QWizardPage):
         return {
             **self._declaration_defaults,
             "attachments": (),
+            "attachment_title": "",
             **self._attachment_defaults,
         }
 
@@ -1490,6 +1498,7 @@ class DeclarationContentPage(QWizardPage):
             "description": str(payload.get("description", "")),
             "attachments": tuple(payload.get("attachments", ())),
             "attachment_kind": str(payload.get("attachment_kind", "")),
+            "attachment_title": str(payload.get("attachment_title", "")),
             "attachment_number": str(payload.get("attachment_number", "")),
             "attachment_date": str(payload.get("attachment_date", "")),
         }
@@ -2078,11 +2087,12 @@ class RecipientWizard(QWizard):
             return
         answer = QMessageBox.question(
             self,
-            "تأیید ثبت موقت ردیف‌ها با API",
+            "تأیید ثبت موقت و پیوست با API",
             f"برای {len(drafts)} ردیف، SetPetitionData به‌ترتیب و هر ردیف "
-            "فقط یک‌بار فراخوانی شود؟ پس از پاسخ موفق، کد رهگیری در لاگ "
-            "ثبت و ردیف بعدی اجرا می‌شود. در خطا یا پاسخ مبهم، ادامه متوقف "
-            "می‌شود و پیوست یا امضای نهایی انجام نمی‌شود.",
+            "فقط یک‌بار فراخوانی می‌شود. پس از دریافت کد رهگیری، پیوست‌های "
+            "همان ردیف به همان اظهارنامه افزوده می‌شوند. در خطا یا پاسخ مبهم، "
+            "ادامه متوقف می‌شود؛ پیش از اقدام دوباره باید وضعیت بررسی شود. "
+            "امضای نهایی انجام نمی‌شود.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -2096,7 +2106,8 @@ class RecipientWizard(QWizard):
         report = self.login_page.append_output
         report(
             f"ثبت موقت API برای {len(drafts)} ردیف آغاز شد؛ "
-            "پیوست و امضای نهایی اجرا نمی‌شود.",
+            "پیوست هر ردیف پس از دریافت کد رهگیری به همان اظهارنامه افزوده "
+            "می‌شود؛ امضای نهایی اجرا نمی‌شود.",
             level="system",
         )
 
@@ -2119,13 +2130,18 @@ class RecipientWizard(QWizard):
             if not results:
                 report("هیچ ردیفی ثبت نشد.", level="warning")
                 return
-            report(f"ثبت موقت API تمام شد؛ موفق: {len(results)} ردیف.", level="success")
+            attachment_count = sum(len(draft.attachments) for draft in drafts)
+            report(
+                f"ثبت موقت و پیوست API تمام شد؛ موفق: {len(results)} ردیف؛ "
+                f"پیوست تأییدشده: {attachment_count} فایل.",
+                level="success",
+            )
             QMessageBox.information(
                 self,
-                "ثبت موقت ردیف‌ها موفق",
-                f"{len(results)} ردیف با موفقیت ثبت شد. کد رهگیری هر ردیف "
-                "در لاگ نمایش داده شده است. این مسیر پیوست یا امضای نهایی "
-                "را انجام نمی‌دهد.",
+                "ثبت موقت و پیوست موفق",
+                f"{len(results)} ردیف با موفقیت ثبت شد و {attachment_count} "
+                "پیوست تأیید شد. کد رهگیری و جزئیات مراحل در لاگ نمایش داده "
+                "شده است. امضای نهایی انجام نشده است.",
             )
 
         def failed(exc: Exception, details: str) -> None:

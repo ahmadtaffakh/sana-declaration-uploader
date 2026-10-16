@@ -8,8 +8,9 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 from sana_declaration_uploader import api_test_flow
+from sana_declaration_uploader.attachment_api import AttachmentApiError, AttachmentType
 from sana_declaration_uploader.live_browser import LoginCredentials
-from sana_declaration_uploader.models import DeclarationDraft
+from sana_declaration_uploader.models import Attachment, DeclarationDraft
 from sana_declaration_uploader.petition_api import SetPetitionDataResult
 
 
@@ -133,6 +134,195 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         self.assertIn("__api_browser_ready_to_close__", events)
         self.assertEqual(context.close.call_count, 1)
         browser.close.assert_called_once()
+
+    def test_attaches_to_same_petition_after_tracking_code(self):
+        events = []
+        page = Mock()
+        context = Mock()
+        context.new_page.return_value = page
+        context.close.return_value = None
+        browser = Mock()
+        browser.new_context.return_value = context
+        playwright = SimpleNamespace(chromium=Mock())
+        playwright.chromium.launch.return_value = browser
+        manager = Mock()
+        manager.__enter__ = Mock(return_value=playwright)
+        manager.__exit__ = Mock(return_value=False)
+        sync_api = ModuleType("playwright.sync_api")
+        sync_api.sync_playwright = Mock(return_value=manager)
+        package = ModuleType("playwright")
+        result = SetPetitionDataResult("1" * 16, "12", "A" * 32)
+        attachment_type = AttachmentType(
+            "099", "099", "سایر ضمائم", "شرح", {}, 1
+        )
+        attachment = Attachment(
+            Path("attachment.pdf"), "attachment", "سایر ضمائم",
+            "17", "1405/05/05",
+        )
+        draft = DeclarationDraft(
+            Path("."), {"declaration_text": "شرح"}, (attachment,)
+        )
+        lookup_client = Mock()
+        lookup_client.get_valid_attachment_types.return_value = [attachment_type]
+        register_client = Mock()
+
+        with TemporaryDirectory() as directory:
+            request_path = Path(directory) / "request.txt"
+            close_event = Event()
+            close_event.set()
+            with (
+                patch.dict(
+                    sys.modules,
+                    {"playwright": package, "playwright.sync_api": sync_api},
+                ),
+                patch.object(api_test_flow, "_validate_live_draft"),
+                patch.object(api_test_flow, "login_self_service"),
+                patch.object(
+                    api_test_flow,
+                    "build_setpetitiondata_payload",
+                    return_value={
+                        "PetitionTypeCode": "110",
+                        "theJSSPetitionRelief": [{"Id": "relief-id"}],
+                    },
+                ),
+                patch.object(
+                    api_test_flow,
+                    "resolve_captured_jurisdiction_fields",
+                    return_value={},
+                ),
+                patch.object(
+                    api_test_flow, "submit_one_petition_data", return_value=result
+                ) as submit,
+                patch.object(
+                    api_test_flow,
+                    "AttachmentClient",
+                    side_effect=[lookup_client, register_client],
+                ) as client_factory,
+            ):
+                actual = api_test_flow.run_live_setpetitiondata_batch(
+                    (draft,),
+                    LoginCredentials("n", "p", "l", "o"),
+                    lambda: True,
+                    {"Description": "template"},
+                    request_path,
+                    lookup_dir=Path(directory),
+                    progress=events.append,
+                    close_browser_event=close_event,
+                )
+
+        self.assertEqual(actual, (result,))
+        submit.assert_called_once()
+        self.assertEqual(client_factory.call_count, 2)
+        lookup_reliefs = lookup_client.get_valid_attachment_types.call_args.args[0]
+        self.assertEqual(lookup_reliefs[0]["JSSPetitionId"], result.petition_id)
+        self.assertEqual(
+            lookup_client.get_valid_attachment_types.call_args.kwargs[
+                "petition_type_code"
+            ],
+            "110",
+        )
+        lookup_args, lookup_kwargs = client_factory.call_args_list[0]
+        self.assertEqual(lookup_args[1], result.petition_number)
+        self.assertEqual(
+            lookup_args[2], result.petition_id
+        )
+        register_client.register_attachment.assert_called_once_with(
+            attachment_type,
+            document_number="17",
+            document_date="1405/05/05",
+            file_path=attachment.path,
+            show_original=True,
+            document_title="attachment",
+        )
+        tracking_event = next(
+            i for i, message in enumerate(events)
+            if "کد رهگیری: " + result.tracking_code in message
+        )
+        lookup_event = next(
+            i for i, message in enumerate(events)
+            if "شروع مرحله: دریافت نوع‌های مجاز پیوست" in message
+        )
+        self.assertLess(tracking_event, lookup_event)
+
+    def test_attachment_failure_after_registration_stops_batch(self):
+        events = []
+        page = Mock()
+        context = Mock()
+        context.new_page.return_value = page
+        browser = Mock()
+        browser.new_context.return_value = context
+        playwright = SimpleNamespace(chromium=Mock())
+        playwright.chromium.launch.return_value = browser
+        manager = Mock()
+        manager.__enter__ = Mock(return_value=playwright)
+        manager.__exit__ = Mock(return_value=False)
+        sync_api = ModuleType("playwright.sync_api")
+        sync_api.sync_playwright = Mock(return_value=manager)
+        package = ModuleType("playwright")
+        first_result = SetPetitionDataResult("1" * 16, "12", "A" * 32)
+        draft = DeclarationDraft(
+            Path("."), {"declaration_text": "شرح"},
+            (Attachment(Path("attachment.pdf"), "attachment", "نوع", "1", "1405/05/05"),),
+        )
+        lookup_client = Mock()
+        lookup_client.get_valid_attachment_types.return_value = [
+            AttachmentType("099", "099", "نوع", "شرح", {}, 1)
+        ]
+        register_client = Mock()
+        register_client.register_attachment.side_effect = AttachmentApiError(
+            "attachment_file_upload_transport_ambiguous"
+        )
+
+        with TemporaryDirectory() as directory:
+            close_event = Event()
+            close_event.set()
+            with (
+                patch.dict(
+                    sys.modules,
+                    {"playwright": package, "playwright.sync_api": sync_api},
+                ),
+                patch.object(api_test_flow, "_validate_live_draft"),
+                patch.object(api_test_flow, "login_self_service"),
+                patch.object(
+                    api_test_flow,
+                    "build_setpetitiondata_payload",
+                    return_value={"theJSSPetitionRelief": [{"Id": "relief"}]},
+                ),
+                patch.object(
+                    api_test_flow,
+                    "resolve_captured_jurisdiction_fields",
+                    return_value={},
+                ),
+                patch.object(
+                    api_test_flow,
+                    "submit_one_petition_data",
+                    return_value=first_result,
+                ) as submit,
+                patch.object(
+                    api_test_flow,
+                    "AttachmentClient",
+                    side_effect=[lookup_client, register_client],
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    api_test_flow.LiveBrowserError,
+                    "attachment_failed_after_petition_registered",
+                ):
+                    api_test_flow.run_live_setpetitiondata_batch(
+                        (draft, draft),
+                        LoginCredentials("n", "p", "l", "o"),
+                        lambda: True,
+                        {"Description": "template"},
+                        Path(directory) / "request.txt",
+                        lookup_dir=Path(directory),
+                        progress=events.append,
+                        close_browser_event=close_event,
+                    )
+
+        submit.assert_called_once()
+        self.assertTrue(
+            any("ثبت اظهارنامه موفق است، اما پیوست کامل نشد" in m for m in events)
+        )
 
 
 if __name__ == "__main__":

@@ -732,6 +732,7 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertEqual(page.description.minimumHeight(), 480)
         self.assertIs(page.attachment_number.parentWidget(), attachment_panel)
         self.assertIs(page.attachment_date.parentWidget(), attachment_panel)
+        self.assertIs(page.attachment_title.parentWidget(), attachment_panel)
         self.assertLessEqual(attachment_panel.width(), page.width() // 3)
         self.assertGreater(attachment_panel.x(), page.width() // 2)
 
@@ -928,6 +929,7 @@ class RecipientWizardTests(unittest.TestCase):
             page.subject.setText("موضوع اظهارنامه")
             page.description.setPlainText("شرح اظهارنامه")
             page.attachment_kind.setText("سایر دلایل و مستندات")
+            page.attachment_title.setText("عنوان نمونه")
             page.attachment_number.setText("۱۲۳")
             page.attachment_date.setText("۱۴۰۵/۰۷/۲۰")
             page._add_attachment(attachment)
@@ -938,10 +940,12 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertEqual(page.subject.text(), "موضوع اظهارنامه")
             self.assertEqual(page.description.toPlainText(), "شرح اظهارنامه")
             self.assertEqual(page.attachment_kind.text(), "سایر دلایل و مستندات")
+            self.assertEqual(page.attachment_title.text(), "عنوان نمونه")
             self.assertEqual(page.attachment_number.text(), "۱۲۳")
             self.assertEqual(page.attachment_date.text(), "۱۴۰۵/۰۷/۲۰")
             self.assertEqual(page.attachment_list.count(), 1)
             self.assertEqual(page._attachment_paths(), [attachment.resolve()])
+            self.assertEqual(page.payloads()[0]["attachment_title"], "عنوان نمونه")
 
             renamed_candidates = (
                 RecipientCandidate(

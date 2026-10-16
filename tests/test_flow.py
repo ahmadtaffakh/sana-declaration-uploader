@@ -84,6 +84,7 @@ class FlowTests(unittest.TestCase):
                 "description": "شرح اظهارنامه",
                 "attachments": (root / "agency.pdf",),
                 "attachment_kind": "مدرک نمایندگی",
+                "attachment_title": "وکالت‌نامه",
                 "attachment_number": "100",
                 "attachment_date": "1405/07/20",
             }
@@ -103,6 +104,7 @@ class FlowTests(unittest.TestCase):
             self.assertEqual(draft.fields["recipient_main_street"], "تهران")
             self.assertEqual(draft.fields["declaration_text"], "شرح اظهارنامه")
             self.assertEqual(draft.attachments[0].path, root / "agency.pdf")
+            self.assertEqual(draft.attachments[0].title, "وکالت‌نامه")
             self.assertEqual(draft.source_path, source_path)
 
     def test_prepare_drafts_renders_and_validates_each_request(self) -> None:
