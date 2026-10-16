@@ -141,6 +141,10 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
                     "StateTitle": "old",
                     "CityId": "old",
                     "CityTitle": "old",
+                    "NotifyOwnerOrganizationId": "old",
+                    "NotifyOwnerOrganizationCode": "old",
+                    "NotifyOwnerOrganizationTitle": "old",
+                    "GetLocationForAddressId": "old",
                     "MobileNumber4SMS": "template-mobile",
                     "JobId": "template-job",
                     "JobTitle": "template-title",
@@ -157,6 +161,7 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
                 "recipient_last_name": "نام‌خانوادگی",
                 "recipient_father_name": "پدر",
                 "recipient_national_id": "0012345678",
+                "recipient_identity_no": "98765",
                 "recipient_main_street": "خیابان",
                 "recipient_address": "نشانی",
                 "recipient_postal_code": "1234567890",
@@ -164,14 +169,18 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
                 "job_id": "d2e420be1bf14c2088a14f04e7c71bb9",
                 "related_declaration_number": "1405220897083662",
                 "province_id": "province-id-from-lookup",
-                "province_code": "P1",
+                "province_code": "01",
                 "province": "استان",
                 "county_id": "county-id-from-lookup",
-                "county_code": "C1",
+                "county_code": "002",
                 "county": "شهرستان",
                 "city_id": "city-id-from-lookup",
-                "city_code": "T1",
+                "city_code": "0003",
                 "city": "شهر",
+                "notify_owner_organization_id": "court-id",
+                "notify_owner_organization_code": "01005",
+                "notify_owner_organization_title": "حوزه قضایی شهرستان",
+                "get_location_for_address_id": "address-id",
                 "declaration_text": "شرح جدید",
             },
         )
@@ -197,7 +206,7 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
             template["theJSSPetitionPerson"][0],
         )
         recipient = result["theJSSPetitionPerson"][1]
-        self.assertEqual(recipient["IdentityNo"], "0012345678")
+        self.assertEqual(recipient["IdentityNo"], "98765")
         self.assertEqual(recipient["MobileNumber4SMS"], "")
         self.assertEqual(
             recipient["JobId"], "d2e420be1bf14c2088a14f04e7c71bb9"
@@ -205,11 +214,17 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
         self.assertEqual(recipient["JobTitle"], "آزاد")
         self.assertEqual(recipient["FatherName"], "پدر")
         self.assertEqual(recipient["PostallCode"], "1234567890")
-        self.assertEqual(recipient["StateId"], "province-id-from-lookup")
+        self.assertEqual(recipient["StateId"], "01")
         self.assertEqual(recipient["StateTitle"], "استان")
-        self.assertEqual(recipient["ProvinceId"], "county-id-from-lookup")
+        self.assertEqual(recipient["ProvinceId"], "002")
         self.assertEqual(recipient["ProvinceTitle"], "شهرستان")
-        self.assertEqual(recipient["CityId"], "city-id-from-lookup")
+        self.assertEqual(recipient["CityId"], "0003")
+        self.assertEqual(recipient["NotifyOwnerOrganizationId"], "court-id")
+        self.assertEqual(recipient["NotifyOwnerOrganizationCode"], "01005")
+        self.assertEqual(
+            recipient["NotifyOwnerOrganizationTitle"], "حوزه قضایی شهرستان"
+        )
+        self.assertEqual(recipient["GetLocationForAddressId"], "address-id")
         self.assertEqual(template["Description"], "old description")
 
     def test_related_number_is_blank_when_not_extracted(self):
@@ -219,6 +234,16 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
         payload = build_setpetitiondata_payload(self._template(), draft)
 
         self.assertEqual(payload["RelatedNo"], "")
+
+    def test_national_code_is_not_used_as_identity_number(self):
+        draft = self._draft()
+        draft.fields.pop("recipient_identity_no")
+
+        payload = build_setpetitiondata_payload(self._template(), draft)
+
+        self.assertEqual(
+            payload["theJSSPetitionPerson"][1]["IdentityNo"], ""
+        )
 
     def test_sanitizes_both_address_fields(self):
         draft = self._draft()

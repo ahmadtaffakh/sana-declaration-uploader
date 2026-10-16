@@ -58,6 +58,8 @@ _METADATA_FIELDS = {
 }
 _MANUAL_FIELDS = {
     "کد ملی": "recipient_national_id",
+    "شماره شناسنامه": "recipient_identity_no",
+    "کد پستی": "recipient_postal_code",
     "تاریخ تولد": "recipient_birth_date",
     "جنسیت": "recipient_gender",
     "نام": "recipient_first_name",

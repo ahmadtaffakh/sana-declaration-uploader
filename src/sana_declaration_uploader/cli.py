@@ -58,14 +58,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "capture-lookups":
         print(
-            "در پنجرهٔ Chrome وارد ثنا شوید و فقط تا صفحهٔ دارای کامبوهای "
-            "استان، شهرستان و شهر پیش بروید. استخراج خودکار از همان‌جا آغاز می‌شود."
+            "در پنجرهٔ Chrome خودت وارد ثنا شو و تا صفحهٔ مخاطب با فیلدهای "
+            "استان، شهرستان و شهر پیش برو؛ پس از اتمام، مرورگر را خودت ببند."
         )
         counts = run_interactive_catalog_capture(args.output_dir)
         print(
             f"استخراج تمام شد: {counts['locations']} مکان و "
             f"{counts['court_units']} واحد قضایی؛ "
-            f"{counts['unresolved_branches']} شاخهٔ بدون شهر در {args.output_dir}"
+            f"{counts['jurisdictions']} نگاشت حوزهٔ قضایی API؛ "
+            f"{counts['unresolved_branches']} شاخهٔ نیازمند بررسی در "
+            f"{args.output_dir}"
         )
         return 0
     if args.command == "promote-lookups":

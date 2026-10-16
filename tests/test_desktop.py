@@ -510,14 +510,27 @@ class RecipientWizardTests(unittest.TestCase):
             full_name="نام نمونه",
             job_title="آزاد",
             job_code="00002",
+            address=(
+                "استان خوزستان - شهرستان امیدیه - شهر امیدیه - "
+                "خیابان اصلی آزادی - کد پستی 1234567890"
+            ),
         ),))
 
-        for header, value in (
-            ("استان", "خوزستان"),
-            ("شهرستان", "امیدیه"),
-            ("شهر", "امیدیه"),
+        with patch(
+            "sana_declaration_uploader.desktop.resolve_captured_jurisdiction_fields",
+            return_value={
+                "notify_owner_organization_title": "حوزه قضایی شهرستان امیدیه",
+                "notify_owner_organization_code": "06160",
+                "notify_owner_organization_id": "court-id",
+                "get_location_for_address_id": "address-id",
+            },
         ):
-            page.table.item(0, page.HEADERS.index(header)).setText(value)
+            for header, value in (
+                ("استان", "خوزستان"),
+                ("شهرستان", "امیدیه"),
+                ("شهر", "امیدیه"),
+            ):
+                page.table.item(0, page.HEADERS.index(header)).setText(value)
 
         self.assertEqual(
             page.table.item(0, page.HEADERS.index("کد استان")).text(), "06"
@@ -529,9 +542,33 @@ class RecipientWizardTests(unittest.TestCase):
             page.table.item(0, page.HEADERS.index("کد شهر")).text(),
             "0616022111",
         )
+        self.assertEqual(
+            page.HEADERS.index("حوزه قضایی"),
+            page.HEADERS.index("کد شهر") + 1,
+        )
+        self.assertEqual(
+            page.table.item(0, page.HEADERS.index("حوزه قضایی")).text(),
+            "حوزه قضایی شهرستان امیدیه",
+        )
+        self.assertEqual(
+            page.table.item(0, page.HEADERS.index("کد حوزه")).text(),
+            "06160",
+        )
+        self.assertEqual(
+            page.table.item(0, page.HEADERS.index("خیابان اصلی")).text(),
+            "آزادی",
+        )
+        self.assertEqual(
+            page.table.item(0, page.HEADERS.index("کد پستی")).text(),
+            "1234567890",
+        )
         candidate = page.candidates()[0]
         self.assertEqual(candidate.province, "استان خوزستان")
         self.assertEqual(candidate.county, "شهرستان امیدیه")
+        self.assertEqual(candidate.court_unit_name, "حوزه قضایی شهرستان امیدیه")
+        self.assertEqual(candidate.court_unit_code, "06160")
+        self.assertEqual(candidate.main_street, "آزادی")
+        self.assertEqual(candidate.postal_code, "1234567890")
 
         address_item = page.table.item(0, page.HEADERS.index("آدرس"))
         address_item.setText("نشانی اصلاح‌شده")

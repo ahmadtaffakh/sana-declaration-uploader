@@ -7,6 +7,7 @@ from docx import Document
 
 from sana_declaration_uploader.extraction import (
     DocumentExtractionError,
+    extract_address_details,
     extract_recipient,
     extract_recipient_candidates,
     extract_recipients,
@@ -14,6 +15,29 @@ from sana_declaration_uploader.extraction import (
 
 
 class RecipientExtractionTests(unittest.TestCase):
+    def test_extracts_street_and_postal_code_after_city(self) -> None:
+        address = (
+            "استان خوزستان - شهرستان امیدیه - شهر امیدیه - "
+            "خیابان اصلی آزادی - کد پستی ۱۲۳۴۵۶۷۸۹۰"
+        )
+
+        self.assertEqual(
+            extract_address_details(
+                address, "استان خوزستان", "شهرستان امیدیه", "امیدیه"
+            ),
+            ("آزادی", "1234567890"),
+        )
+
+    def test_address_without_street_uses_continuation_then_default(self) -> None:
+        self.assertEqual(
+            extract_address_details(
+                "استان فارس - شهرستان لار - شهر لار - کوچه بهار",
+                "استان فارس", "شهرستان لار", "لار",
+            ),
+            ("کوچه بهار", ""),
+        )
+        self.assertEqual(extract_address_details(""), ("خیابان اصلی", ""))
+
     def test_cleans_organization_prefix_and_keeps_multiword_given_name(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "declarations.docx"
@@ -211,6 +235,7 @@ class RecipientExtractionTests(unittest.TestCase):
             for value in (
                 "نام و نام خانوادگی: علی رضایی",
                 "کد ملی: ۱۲۳۴۵۶۷۸۹۱",
+                "شماره شناسنامه: ۷۶۵۴۳۲۱",
                 "کد پرسنلی: ۴۲۱",
                 "تاریخ تولد: ۱۳۷۰/۰۱/۰۲",
                 "کد پستی: ۱۱۱۱۱۱۱۱۱۱",
@@ -223,6 +248,7 @@ class RecipientExtractionTests(unittest.TestCase):
 
             self.assertEqual(candidate.full_name, "علی رضایی")
             self.assertEqual(candidate.national_id, "1234567891")
+            self.assertEqual(candidate.identity_no, "7654321")
             self.assertEqual(candidate.employee_code, "421")
             self.assertEqual(candidate.birth_date, "1370/01/02")
             self.assertEqual(candidate.postal_code, "1111111111")

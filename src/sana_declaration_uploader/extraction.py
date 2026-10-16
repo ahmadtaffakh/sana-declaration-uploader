@@ -170,6 +170,7 @@ def _extract_document(
         full_name = " ".join(value for value in (first_name, last_name) if value)
 
     national_id = _find_digits(normalized, r"(?:کد|شماره)\s*ملی", 10)
+    identity_no = _find_digits(normalized, r"شماره\s*شناسنامه", minimum=1, maximum=20)
     employee_code = _find_digits(
         normalized, r"(?:کد|شماره)\s*پرسنلی", minimum=1, maximum=20
     )
@@ -190,6 +191,7 @@ def _extract_document(
         source_path=source,
         full_name=full_name,
         national_id=national_id,
+        identity_no=identity_no,
         employee_code=employee_code,
         birth_date=birth_date,
         postal_code=postal_code,
@@ -441,6 +443,40 @@ def _address_locations(address: str) -> dict[str, str]:
     return result
 
 
+def extract_address_details(
+    address: str, province: str = "", county: str = "", city: str = ""
+) -> tuple[str, str]:
+    """Return the address continuation (street) and explicitly labeled postal code."""
+    normalized = _normalize_text(address)
+    postal_match = re.search(
+        r"(?:کد\s*پستی|کدپستی)\s*[:：\-]?\s*([0-9]{10})", normalized
+    )
+    postal_code = postal_match.group(1) if postal_match else ""
+
+    remainder = normalized
+    cursor = 0
+    for location in (province, county, city):
+        value = _normalize_text(location).strip()
+        value = re.sub(r"^(?:استان|شهرستان|شهر)\s*", "", value)
+        if not value:
+            continue
+        match = re.search(rf"(?<!\w){re.escape(value)}(?!\w)", remainder[cursor:])
+        if match:
+            cursor += match.end()
+    if cursor:
+        remainder = remainder[cursor:]
+
+    street_match = re.search(
+        r"خیابان\s*اصلی\s*[:：\-]?\s*(.*)", remainder
+    )
+    street = street_match.group(1) if street_match else remainder
+    street = re.sub(
+        r"(?:کد\s*پستی|کدپستی)\s*[:：\-]?\s*[0-9]{10}", "", street
+    )
+    street = street.strip(" \t\r\n-‐‑‒–—،,؛.:")
+    return street or "خیابان اصلی", postal_code
+
+
 def _table_descriptions(rows: list[tuple[str, ...]]) -> tuple[str, ...]:
     result = []
     for row in rows:
@@ -552,6 +588,7 @@ def _merge_unique_notice_duplicates(
         merged[primary_index] = replace(
             primary,
             national_id=primary.national_id or detail.national_id,
+            identity_no=primary.identity_no or detail.identity_no,
             employee_code=primary.employee_code or detail.employee_code,
             birth_date=primary.birth_date or detail.birth_date,
             postal_code=primary.postal_code or detail.postal_code,
@@ -640,6 +677,7 @@ def _party_candidate(
 ) -> RecipientCandidate:
     evidence = " ".join(evidence.strip().split())[:700]
     national_id = _find_digits(evidence, r"(?:کد|شماره)\s*ملی", 10)
+    identity_no = _find_digits(evidence, r"شماره\s*شناسنامه", minimum=1, maximum=20)
     employee_code = _find_digits(
         evidence, r"(?:کد|شماره)\s*پرسنلی", minimum=1, maximum=20
     )
@@ -655,6 +693,7 @@ def _party_candidate(
         source_path=source,
         full_name=name,
         national_id=national_id,
+        identity_no=identity_no,
         employee_code=employee_code,
         postal_code=postal_code,
         address=address,

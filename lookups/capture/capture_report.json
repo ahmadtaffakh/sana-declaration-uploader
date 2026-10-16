@@ -1,15 +1,58 @@
 {
   "counts": {
     "locations": 1683,
-    "court_units": 1972,
-    "unresolved_branches": 5
+    "court_units": 1639,
+    "jurisdictions": 1639,
+    "unresolved_branches": 49
   },
   "issues": [
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "18688924F27C4D5FADB9CD3E40BADD1C",
+      "locationCode": "01",
+      "locationName": "استان گيلان"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "0e6dda19f55744cfa853abdd255a9a07",
+      "locationCode": "02031640",
+      "locationName": "شهرستان راوند"
+    },
     {
       "code": "city_list_empty",
       "parentId": "0e6dda19f55744cfa853abdd255a9a07",
       "parentCode": "02031640",
       "parentName": "شهرستان راوند"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "FF6144A596584A5FB84BFEA5FD190CD7",
+      "locationCode": "0415",
+      "locationName": "شهرستان پلدشت"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "8C5F1890AC404460BFC61753A7857CCF",
+      "locationCode": "0417",
+      "locationName": "شهرستان شوط"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "692AC10EE5E14B30BF4559E1EEA6817F",
+      "locationCode": "0618",
+      "locationName": "شهرستان هنديجان"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "F8469CF7FEFB4534A917E36342124CF0",
+      "locationCode": "0625",
+      "locationName": "شهرستان حميديه"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "7c4ab403d7bc4fd58f46b47709060dee",
+      "locationCode": "0601021690=",
+      "locationName": "رومشكان"
     },
     {
       "code": "city_list_empty",
@@ -18,10 +61,154 @@
       "parentName": "رومشكان"
     },
     {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "7DEEE9676E5E4CC49C1D0659C83F8AC0",
+      "locationCode": "0621",
+      "locationName": "شهرستان انديكا"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "66FD633856CB47869A76CF02FEEAC1A1",
+      "locationCode": "0623",
+      "locationName": "شهرستان هويزه"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "21D884EDBE5F42469B60459AABF8F039",
+      "locationCode": "0012",
+      "locationName": "شهرستان خنداب"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "AFAA1729180D46F996783F77691FD65F",
+      "locationCode": "0728",
+      "locationName": "شهرستان كوار"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "72D15CF0FCC64FBFB50E19D5E4338374",
+      "locationCode": "0725",
+      "locationName": "شهرستان سروستان"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "20140C582DE8415191D60262F7413E67",
+      "locationCode": "0818",
+      "locationName": "شهرستان رابر"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "0704ACE417934347B06706E209ECED29",
+      "locationCode": "0939",
+      "locationName": "شهرستان داورزن"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "26A552419FA84ACA9E1B4DEADB65E21D",
+      "locationCode": "0934",
+      "locationName": "شهرستان جغتاي"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "9418F0E9951D407C9BB346BCCAA0AB18",
+      "locationCode": "0931",
+      "locationName": "شهرستان بجستان"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "6AD8568D42D747A8882C865640F25011",
+      "locationCode": "0932",
+      "locationName": "شهرستان بينالود"
+    },
+    {
       "code": "city_list_empty",
       "parentId": "c47547f161744c49b1d3e0d04aec625f",
       "parentCode": "0912",
       "parentName": "شهرستان گلبهار"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "E29F4CEF5BB1491D9AB70009F3483699",
+      "locationCode": "1021",
+      "locationName": "شهرستان دهاقان"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "98D8810F15634531A5D187835D8CFF8B",
+      "locationCode": "1112",
+      "locationName": "شهرستان دلگان"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "2F61A94E782F49CB9021FEF7CA3DDF6E",
+      "locationCode": "1115",
+      "locationName": "شهرستان نيمروز"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "DD17FE187F87455DAEE51C51AB053C23",
+      "locationCode": "1113",
+      "locationName": "شهرستان زابلي"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "9BCC19EAA89F4FD99AF24ABB78C4A04D",
+      "locationCode": "1118",
+      "locationName": "شهرستان قصرقند"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "602CB55104E74F4E83091B9AA797A245",
+      "locationCode": "1210",
+      "locationName": "شهرستان دهگلان"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "B8050FC06BD8431AB2B9D27EB22546C1",
+      "locationCode": "1306",
+      "locationName": "شهرستان اسدآباد"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "89577E9450844424B8FE877FCB2F718B",
+      "locationCode": "1510",
+      "locationName": "شهرستان دوره"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "FCC15DEBB16742CE9DD77F9D0C379055",
+      "locationCode": "1407",
+      "locationName": "شهرستان كيار"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "8FAF571353FD4BDDBE86812ABBE2A4F3",
+      "locationCode": "1408",
+      "locationName": "شهرستان سامان"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "28E2EEF5144F493794F2AF3B4BAA2927",
+      "locationCode": "1409",
+      "locationName": "شهرستان بن"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "41221D70F1F94C7EB4417C17E1A06A2F",
+      "locationCode": "1701",
+      "locationName": "شهرستان بويراحمد"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "A21023C2DAF041B38199A04FFCB52403",
+      "locationCode": "1707",
+      "locationName": "شهرستان باشت"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "6F6F2B689A7F485785EF4F0B10A629E6",
+      "locationCode": "1706",
+      "locationName": "شهرستان چرام"
     },
     {
       "code": "city_list_empty",
@@ -30,10 +217,88 @@
       "parentName": "شهرستان سلطانيه"
     },
     {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "2FAA5D66C3EC4A3AA539A94C97BC0BFE",
+      "locationCode": "2108",
+      "locationName": "شهرستان اشكذر"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "B8853E277E3749BA9B5343096BE9DF1C",
+      "locationCode": "2410",
+      "locationName": "شهرستان سرعين"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "5411786A609E45B9BA5E0D9C4969DD4C",
+      "locationCode": "2501",
+      "locationName": "شهرستان قم"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "661F00BFEB5643919F059ECDFBC3FCBD",
+      "locationCode": "2908",
+      "locationName": "شهرستان بشرويه"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "88C0615A73DA4A94AE7A63B2F80E5BF4",
+      "locationCode": "2807",
+      "locationName": "شهرستان گرمه"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "7B26D6443A4C41B8AD440082A885A794",
+      "locationCode": "2712",
+      "locationName": "شهرستان مراوه تپه"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "03949B504AE64D24A0C214CD33A7711C",
+      "locationCode": "2713",
+      "locationName": "شهرستان گميشان"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "DA387C8910734BD69C4E2D3A9BBDBF71",
+      "locationCode": "2606",
+      "locationName": "شهرستان آوج"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "C78D1FB9075A48AFBA94C628B628DE51",
+      "locationCode": "3002",
+      "locationName": "شهرستان ساوجبلاغ"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "8303F48B27734FF7A10D0BE1C18EF1EB",
+      "locationCode": "3004",
+      "locationName": "شهرستان طالقان"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "55da3f381b94422da1922442590f748f",
+      "locationCode": "3006",
+      "locationName": "شهرستان فرديس"
+    },
+    {
       "code": "city_list_empty",
       "parentId": "2f5354e97ca44cebbc6a0ed93dc6b336",
       "parentCode": "3007",
       "parentName": "شهرستان چهارباغ"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "A871D77BB41E42D9BBBE3A14BEBA7BE4",
+      "locationCode": "2304",
+      "locationName": "شهرستان شميرانات"
+    },
+    {
+      "code": "jurisdiction_not_resolved",
+      "locationId": "CA7CBC97B28C4826A59A26ED9E93B8EC",
+      "locationCode": "2317",
+      "locationName": "شهرستان ملارد"
     }
   ]
 }

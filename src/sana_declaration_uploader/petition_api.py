@@ -269,7 +269,7 @@ def build_setpetitiondata_payload(
         "Name": fields.get("recipient_first_name", ""),
         "Family": fields.get("recipient_last_name", ""),
         "FatherName": fields.get("recipient_father_name", ""),
-        "IdentityNo": fields.get("recipient_national_id", ""),
+        "IdentityNo": fields.get("recipient_identity_no", ""),
         "MobileNumber4SMS": fields.get("recipient_mobile", "") or "",
         "JobId": fields.get("job_id", ""),
         "JobTitle": "آزاد",
@@ -280,18 +280,34 @@ def build_setpetitiondata_payload(
             fields.get("recipient_address", "")
         ),
         "PostallCode": fields.get("recipient_postal_code", ""),
+        # In SetPetitionData these legacy *Id fields carry the short address
+        # codes; sending the lookup GUIDs here conflicts with the portal contract.
         # Portal payload uses State for province and Province for county.
-        "StateId": fields["province_id"],
+        "StateId": fields["province_code"],
         "StateTitle": fields["province"],
-        "ProvinceId": fields["county_id"],
+        "ProvinceId": fields["county_code"],
         "ProvinceTitle": fields["county"],
-        "CityId": fields["city_id"],
+        "CityId": fields["city_code"],
         "CityTitle": fields["city"],
+        "NotifyOwnerOrganizationId": fields.get(
+            "notify_owner_organization_id", ""
+        ),
+        "NotifyOwnerOrganizationCode": fields.get(
+            "notify_owner_organization_code", ""
+        ),
+        "NotifyOwnerOrganizationTitle": fields.get(
+            "notify_owner_organization_title", ""
+        ),
+        "GetLocationForAddressId": fields.get(
+            "get_location_for_address_id", ""
+        ),
     }
     required_fields = (
         "Name", "Family", "BasicAvenue", "HomeAddress",
         "ProvinceId", "ProvinceTitle", "StateId", "StateTitle",
-        "CityId", "CityTitle",
+        "CityId", "CityTitle", "NotifyOwnerOrganizationId",
+        "NotifyOwnerOrganizationCode", "NotifyOwnerOrganizationTitle",
+        "GetLocationForAddressId",
     )
     if any(name not in recipient for name in required_fields):
         raise SetPetitionDataError("set_petition_data_template_invalid")

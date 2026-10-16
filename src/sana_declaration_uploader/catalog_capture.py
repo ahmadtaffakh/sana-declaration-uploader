@@ -9,7 +9,7 @@ from typing import Mapping
 from .live_browser import LiveBrowserError
 
 
-_CAPTURE_SCRIPT = r"""async ({settleMs, courtWaitMs}) => {
+_CAPTURE_SCRIPT = r"""async ({settleMs}) => {
     const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
     const container = name => document.querySelector(
         `.ui-select-container[name="${name}"]`
@@ -29,32 +29,20 @@ _CAPTURE_SCRIPT = r"""async ({settleMs, courtWaitMs}) => {
         throw new Error('recipient_model_missing');
     }
     const person = viewModel.currentPetitionPerson;
-    const responseCourts = [];
-    const harvest = value => {
-        if (!value) return;
-        if (Array.isArray(value)) {
-            value.forEach(harvest);
-            return;
-        }
-        if (typeof value !== 'object') return;
-        const code = String(value.Code || '').trim();
-        const title = String(value.UnitName || value.Title || '').trim();
-        const locationId = String(value.GeoLocationId || '').trim();
-        if (code && title && locationId) {
-            responseCourts.push({code, title, locationId});
-        }
-        Object.values(value).forEach(harvest);
-    };
+    let pendingLocationRequests = 0;
+    let locationRequestCount = 0;
     const originalOpen = XMLHttpRequest.prototype.open;
     const originalSend = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.open = function(method, url) {
-        this.__catalogCaptureUrl = String(url || '');
+        this.__catalogLocationRequest = /GetGeoLocation|GetCMSOrganization|GetLocationForAddress|GetUnits/.test(String(url || ''));
         return originalOpen.apply(this, arguments);
     };
     XMLHttpRequest.prototype.send = function() {
-        if (this.__catalogCaptureUrl.includes('GetCMSOrganization')) {
-            this.addEventListener('load', () => {
-                try { harvest(JSON.parse(this.responseText)); } catch (_) {}
+        if (this.__catalogLocationRequest) {
+            pendingLocationRequests += 1;
+            locationRequestCount += 1;
+            this.addEventListener('loadend', () => {
+                pendingLocationRequests = Math.max(0, pendingLocationRequests - 1);
             }, {once: true});
         }
         return originalSend.apply(this, arguments);
@@ -67,8 +55,10 @@ _CAPTURE_SCRIPT = r"""async ({settleMs, courtWaitMs}) => {
         ProvinceTitle: person.ProvinceTitle,
         CityId: person.CityId,
         CityTitle: person.CityTitle,
+        NotifyOwnerOrganizationId: person.NotifyOwnerOrganizationId,
         NotifyOwnerOrganizationCode: person.NotifyOwnerOrganizationCode,
         NotifyOwnerOrganizationTitle: person.NotifyOwnerOrganizationTitle,
+        GetLocationForAddressId: person.GetLocationForAddressId,
     };
     const waitFor = async (predicate, code, timeoutMs = 30000) => {
         const deadline = Date.now() + timeoutMs;
@@ -94,7 +84,15 @@ _CAPTURE_SCRIPT = r"""async ({settleMs, courtWaitMs}) => {
     };
     const choose = async (name, item) => {
         const scope = selectScope(name);
+        const previousRequestCount = locationRequestCount;
         scope.$apply(() => scope.$select.select(item, false));
+        await delay(100);
+        if (locationRequestCount > previousRequestCount) {
+            await waitFor(
+                () => pendingLocationRequests === 0 ? true : null,
+                `lookup_request_pending:${name}`
+            );
+        }
         await delay(settleMs);
     };
     const waitChildren = async (field, timeoutMs = 30000) => await waitFor(() => {
@@ -105,11 +103,34 @@ _CAPTURE_SCRIPT = r"""async ({settleMs, courtWaitMs}) => {
 
     const locations = [];
     const courts = [];
+    const jurisdictions = [];
     const issues = [];
-    const collectCurrentCourt = locationId => {
+    const collectCurrentCourt = location => {
+        const locationId = String(location.Id || '').trim();
+        const organizationId = String(person.NotifyOwnerOrganizationId || '').trim();
         const code = String(person.NotifyOwnerOrganizationCode || '').trim();
         const title = String(person.NotifyOwnerOrganizationTitle || '').trim();
-        if (code && title) courts.push({code, title, locationId});
+        if (!organizationId || !code || !title) {
+            issues.push({
+                code: 'jurisdiction_not_resolved',
+                locationId,
+                locationCode: String(location.LocationCode || ''),
+                locationName: String(location.LocationName || ''),
+            });
+            return;
+        }
+        courts.push({code, title, locationId});
+        jurisdictions.push({
+            locationId,
+            locationType: Number(location.LocationType),
+            locationCode: String(location.LocationCode || '').trim(),
+            locationName: String(location.LocationName || '').trim(),
+            parentLocationId: String(location.ParentId || '').trim(),
+            getLocationForAddressId: String(person.GetLocationForAddressId || '').trim(),
+            organizationId,
+            organizationCode: code,
+            organizationTitle: title,
+        });
     };
     try {
         person.BasicAvenue = person.BasicAvenue || ' ';
@@ -122,12 +143,13 @@ _CAPTURE_SCRIPT = r"""async ({settleMs, courtWaitMs}) => {
             viewModel.theProvinceTitleList = [];
             await choose('state', state);
             locations.push({...state, ParentId: ''});
+            collectCurrentCourt({...state, ParentId: ''});
             const counties = await waitChildren('theProvinceTitleList');
             for (const county of counties) {
                 viewModel.theCityTitleList = [];
                 await choose('province', county);
                 locations.push({...county, ParentId: state.Id});
-                collectCurrentCourt(String(county.Id || ''));
+                collectCurrentCourt({...county, ParentId: state.Id});
                 const cities = await waitChildren(
                     'theCityTitleList', 5000
                 ).catch(() => {
@@ -140,29 +162,18 @@ _CAPTURE_SCRIPT = r"""async ({settleMs, courtWaitMs}) => {
                     return [];
                 });
                 for (const city of cities) {
-                    person.NotifyOwnerOrganizationCode = '';
-                    person.NotifyOwnerOrganizationTitle = '';
                     await choose('city', city);
                     locations.push({...city, ParentId: county.Id});
-                    const court = await waitFor(() => {
-                        const code = String(
-                            person.NotifyOwnerOrganizationCode || ''
-                        ).trim();
-                        const title = String(
-                            person.NotifyOwnerOrganizationTitle || ''
-                        ).trim();
-                        return code && title ? {code, title} : null;
-                    }, 'court_not_resolved', courtWaitMs).catch(() => null);
-                    if (court) {
-                        courts.push({
-                            ...court,
-                            locationId: String(city.Id || ''),
-                        });
-                    }
+                    collectCurrentCourt({...city, ParentId: county.Id});
                 }
             }
         }
-        return {locations, courts: [...courts, ...responseCourts], issues};
+        return {
+            locations,
+            courts,
+            jurisdictions,
+            issues,
+        };
     } finally {
         XMLHttpRequest.prototype.open = originalOpen;
         XMLHttpRequest.prototype.send = originalSend;
@@ -191,12 +202,19 @@ def capture_catalogs_from_page(
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_json(output_dir / "locations.captured.json", locations)
     _write_json(output_dir / "court_units.captured.json", courts)
+    extracted_jurisdictions = raw.get("jurisdictions", [])
+    if not isinstance(extracted_jurisdictions, list):
+        raise LiveBrowserError("lookup_catalog_payload_invalid")
+    _write_json(
+        output_dir / "jurisdictions.captured.json", extracted_jurisdictions
+    )
     issues = raw.get("issues", []) if isinstance(raw, Mapping) else []
     if not isinstance(issues, list):
         raise LiveBrowserError("lookup_catalog_payload_invalid")
     summary = {
         "locations": len(locations),
         "court_units": len(courts),
+        "jurisdictions": len(extracted_jurisdictions),
         "unresolved_branches": len(issues),
     }
     _write_json(
@@ -286,7 +304,7 @@ def run_interactive_catalog_capture(
     *,
     navigation_timeout_ms: int = 15 * 60 * 1_000,
 ) -> dict[str, int]:
-    """Open Chrome and wait for the operator to reach the address-combo page."""
+    """Wait for the operator to reach the address page, then leave Chrome open."""
 
     try:
         from playwright.sync_api import sync_playwright
@@ -298,6 +316,7 @@ def run_interactive_catalog_capture(
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel="chrome", headless=False)
         context = browser.new_context()
+        page = None
         try:
             page = context.new_page()
             page.goto("about:blank")
@@ -309,14 +328,21 @@ def run_interactive_catalog_capture(
             page.locator('.ui-select-container[name="state"]').wait_for(
                 state="attached", timeout=navigation_timeout_ms
             )
-            return capture_catalogs_from_page(page, output_dir)
+            summary = capture_catalogs_from_page(page, output_dir)
+            print("برداشت تمام شد؛ پس از بررسی، پنجرهٔ Chrome را خودتان ببندید.")
+            # Keep the Playwright process alive; closing the browser is the operator's choice.
+            page.wait_for_event("close", timeout=0)
+            return summary
         except LiveBrowserError:
+            if page is not None and not page.is_closed():
+                print("خطا رخ داد؛ صفحه برای بررسی باز می‌ماند. مرورگر را خودتان ببندید.")
+                page.wait_for_event("close", timeout=0)
             raise
         except Exception as exc:
+            if page is not None and not page.is_closed():
+                print("خطا رخ داد؛ صفحه برای بررسی باز می‌ماند. مرورگر را خودتان ببندید.")
+                page.wait_for_event("close", timeout=0)
             raise LiveBrowserError("lookup_catalog_page_not_reached") from exc
-        finally:
-            context.close()
-            browser.close()
 
 
 def promote_captured_catalogs(

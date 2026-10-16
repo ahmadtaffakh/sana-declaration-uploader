@@ -37,7 +37,28 @@ class CatalogCaptureTests(unittest.TestCase):
                 "LocationType": 5, "ParentId": "c1",
             },
         ],
-        "courts": [{"code": "00159", "title": "واحد تهران", "locationId": "t1"}],
+        "courts": [
+            {"code": "00159", "title": "واحد تهران", "locationId": key}
+            for key in ("p1", "c1", "t1")
+        ],
+        "jurisdictions": [
+            {
+                "locationId": key,
+                "locationType": location_type,
+                "locationCode": location_code,
+                "locationName": location_name,
+                "parentLocationId": parent,
+                "getLocationForAddressId": "address1",
+                "organizationId": "org1",
+                "organizationCode": "00159",
+                "organizationTitle": "واحد تهران",
+            }
+            for key, location_type, location_code, location_name, parent in (
+                ("p1", 2, "23", "تهران", ""),
+                ("c1", 3, "2301", "تهران", "p1"),
+                ("t1", 5, "2301000001", "تهران", "c1"),
+            )
+        ],
     }
 
     def test_normalizes_hierarchy_and_matching_court(self) -> None:
@@ -46,7 +67,7 @@ class CatalogCaptureTests(unittest.TestCase):
         self.assertEqual(locations[0]["label"], "استان تهران")
         self.assertEqual(locations[1]["label"], "شهرستان تهران")
         self.assertEqual(locations[2]["parent_key"], "c1")
-        self.assertEqual(courts[0]["location_id"], "t1")
+        self.assertEqual(courts[-1]["location_id"], "t1")
         self.assertEqual(courts[0]["code"], "00159")
 
     def test_missing_parent_fails_before_writing(self) -> None:
@@ -68,7 +89,8 @@ class CatalogCaptureTests(unittest.TestCase):
 
             self.assertEqual(counts, {
                 "locations": 3,
-                "court_units": 1,
+                "court_units": 3,
+                "jurisdictions": 3,
                 "unresolved_branches": 0,
             })
             locations = json.loads(
@@ -80,9 +102,39 @@ class CatalogCaptureTests(unittest.TestCase):
             report = json.loads(
                 (output_dir / "capture_report.json").read_text(encoding="utf-8")
             )
+            jurisdictions = json.loads(
+                (output_dir / "jurisdictions.captured.json").read_text(
+                    encoding="utf-8"
+                )
+            )
             self.assertEqual(locations[2]["id"], "t1")
-            self.assertEqual(courts[0]["location_id"], "t1")
+            self.assertEqual(courts[-1]["location_id"], "t1")
             self.assertEqual(report["counts"]["unresolved_branches"], 0)
+            self.assertEqual(len(jurisdictions), 3)
+            self.assertEqual(jurisdictions[0]["organizationId"], "org1")
+            self.assertEqual(
+                [entry["organizationCode"] for entry in jurisdictions],
+                ["00159", "00159", "00159"],
+            )
+
+    def test_capture_observes_cascading_recipient_model_without_api_enumeration(self) -> None:
+        with TemporaryDirectory() as directory:
+            page = _Page(self.PAYLOAD)
+            capture_catalogs_from_page(page, Path(directory))
+
+        script = page.calls[0][0]
+        for observed_contract in (
+            "NotifyOwnerOrganizationId",
+            "NotifyOwnerOrganizationCode",
+            "NotifyOwnerOrganizationTitle",
+            "GetLocationForAddressId",
+            "collectCurrentCourt({...state, ParentId: ''})",
+            "collectCurrentCourt({...county, ParentId: state.Id})",
+            "collectCurrentCourt({...city, ParentId: county.Id})",
+        ):
+            self.assertIn(observed_contract, script)
+        self.assertNotIn("postJson(", script)
+        self.assertNotIn("fetch(`/Offices/", script)
 
     def test_promotes_valid_rows_and_excludes_reported_branch(self) -> None:
         with TemporaryDirectory() as directory:
@@ -108,7 +160,7 @@ class CatalogCaptureTests(unittest.TestCase):
             )
             (capture_dir / "capture_report.json").write_text(
                 json.dumps({
-                    "counts": {"locations": 3, "court_units": 2},
+                    "counts": {"locations": 3, "court_units": 4},
                     "issues": [{"parentId": excluded["id"]}],
                 }, ensure_ascii=False),
                 encoding="utf-8",

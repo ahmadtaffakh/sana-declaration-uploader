@@ -250,6 +250,71 @@ def suggest_court_unit(
     return resolved
 
 
+def resolve_captured_jurisdiction_fields(
+    fields: Mapping[str, str], lookup_dir: Path
+) -> dict[str, str]:
+    """Resolve the most-specific captured jurisdiction for a recipient location.
+
+    The capture stores the portal's active court at province, county, and city
+    level. Missing lower-level rows inherit by falling back to their parent.
+    """
+
+    path = lookup_dir / "capture" / "jurisdictions.captured.json"
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise LookupResolutionError("jurisdiction_capture_unavailable") from exc
+    if not isinstance(entries, list) or not all(
+        isinstance(entry, dict) for entry in entries
+    ):
+        raise LookupResolutionError("jurisdiction_capture_invalid")
+
+    location_levels = (
+        ("city_id", 5),
+        ("county_id", 3),
+        ("province_id", 2),
+    )
+    for field, location_type in location_levels:
+        location_id = str(fields.get(field, "") or "").strip()
+        if not location_id:
+            continue
+        matches = [
+            entry for entry in entries
+            if str(entry.get("locationId", "")).strip() == location_id
+            and str(entry.get("locationType", "")).strip() == str(location_type)
+        ]
+        if not matches:
+            continue
+        identities = {
+            (
+                str(entry.get("organizationId", "")).strip(),
+                str(entry.get("organizationCode", "")).strip(),
+                str(entry.get("organizationTitle", "")).strip(),
+                str(entry.get("getLocationForAddressId", "")).strip(),
+            )
+            for entry in matches
+        }
+        if len(identities) != 1:
+            raise LookupResolutionError(
+                f"jurisdiction_ambiguous:{field}:{location_id}"
+            )
+        organization_id, organization_code, organization_title, address_id = (
+            next(iter(identities))
+        )
+        if not all((organization_id, organization_code, organization_title, address_id)):
+            raise LookupResolutionError(
+                f"jurisdiction_entry_invalid:{field}:{location_id}"
+            )
+        return {
+            "notify_owner_organization_id": organization_id,
+            "notify_owner_organization_code": organization_code,
+            "notify_owner_organization_title": organization_title,
+            "get_location_for_address_id": address_id,
+        }
+
+    raise LookupResolutionError("jurisdiction_not_found:recipient_location")
+
+
 def _resolve_job(resolved: dict[str, str], lookup_dir: Path) -> dict[str, str]:
     job_title = resolved.get("job_title", "").strip()
     if not job_title:

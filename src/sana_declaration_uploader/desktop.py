@@ -45,16 +45,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .extraction import extract_recipients
+from .extraction import extract_address_details, extract_recipients
 from .flow import _build_desktop_drafts
 from .live_browser import (
     LoginCredentials,
     run_live_upload_batch,
     run_login_check,
 )
-from .api_test_flow import run_live_setpetitiondata_test
+from .api_test_flow import run_live_setpetitiondata_batch
 from .petition_api import load_setpetitiondata_template
-from .lookups import LookupResolutionError, resolve_lookup_fields
+from .lookups import (
+    LookupResolutionError,
+    resolve_captured_jurisdiction_fields,
+    resolve_lookup_fields,
+)
 from .models import DeclarationDraft, RecipientCandidate
 from .preprocessing import preprocess_candidate, preprocess_candidates
 from .results import ResultPersistenceError, save_verified_result
@@ -748,6 +752,10 @@ class PreprocessingPage(QWizardPage):
         "کد شهرستان",
         "شهر",
         "کد شهر",
+        "حوزه قضایی",
+        "کد حوزه",
+        "خیابان اصلی",
+        "کد پستی",
         "آدرس",
         "بازکردن",
         "وضعیت",
@@ -790,6 +798,12 @@ class PreprocessingPage(QWizardPage):
         for candidate in candidates:
             row = self.table.rowCount()
             self.table.insertRow(row)
+            main_street, postal_code = extract_address_details(
+                candidate.address,
+                candidate.province,
+                candidate.county,
+                candidate.city,
+            )
             values = (
                 "",
                 candidate.source_path.name,
@@ -802,6 +816,13 @@ class PreprocessingPage(QWizardPage):
                 candidate.county_code,
                 candidate.city,
                 candidate.city_code,
+                *self._jurisdiction_display({
+                    "province": candidate.province,
+                    "county": candidate.county,
+                    "city": candidate.city,
+                }),
+                candidate.main_street or main_street,
+                candidate.postal_code or postal_code,
                 candidate.address,
                 "",
                 self._status(candidate),
@@ -819,7 +840,7 @@ class PreprocessingPage(QWizardPage):
                     item.setData(Qt.ItemDataRole.UserRole, candidate)
                 if self.HEADERS[column] in (
                     "انتخاب", "فایل منبع", "نام شخص", "شغل", "کد شغل",
-                    "بازکردن", "وضعیت", "حذف",
+                    "حوزه قضایی", "کد حوزه", "بازکردن", "وضعیت", "حذف",
                 ):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, column, item)
@@ -862,9 +883,11 @@ class PreprocessingPage(QWizardPage):
                 county_code=value("کد شهرستان"),
                 city=value("شهر"),
                 city_code=value("کد شهر"),
+                main_street=value("خیابان اصلی"),
+                postal_code=value("کد پستی"),
                 address=value("آدرس"),
-                court_unit_name="",
-                court_unit_code="",
+                court_unit_name=value("حوزه قضایی"),
+                court_unit_code=value("کد حوزه"),
             )
             self.table.item(row, self.HEADERS.index("نام شخص")).setData(
                 Qt.ItemDataRole.UserRole, updated
@@ -890,6 +913,10 @@ class PreprocessingPage(QWizardPage):
         try:
             for header in ("کد استان", "کد شهرستان", "کد شهر"):
                 self.table.item(row, self.HEADERS.index(header)).setText("")
+            self.table.item(
+                row, self.HEADERS.index("حوزه قضایی")
+            ).setText("")
+            self.table.item(row, self.HEADERS.index("کد حوزه")).setText("")
             complete = True
             for fields, code_header, prefix in (
                 (("province",), "کد استان", "province"),
@@ -930,11 +957,32 @@ class PreprocessingPage(QWizardPage):
                 self.table.item(row, self.HEADERS.index(code_header)).setText(
                     resolved.get(f"{prefix}_code", "")
                 )
+            if complete:
+                court_name, court_code = self._jurisdiction_display(resolved)
+                self.table.item(
+                    row, self.HEADERS.index("حوزه قضایی")
+                ).setText(court_name)
+                self.table.item(
+                    row, self.HEADERS.index("کد حوزه")
+                ).setText(court_code)
             self.table.item(row, self.HEADERS.index("وضعیت")).setText(
                 "آماده بازبینی" if complete else "نیازمند تکمیل"
             )
         finally:
             self.table.blockSignals(False)
+
+    def _jurisdiction_display(self, location: dict[str, str]) -> tuple[str, str]:
+        try:
+            resolved = resolve_lookup_fields(location, self._lookup_dir)
+            jurisdiction = resolve_captured_jurisdiction_fields(
+                resolved, self._lookup_dir
+            )
+        except LookupResolutionError:
+            return "", ""
+        return (
+            jurisdiction["notify_owner_organization_title"],
+            jurisdiction["notify_owner_organization_code"],
+        )
 
     def _remove_selected(self) -> None:
         rows = {
@@ -1423,7 +1471,7 @@ class LoginPage(QWizardPage):
         self.test_login_button = QPushButton("آزمایش ورود بدون ثبت")
         self.test_login_button.clicked.connect(self._test_login)
         self.api_test_button = QPushButton(
-            "آزمایش ثبت موقت API برای مخاطب فعال"
+            "ثبت موقت API برای همهٔ ردیف‌ها"
         )
         self.api_test_button.clicked.connect(self._test_api_registration)
         self.close_browser_button = QPushButton("خروج از مرورگر")
@@ -1637,7 +1685,6 @@ class LoginPage(QWizardPage):
 class RecipientWizard(QWizard):
     otp_requested = Signal(object)
     final_confirmation_requested = Signal(object, object)
-    api_confirmation_requested = Signal(object, object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -1676,7 +1723,6 @@ class RecipientWizard(QWizard):
         self.currentIdChanged.connect(self._page_changed)
         self.otp_requested.connect(self._show_otp_prompt)
         self.final_confirmation_requested.connect(self._show_final_confirmation)
-        self.api_confirmation_requested.connect(self._show_api_confirmation)
         self.setButtonLayout([
             QWizard.WizardButton.BackButton,
             QWizard.WizardButton.NextButton,
@@ -1895,29 +1941,6 @@ class RecipientWizard(QWizard):
         )
         response.put(answer == QMessageBox.StandardButton.Yes)
 
-    @Slot(object, object)
-    def _show_api_confirmation(
-        self,
-        draft: DeclarationDraft,
-        response: Queue,
-    ) -> None:
-        name = " ".join(
-            value for value in (
-                draft.fields.get("recipient_first_name", ""),
-                draft.fields.get("recipient_last_name", ""),
-            ) if value
-        )
-        answer = QMessageBox.question(
-            self,
-            "تأیید ثبت موقت آزمایشی با API",
-            f"درخواست ثبت موقت فقط برای مخاطب «{name}» یک‌بار ارسال شود؟\n"
-            "پیوست و امضای نهایی انجام نمی‌شود. اگر نتیجه مبهم باشد، درخواست "
-            "تکرار نخواهد شد.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        response.put(answer == QMessageBox.StandardButton.Yes)
-
     def _start_api_test(self, credentials: LoginCredentials) -> None:
         try:
             petition_template = load_setpetitiondata_template(
@@ -1926,10 +1949,31 @@ class RecipientWizard(QWizard):
         except (OSError, ValueError, RuntimeError) as exc:
             QMessageBox.warning(self, "قالب SetPetitionData موجود نیست", str(exc))
             return
+        candidates = self.preprocessing_page.candidates()
+        if not candidates:
+            QMessageBox.warning(self, "مخاطب وجود ندارد", "حداقل یک ردیف لازم است.")
+            return
         try:
-            draft = self.content_page.active_draft(self._lookup_dir)
+            drafts = _build_desktop_drafts(
+                candidates,
+                self.content_page.payloads(),
+                shared=False,
+                lookup_dir=self._lookup_dir,
+            )
         except (ValueError, LookupResolutionError) as exc:
             QMessageBox.warning(self, "پیش‌نویس آزمایشی نامعتبر", str(exc))
+            return
+        answer = QMessageBox.question(
+            self,
+            "تأیید ثبت موقت ردیف‌ها با API",
+            f"برای {len(drafts)} ردیف، SetPetitionData به‌ترتیب و هر ردیف "
+            "فقط یک‌بار فراخوانی شود؟ پس از پاسخ موفق، کد رهگیری در لاگ "
+            "ثبت و ردیف بعدی اجرا می‌شود. در خطا یا پاسخ مبهم، ادامه متوقف "
+            "می‌شود و پیوست یا امضای نهایی انجام نمی‌شود.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
             return
         self.login_page.start_log()
         close_browser_event = Event()
@@ -1938,45 +1982,37 @@ class RecipientWizard(QWizard):
         self.login_page.close_browser_button.setEnabled(False)
         report = self.login_page.append_output
         report(
-            "آزمایش API برای یک مخاطب فعال آغاز شد؛ پیوست و امضای نهایی اجرا نمی‌شود.",
+            f"ثبت موقت API برای {len(drafts)} ردیف آغاز شد؛ "
+            "پیوست و امضای نهایی اجرا نمی‌شود.",
             level="system",
         )
 
         def task(progress: Callable[[str], None]) -> object:
             progress("در حال راه‌اندازی مرورگر برای آزمایش یک‌موردی...")
 
-            def confirm() -> bool:
-                response: Queue = Queue(maxsize=1)
-                self.api_confirmation_requested.emit(draft, response)
-                return bool(response.get())
-
-            return run_live_setpetitiondata_test(
-                draft,
+            return run_live_setpetitiondata_batch(
+                drafts,
                 credentials,
-                confirm,
+                lambda: True,
                 petition_template,
                 _setpetitiondata_request_text_path(),
+                lookup_dir=self._lookup_dir,
                 progress=progress,
                 close_browser_event=close_browser_event,
             )
 
         def succeeded(result: object) -> None:
-            if result is None:
-                report("ارسال آزمایشی توسط کاربر لغو شد؛ درخواستی ثبت نشد.", level="warning")
+            results = tuple(result)
+            if not results:
+                report("هیچ ردیفی ثبت نشد.", level="warning")
                 return
-            report(
-                "ثبت موقت آزمایشی موفق بود؛ "
-                f"کد رهگیری: {result.tracking_code}؛ "
-                f"شماره اظهارنامه: {result.petition_number}",
-                level="success",
-            )
+            report(f"ثبت موقت API تمام شد؛ موفق: {len(results)} ردیف.", level="success")
             QMessageBox.information(
                 self,
-                "ثبت موقت آزمایشی موفق",
-                "درخواست یک‌موردی با موفقیت پاسخ گرفت.\n"
-                f"کد رهگیری: {result.tracking_code}\n"
-                f"شماره اظهارنامه: {result.petition_number}\n"
-                "این مسیر پیوست یا امضای نهایی را انجام نداده است.",
+                "ثبت موقت ردیف‌ها موفق",
+                f"{len(results)} ردیف با موفقیت ثبت شد. کد رهگیری هر ردیف "
+                "در لاگ نمایش داده شده است. این مسیر پیوست یا امضای نهایی "
+                "را انجام نمی‌دهد.",
             )
 
         def failed(exc: Exception, details: str) -> None:

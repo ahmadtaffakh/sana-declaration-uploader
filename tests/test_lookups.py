@@ -6,6 +6,7 @@ import unittest
 from sana_declaration_uploader.lookups import (
     LookupResolutionError,
     resolve_city_hierarchy,
+    resolve_captured_jurisdiction_fields,
     resolve_lookup_fields,
     resolve_province_from_county,
     suggest_court_unit,
@@ -13,6 +14,69 @@ from sana_declaration_uploader.lookups import (
 
 
 class LookupTests(unittest.TestCase):
+    def test_captured_city_jurisdiction_overrides_parent_mapping(self) -> None:
+        with TemporaryDirectory() as directory:
+            lookup_dir = Path(directory)
+            capture_dir = lookup_dir / "capture"
+            capture_dir.mkdir()
+            self._write(capture_dir / "jurisdictions.captured.json", [
+                self._jurisdiction("province1", 2, "court-province", "00100"),
+                self._jurisdiction("county1", 3, "court-county", "00200"),
+                self._jurisdiction("city1", 5, "court-city", "00300"),
+            ])
+
+            result = resolve_captured_jurisdiction_fields(
+                {
+                    "province_id": "province1",
+                    "county_id": "county1",
+                    "city_id": "city1",
+                },
+                lookup_dir,
+            )
+
+        self.assertEqual(result["notify_owner_organization_id"], "court-city")
+        self.assertEqual(result["notify_owner_organization_code"], "00300")
+
+    def test_missing_city_jurisdiction_inherits_county_mapping(self) -> None:
+        with TemporaryDirectory() as directory:
+            lookup_dir = Path(directory)
+            capture_dir = lookup_dir / "capture"
+            capture_dir.mkdir()
+            self._write(capture_dir / "jurisdictions.captured.json", [
+                self._jurisdiction("province1", 2, "court-province", "00100"),
+                self._jurisdiction("county1", 3, "court-county", "00200"),
+            ])
+
+            result = resolve_captured_jurisdiction_fields(
+                {
+                    "province_id": "province1",
+                    "county_id": "county1",
+                    "city_id": "city1",
+                },
+                lookup_dir,
+            )
+
+        self.assertEqual(result["notify_owner_organization_id"], "court-county")
+        self.assertEqual(result["notify_owner_organization_code"], "00200")
+
+    def test_duplicate_city_mappings_fail_closed(self) -> None:
+        with TemporaryDirectory() as directory:
+            lookup_dir = Path(directory)
+            capture_dir = lookup_dir / "capture"
+            capture_dir.mkdir()
+            first = self._jurisdiction("city1", 5, "court-a", "00300")
+            second = self._jurisdiction("city1", 5, "court-b", "00400")
+            self._write(
+                capture_dir / "jurisdictions.captured.json", [first, second]
+            )
+
+            with self.assertRaisesRegex(
+                LookupResolutionError, "jurisdiction_ambiguous:city_id"
+            ):
+                resolve_captured_jurisdiction_fields(
+                    {"city_id": "city1"}, lookup_dir
+                )
+
     def test_resolves_common_kohgiluyeh_spelling_variants(self) -> None:
         lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
 
@@ -230,6 +294,22 @@ class LookupTests(unittest.TestCase):
         path.write_text(
             json.dumps(value, ensure_ascii=False), encoding="utf-8"
         )
+
+    @staticmethod
+    def _jurisdiction(
+        location_id: str, location_type: int, organization_id: str, code: str
+    ) -> dict[str, object]:
+        return {
+            "locationId": location_id,
+            "locationType": location_type,
+            "locationCode": "01",
+            "locationName": "مکان نمونه",
+            "parentLocationId": "",
+            "getLocationForAddressId": f"address-{location_id}",
+            "organizationId": organization_id,
+            "organizationCode": code,
+            "organizationTitle": "حوزه نمونه",
+        }
 
 
 if __name__ == "__main__":
