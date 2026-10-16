@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 import re
+from threading import Event
 from typing import TypeVar
 
 from .browser import run_attachment_workflow, validate_attachments_for_upload
@@ -124,6 +125,7 @@ def run_authenticated_batch(
     credentials_provider: Callable[[], LoginCredentials | None],
     process_item: Callable[[_BatchItem, object], None],
     before_item: Callable[[_BatchItem], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> None:
     """Process each item once, reauthenticating only before a new item.
 
@@ -132,9 +134,13 @@ def run_authenticated_batch(
     """
 
     for item in items:
+        if should_stop is not None and should_stop():
+            break
         if before_item is not None:
             before_item(item)
         session.ensure_authenticated(credentials_provider)
+        if should_stop is not None and should_stop():
+            break
         process_item(item, session.page)
 
 
@@ -210,6 +216,7 @@ def run_live_upload_batch(
     headless: bool = False,
     timeout_ms: int = 60_000,
     progress: ProgressCallback | None = None,
+    stop_event: Event | None = None,
 ) -> tuple[UploadResult, ...]:
     """Open one Chrome context and execute the reviewed batch exactly once."""
 
@@ -233,6 +240,7 @@ def run_live_upload_batch(
                     final_confirmation,
                     timeout_ms=timeout_ms,
                     progress=progress,
+                    stop_event=stop_event,
                 )
             except Exception:
                 _hold_browser_for_error_inspection(page, progress)
@@ -1121,6 +1129,7 @@ def upload_authenticated_batch(
     *,
     timeout_ms: int = 60_000,
     progress: ProgressCallback | None = None,
+    stop_event: Event | None = None,
 ) -> tuple[UploadResult, ...]:
     """Upload drafts once on one reusable page, reauthenticating between items."""
 
@@ -1168,8 +1177,14 @@ def upload_authenticated_batch(
             f"[ردیف {item[0] + 1} از {len(draft_list)}] "
             "اقدام جاری: بررسی نشست ورود",
         ),
+        should_stop=stop_event.is_set if stop_event is not None else None,
     )
-    return tuple(result for result in results if result is not None)
+    return tuple(
+        result if result is not None else UploadResult(
+            status="stopped", message="stopped_before_start"
+        )
+        for result in results
+    )
 
 
 def _validate_live_draft(draft: DeclarationDraft) -> None:

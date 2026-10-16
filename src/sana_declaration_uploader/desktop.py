@@ -776,6 +776,8 @@ class RecipientReviewPage(QWizardPage):
 
 class PreprocessingPage(QWizardPage):
     HEADERS = (
+        "حذف",
+        "بازکردن",
         "انتخاب",
         "فایل منبع",
         "کد رهگیری",
@@ -794,9 +796,7 @@ class PreprocessingPage(QWizardPage):
         "خیابان اصلی",
         "کد پستی",
         "آدرس",
-        "بازکردن",
         "وضعیت",
-        "حذف",
     )
 
     def __init__(self) -> None:
@@ -846,6 +846,8 @@ class PreprocessingPage(QWizardPage):
             )
             values = (
                 "",
+                "",
+                "",
                 candidate.source_path.name,
                 "",
                 "",
@@ -866,13 +868,11 @@ class PreprocessingPage(QWizardPage):
                 candidate.main_street or main_street,
                 candidate.postal_code or postal_code,
                 candidate.address,
-                "",
                 self._status(candidate),
-                "",
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if column == 0:
+                if self.HEADERS[column] == "انتخاب":
                     item.setFlags(
                         (item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                         & ~Qt.ItemFlag.ItemIsEditable
@@ -887,19 +887,23 @@ class PreprocessingPage(QWizardPage):
                 ):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, column, item)
-            open_button = QPushButton("بازکردن")
+            open_widget, open_button = _table_icon_action(
+                QStyle.StandardPixmap.SP_DialogOpenButton, "بازکردن فایل"
+            )
             open_button.clicked.connect(
                 lambda _checked=False, path=candidate.source_path: _open_source(path)
             )
-            self.table.setCellWidget(
-                row, self.HEADERS.index("بازکردن"), open_button
+            remove_widget, remove_button = _table_icon_action(
+                QStyle.StandardPixmap.SP_TrashIcon, "حذف ردیف"
             )
-            remove_button = QPushButton("حذف")
             remove_button.clicked.connect(
-                lambda _checked=False, marker=self.table.item(row, 0):
+                lambda _checked=False, marker=self.table.item(
+                    row, self.HEADERS.index("نام شخص")
+                ):
                 self.table.removeRow(marker.row())
             )
-            self.table.setCellWidget(row, self.HEADERS.index("حذف"), remove_button)
+            self.table.setCellWidget(row, self.HEADERS.index("بازکردن"), open_widget)
+            self.table.setCellWidget(row, self.HEADERS.index("حذف"), remove_widget)
         self.refresh_registration_results()
         self.table.blockSignals(False)
         self.table.resizeColumnsToContents()
@@ -1057,7 +1061,9 @@ class PreprocessingPage(QWizardPage):
     def _remove_selected(self) -> None:
         rows = {
             row for row in range(self.table.rowCount())
-            if self.table.item(row, 0).checkState() == Qt.CheckState.Checked
+            if self.table.item(
+                row, self.HEADERS.index("انتخاب")
+            ).checkState() == Qt.CheckState.Checked
         }
         rows.update(index.row() for index in self.table.selectedIndexes())
         for row in sorted(rows, reverse=True):
@@ -1505,6 +1511,7 @@ class LoginPage(QWizardPage):
         self.login_check_callback = None
         self.api_test_callback = None
         self.close_browser_callback = None
+        self.stop_callback = None
         self.setTitle("<b>مرحله ۵ از ۵ — ورود امن به سامانه ثنا</b>")
         self.setSubTitle(
             "ورود را جداگانه آزمایش کنید یا پس از بازبینی، پردازش و ثبت را شروع کنید."
@@ -1547,6 +1554,14 @@ class LoginPage(QWizardPage):
         self.close_browser_button = QPushButton("خروج از مرورگر")
         self.close_browser_button.setEnabled(False)
         self.close_browser_button.clicked.connect(self._close_api_browser)
+        self.stop_button = QPushButton("توقف پس از ردیف جاری")
+        self.stop_button.setEnabled(False)
+        self.stop_button.setStyleSheet(
+            "QPushButton { background:#B42318; color:white; font-weight:bold; }"
+            "QPushButton:hover { background:#8F1D14; }"
+            "QPushButton:disabled { background:#D8A6A3; color:#F7EEEE; }"
+        )
+        self.stop_button.clicked.connect(self._request_stop)
         self.api_template_button = QPushButton("انتخاب قالب ثابت SetPetitionData")
         self.api_template_button.clicked.connect(self._choose_api_template)
         self.api_template_status = QLabel()
@@ -1556,6 +1571,7 @@ class LoginPage(QWizardPage):
         test_row.addWidget(self.api_template_button)
         test_row.addWidget(self.api_test_button)
         test_row.addWidget(self.close_browser_button)
+        test_row.addWidget(self.stop_button)
         test_row.addStretch()
 
         self.python_output = QTextEdit()
@@ -1588,6 +1604,10 @@ class LoginPage(QWizardPage):
             if _setpetitiondata_template_path().is_file()
             else "قالب ثابت را یک‌بار انتخاب کنید."
         )
+
+    def _request_stop(self) -> None:
+        if self.stop_callback is not None:
+            self.stop_callback()
 
     def _choose_api_template(self) -> None:
         source, _ = QFileDialog.getOpenFileName(
@@ -1771,6 +1791,7 @@ class RecipientWizard(QWizard):
         self._api_browser_close_event: Event | None = None
         self._api_browser_ready = False
         self.login_page.registration_callback = self._register_declarations
+        self.login_page.stop_callback = self._request_registration_stop
         self.login_page.login_check_callback = self._start_login_check
         self.login_page.api_test_callback = self._start_api_test
         self.login_page.close_browser_callback = self._close_api_browser
@@ -1790,6 +1811,7 @@ class RecipientWizard(QWizard):
         self._background_progress: Callable[[str], None] | None = None
         self._background_result: object | None = None
         self._background_error: tuple[Exception, str] | None = None
+        self._registration_stop_event: Event | None = None
         self.currentIdChanged.connect(self._page_changed)
         self.otp_requested.connect(self._show_otp_prompt)
         self.final_confirmation_requested.connect(self._show_final_confirmation)
@@ -1822,6 +1844,7 @@ class RecipientWizard(QWizard):
         succeeded: Callable[[object], None],
         failed: Callable[[Exception, str], None],
         progressed: Callable[[str], None] | None = None,
+        stop_event: Event | None = None,
     ) -> bool:
         if self._background_thread is not None:
             QMessageBox.information(
@@ -1861,6 +1884,7 @@ class RecipientWizard(QWizard):
         self._background_progress = progressed
         self._background_result = None
         self._background_error = None
+        self._registration_stop_event = stop_event
         self._set_background_controls_enabled(False)
         dialog.show()
         thread.start()
@@ -1895,6 +1919,7 @@ class RecipientWizard(QWizard):
         failed = self._background_failure
         result = self._background_result
         error = self._background_error
+        self._registration_stop_event = None
         self._background_thread = None
         self._background_worker = None
         self._background_success = None
@@ -1929,6 +1954,24 @@ class RecipientWizard(QWizard):
         self.login_page.api_test_button.setEnabled(enabled)
         self.login_page.close_browser_button.setEnabled(
             enabled and self._api_browser_ready
+        )
+        self.login_page.stop_button.setEnabled(
+            not enabled and self._registration_stop_event is not None
+            and not self._registration_stop_event.is_set()
+        )
+        if enabled:
+            self.login_page.stop_button.setText("توقف پس از ردیف جاری")
+
+    def _request_registration_stop(self) -> None:
+        event = self._registration_stop_event
+        if event is None or event.is_set():
+            return
+        event.set()
+        self.login_page.stop_button.setEnabled(False)
+        self.login_page.stop_button.setText("در حال توقف...")
+        self.login_page.append_output(
+            "درخواست توقف ثبت شد؛ اظهارنامهٔ جاری کامل می‌شود و ردیف بعدی آغاز نخواهد شد.",
+            level="warning",
         )
 
     def closeEvent(self, event: QCloseEvent) -> None:
@@ -2155,8 +2198,9 @@ class RecipientWizard(QWizard):
 
         answer = QMessageBox.question(
             self,
-            "تأیید شروع عملیات زنده",
-            f"مرورگر باز شود و پردازش {len(drafts)} اظهارنامه آغاز گردد؟\n"
+            f"تأیید بارگذاری {len(drafts)} اظهارنامه",
+            f"قرار است {len(drafts)} اظهارنامه بارگذاری و در سامانه ثبت شود. "
+            "ادامه می‌دهید؟\n"
             "پیش از امضای نهایی هر اظهارنامه، تأیید جداگانه گرفته می‌شود.\n"
             "در صورت خطای مبهم، اجرای گروه متوقف و همان مورد تکرار نمی‌شود.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -2165,6 +2209,8 @@ class RecipientWizard(QWizard):
         if answer != QMessageBox.StandardButton.Yes:
             report("عملیات توسط کاربر لغو شد.", level="warning")
             return False
+
+        stop_event = Event()
 
         def task(progress: Callable[[str], None]) -> object:
             first_login = True
@@ -2194,6 +2240,7 @@ class RecipientWizard(QWizard):
                 credentials_provider,
                 final_confirmation,
                 progress=progress,
+                stop_event=stop_event,
             )
 
         def succeeded(results: object) -> None:
@@ -2213,6 +2260,7 @@ class RecipientWizard(QWizard):
             succeeded,
             failed,
             lambda message: report(message, level="progress"),
+            stop_event=stop_event,
         )
         return False
 
@@ -2224,7 +2272,16 @@ class RecipientWizard(QWizard):
         report = self.login_page.append_output
         successful = 0
         failures = []
-        for index, (draft, result) in enumerate(zip(drafts, results), start=1):
+        stopped = 0
+        for index, draft in enumerate(drafts, start=1):
+            if index > len(results):
+                stopped += 1
+                continue
+            result = results[index - 1]
+            if result.status == "stopped":
+                stopped += 1
+                report(f"ردیف {index}: با درخواست کاربر آغاز نشد.", level="warning")
+                continue
             if result.status != "success":
                 name = " ".join(filter(None, (
                     draft.fields.get("recipient_first_name", ""),
@@ -2257,15 +2314,24 @@ class RecipientWizard(QWizard):
                     level="success",
                 )
 
-        if failures:
+        if failures or stopped:
             self.preprocessing_page.refresh_registration_results()
             QMessageBox.warning(
                 self,
-                "پردازش با خطا پایان یافت",
-                f"موفق: {successful}\nناموفق: {len(failures)}\n\n"
+                (
+                    "پردازش متوقف شد"
+                    if stopped and not failures
+                    else "پردازش با خطا پایان یافت"
+                ),
+                f"موفق: {successful}\nناموفق: {len(failures)}\nمتوقف/آغازنشده: {stopped}\n\n"
                 + "\n".join(failures),
             )
-            return successful > 0
+            report(
+                f"پردازش پایان یافت. موفق: {successful}، ناموفق: {len(failures)}، "
+                f"متوقف/آغازنشده: {stopped}",
+                level="warning",
+            )
+            return successful > 0 and stopped == 0
 
         self.preprocessing_page.refresh_registration_results()
         QMessageBox.information(

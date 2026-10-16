@@ -409,6 +409,19 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertEqual(registered.text(), "1405/07/24")
             self.assertEqual(code.background().color().name(), "#fff0c2")
 
+    def test_preprocessing_actions_are_rightmost_icon_buttons_with_tooltips(self) -> None:
+        page = PreprocessingPage()
+        page.set_candidates((RecipientCandidate(source_path=Path("sample.docx")),))
+
+        self.assertEqual(page.HEADERS[:2], ("حذف", "بازکردن"))
+        for column, tooltip in (("حذف", "حذف ردیف"), ("بازکردن", "بازکردن فایل")):
+            button = page.table.cellWidget(
+                0, page.HEADERS.index(column)
+            ).findChild(QPushButton)
+            self.assertEqual(button.toolTip(), tooltip)
+            self.assertEqual(button.accessibleName(), tooltip)
+            self.assertEqual(button.text(), "")
+
     def test_preprocessing_page_refreshes_newly_saved_tracking_result(self) -> None:
         with TemporaryDirectory() as directory:
             source = Path(directory)
@@ -648,10 +661,12 @@ class RecipientWizardTests(unittest.TestCase):
         ) as open_url:
             page.table.cellWidget(
                 0, page.HEADERS.index("بازکردن")
-            ).click()
+            ).findChild(QPushButton).click()
         open_url.assert_called_once()
 
-        page.table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+        page.table.item(
+            0, page.HEADERS.index("انتخاب")
+        ).setCheckState(Qt.CheckState.Checked)
         page._remove_selected()
         self.assertEqual(page.table.rowCount(), 0)
 

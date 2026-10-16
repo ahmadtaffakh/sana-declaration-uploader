@@ -1,5 +1,6 @@
 import unittest
 import sys
+from threading import Event
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, call, patch
 
@@ -230,6 +231,26 @@ class LiveBrowserLoginTests(unittest.TestCase):
                 lambda: LoginCredentials("national", "password", "identity", "otp"),
                 process,
             )
+
+        self.assertEqual(processed, ["first"])
+
+    def test_batch_stop_takes_effect_after_current_item(self):
+        page = _Page()
+        session = ReusableLoginSession(page)
+        stop_requested = Event()
+        processed = []
+
+        def process(item, _page):
+            processed.append(item)
+            stop_requested.set()
+
+        run_authenticated_batch(
+            ("first", "second"),
+            session,
+            lambda: LoginCredentials("national", "password", "identity", "otp"),
+            process,
+            should_stop=stop_requested.is_set,
+        )
 
         self.assertEqual(processed, ["first"])
 
