@@ -887,23 +887,6 @@ class PreprocessingPage(QWizardPage):
                 ):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, column, item)
-            try:
-                saved_result = read_saved_result(
-                    candidate.source_path.parent, candidate.source_path
-                )
-            except ResultPersistenceError:
-                saved_result = {"tracking_code": "رسید نامعتبر", "registered_at": ""}
-            if saved_result is not None:
-                self.table.item(row, self.HEADERS.index("کد رهگیری")).setText(
-                    saved_result["tracking_code"] or "نامشخص"
-                )
-                self.table.item(row, self.HEADERS.index("تاریخ ثبت")).setText(
-                    _registration_date_display(saved_result["registered_at"])
-                )
-                for column in range(len(self.HEADERS)):
-                    item = self.table.item(row, column)
-                    if item is not None:
-                        item.setBackground(QColor("#FFF0C2"))
             open_button = QPushButton("بازکردن")
             open_button.clicked.connect(
                 lambda _checked=False, path=candidate.source_path: _open_source(path)
@@ -917,8 +900,35 @@ class PreprocessingPage(QWizardPage):
                 self.table.removeRow(marker.row())
             )
             self.table.setCellWidget(row, self.HEADERS.index("حذف"), remove_button)
+        self.refresh_registration_results()
         self.table.blockSignals(False)
         self.table.resizeColumnsToContents()
+
+    def refresh_registration_results(self) -> None:
+        for row in range(self.table.rowCount()):
+            candidate = self.table.item(
+                row, self.HEADERS.index("نام شخص")
+            ).data(Qt.ItemDataRole.UserRole)
+            if not isinstance(candidate, RecipientCandidate):
+                continue
+            try:
+                saved_result = read_saved_result(
+                    candidate.source_path.parent, candidate.source_path
+                )
+            except ResultPersistenceError:
+                saved_result = {"tracking_code": "رسید نامعتبر", "registered_at": ""}
+            if saved_result is None:
+                continue
+            self.table.item(row, self.HEADERS.index("کد رهگیری")).setText(
+                saved_result["tracking_code"] or "نامشخص"
+            )
+            self.table.item(row, self.HEADERS.index("تاریخ ثبت")).setText(
+                _registration_date_display(saved_result["registered_at"])
+            )
+            for column in range(len(self.HEADERS)):
+                item = self.table.item(row, column)
+                if item is not None:
+                    item.setBackground(QColor("#FFF0C2"))
 
     def candidates(self) -> tuple[RecipientCandidate, ...]:
         result = []
@@ -2248,6 +2258,7 @@ class RecipientWizard(QWizard):
                 )
 
         if failures:
+            self.preprocessing_page.refresh_registration_results()
             QMessageBox.warning(
                 self,
                 "پردازش با خطا پایان یافت",
@@ -2256,6 +2267,7 @@ class RecipientWizard(QWizard):
             )
             return successful > 0
 
+        self.preprocessing_page.refresh_registration_results()
         QMessageBox.information(
             self,
             "ثبت کامل شد",
@@ -2271,6 +2283,7 @@ class RecipientWizard(QWizard):
             return
         if page_id == self.preprocessing_page_id:
             source = self.review_page.candidates()
+            self.preprocessing_page.refresh_registration_results()
             if source != self._preprocess_source:
                 candidates = preprocess_candidates(source, self._lookup_dir)
                 self.preprocessing_page.set_candidates(candidates)

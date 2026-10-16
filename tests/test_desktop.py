@@ -42,6 +42,7 @@ from sana_declaration_uploader.models import (
     RecipientCandidate,
     UploadResult,
 )
+from sana_declaration_uploader.results import save_verified_result
 
 
 class RecipientWizardTests(unittest.TestCase):
@@ -407,6 +408,38 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertEqual(code.text(), "1405111222333444")
             self.assertEqual(registered.text(), "1405/07/24")
             self.assertEqual(code.background().color().name(), "#fff0c2")
+
+    def test_preprocessing_page_refreshes_newly_saved_tracking_result(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "input.docx"
+            candidate = RecipientCandidate(source_path=source_path)
+            page = PreprocessingPage()
+            page.set_candidates((candidate,))
+            save_verified_result(
+                DeclarationDraft(
+                    source_dir=source,
+                    fields={},
+                    source_path=source_path,
+                ),
+                UploadResult(status="success", tracking_code="1405111222333444"),
+            )
+
+            page.refresh_registration_results()
+
+            self.assertEqual(
+                page.table.item(0, page.HEADERS.index("کد رهگیری")).text(),
+                "1405111222333444",
+            )
+            self.assertNotEqual(
+                page.table.item(0, page.HEADERS.index("تاریخ ثبت")).text(),
+                "نامشخص",
+            )
+            self.assertEqual(
+                page.table.item(0, page.HEADERS.index("نام شخص"))
+                .background().color().name(),
+                "#fff0c2",
+            )
 
     def test_review_uses_requested_column_order_and_numbers_every_page(self) -> None:
         wizard = RecipientWizard()
@@ -1149,6 +1182,7 @@ class RecipientWizardTests(unittest.TestCase):
             save_verified_result(
                 draft, UploadResult(status="success", tracking_code="T-OLD")
             )
+            wizard.preprocessing_page.set_candidates((candidate,))
             with (
                 patch.object(
                     wizard.preprocessing_page, "candidates", return_value=(candidate,)
@@ -1185,6 +1219,12 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertIn("تاریخ ثبت", warning_text)
         question.assert_called_once()
         run_batch.assert_called_once()
+        self.assertEqual(
+            wizard.preprocessing_page.table.item(
+                0, wizard.preprocessing_page.HEADERS.index("کد رهگیری")
+            ).text(),
+            "T-NEW",
+        )
         self.assertEqual(
             [
                 item["tracking_code"]
