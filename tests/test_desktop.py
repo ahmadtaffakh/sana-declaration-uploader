@@ -35,6 +35,7 @@ from sana_declaration_uploader.desktop import (
     _save_login_settings,
 )
 from sana_declaration_uploader.live_browser import LiveBrowserError, LoginCredentials
+from sana_declaration_uploader.lookups import LookupResolutionError
 from sana_declaration_uploader.models import (
     DeclarationDraft,
     RecipientCandidate,
@@ -713,6 +714,22 @@ class RecipientWizardTests(unittest.TestCase):
         )
         self.assertEqual(result.fields["city_code"], "city-code")
 
+    def test_api_draft_rejects_location_that_was_defaulted_to_tehran(self) -> None:
+        candidate = RecipientCandidate(
+            source_path=Path("one.docx"),
+            province="استان تهران",
+            county="شهرستان تهران",
+            city="تهران",
+            issues=("location_defaulted",),
+        )
+        page = DeclarationContentPage()
+        page.set_candidates((candidate,))
+
+        with self.assertRaisesRegex(
+            LookupResolutionError, "recipient_location_not_found"
+        ):
+            page.active_draft(Path("lookups"))
+
     def test_api_test_button_requires_complete_credentials(self) -> None:
         wizard = RecipientWizard()
         callback = Mock()
@@ -747,6 +764,19 @@ class RecipientWizardTests(unittest.TestCase):
         callback.assert_called_once_with(
             LoginCredentials("national", "password", "identity", "otp")
         )
+
+    def test_api_browser_close_button_releases_browser_wait(self) -> None:
+        wizard = RecipientWizard()
+        close_event = threading.Event()
+        wizard._api_browser_close_event = close_event
+        wizard._api_browser_ready = True
+        wizard.login_page.close_browser_button.setEnabled(True)
+
+        wizard.login_page.close_browser_button.click()
+
+        self.assertTrue(close_event.is_set())
+        self.assertIsNone(wizard._api_browser_close_event)
+        self.assertFalse(wizard.login_page.close_browser_button.isEnabled())
 
     def test_declaration_fields_survive_back_navigation_and_reentry(self) -> None:
         with TemporaryDirectory() as directory, patch(

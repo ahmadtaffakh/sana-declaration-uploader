@@ -122,7 +122,7 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
             "HstCaseSubjectCode": "",
             "MasterJudgeUnitId": "",
             "MasterJudgeUnitName": "",
-            "RelatedNo": "123456",
+            "RelatedNo": "template-related-number",
             "theJSSPetitionRelief": [
                 {"RowNumber": 1, "PersonNumber": 2},
                 "ignore non-object rows",
@@ -141,6 +141,9 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
                     "StateTitle": "old",
                     "CityId": "old",
                     "CityTitle": "old",
+                    "MobileNumber4SMS": "template-mobile",
+                    "JobId": "template-job",
+                    "JobTitle": "template-title",
                 },
             ],
         }
@@ -157,10 +160,16 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
                 "recipient_main_street": "خیابان",
                 "recipient_address": "نشانی",
                 "recipient_postal_code": "1234567890",
+                "job_code": "FREE-CODE",
+                "job_id": "d2e420be1bf14c2088a14f04e7c71bb9",
+                "related_declaration_number": "1405220897083662",
+                "province_id": "province-id-from-lookup",
                 "province_code": "P1",
                 "province": "استان",
+                "county_id": "county-id-from-lookup",
                 "county_code": "C1",
                 "county": "شهرستان",
+                "city_id": "city-id-from-lookup",
                 "city_code": "T1",
                 "city": "شهر",
                 "declaration_text": "شرح جدید",
@@ -175,7 +184,7 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
         self.assertEqual(result["HstCaseSubjectCode"], "0024")
         self.assertIsNone(result["MasterJudgeUnitId"])
         self.assertIsNone(result["MasterJudgeUnitName"])
-        self.assertEqual(result["RelatedNo"], "12345678")
+        self.assertEqual(result["RelatedNo"], "1405220897083662")
         self.assertEqual(
             result["theJSSPetitionRelief"][0],
             {"RowNumber": 0, "PersonNumber": 0},
@@ -189,14 +198,27 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
         )
         recipient = result["theJSSPetitionPerson"][1]
         self.assertEqual(recipient["IdentityNo"], "0012345678")
+        self.assertEqual(recipient["MobileNumber4SMS"], "")
+        self.assertEqual(
+            recipient["JobId"], "d2e420be1bf14c2088a14f04e7c71bb9"
+        )
+        self.assertEqual(recipient["JobTitle"], "آزاد")
         self.assertEqual(recipient["FatherName"], "پدر")
         self.assertEqual(recipient["PostallCode"], "1234567890")
-        self.assertEqual(recipient["StateId"], "P1")
+        self.assertEqual(recipient["StateId"], "province-id-from-lookup")
         self.assertEqual(recipient["StateTitle"], "استان")
-        self.assertEqual(recipient["ProvinceId"], "C1")
+        self.assertEqual(recipient["ProvinceId"], "county-id-from-lookup")
         self.assertEqual(recipient["ProvinceTitle"], "شهرستان")
-        self.assertEqual(recipient["CityId"], "T1")
+        self.assertEqual(recipient["CityId"], "city-id-from-lookup")
         self.assertEqual(template["Description"], "old description")
+
+    def test_related_number_is_blank_when_not_extracted(self):
+        draft = self._draft()
+        draft.fields["related_declaration_number"] = ""
+
+        payload = build_setpetitiondata_payload(self._template(), draft)
+
+        self.assertEqual(payload["RelatedNo"], "")
 
     def test_sanitizes_both_address_fields(self):
         draft = self._draft()

@@ -239,9 +239,8 @@ def build_setpetitiondata_payload(
 ) -> dict[str, object]:
     """Build a payload using the field mapping observed in a successful portal request.
 
-    ``RelatedNo`` uses the manually verified ``12345678`` fallback when the
-    template is blank or contains its known ``123456`` placeholder; callers
-    should supply the actual related number when one is available.
+    Location and related-declaration values come from the resolved draft;
+    stale values in the captured template are never reused.
     """
 
     payload = deepcopy(dict(template))
@@ -258,16 +257,22 @@ def build_setpetitiondata_payload(
     fields = draft.fields
     required = (
         "province_code", "county_code", "city_code",
+        "province_id", "county_id", "city_id",
         "province", "county", "city",
     )
     if any(not fields.get(name, "").strip() for name in required):
         raise SetPetitionDataError("set_petition_data_location_code_missing")
+    if not fields.get("job_id", "").strip():
+        raise SetPetitionDataError("set_petition_data_job_lookup_missing")
     recipient = recipients[0]
     replacements = {
         "Name": fields.get("recipient_first_name", ""),
         "Family": fields.get("recipient_last_name", ""),
         "FatherName": fields.get("recipient_father_name", ""),
         "IdentityNo": fields.get("recipient_national_id", ""),
+        "MobileNumber4SMS": fields.get("recipient_mobile", "") or "",
+        "JobId": fields.get("job_id", ""),
+        "JobTitle": "آزاد",
         "BasicAvenue": _sanitize_address(
             fields.get("recipient_main_street", "") or fields["city"]
         ),
@@ -276,11 +281,11 @@ def build_setpetitiondata_payload(
         ),
         "PostallCode": fields.get("recipient_postal_code", ""),
         # Portal payload uses State for province and Province for county.
-        "StateId": fields["province_code"],
+        "StateId": fields["province_id"],
         "StateTitle": fields["province"],
-        "ProvinceId": fields["county_code"],
+        "ProvinceId": fields["county_id"],
         "ProvinceTitle": fields["county"],
-        "CityId": fields["city_code"],
+        "CityId": fields["city_id"],
         "CityTitle": fields["city"],
     }
     required_fields = (
@@ -307,9 +312,9 @@ def build_setpetitiondata_payload(
                 relief["RowNumber"] = 0
                 relief["PersonNumber"] = 0
 
-    related_no = payload.get("RelatedNo")
-    if related_no in (None, "", "123456"):
-        payload["RelatedNo"] = "12345678"
+    payload["RelatedNo"] = str(
+        fields.get("related_declaration_number", "") or ""
+    ).strip()
     return payload
 
 

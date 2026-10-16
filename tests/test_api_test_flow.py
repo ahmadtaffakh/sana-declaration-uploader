@@ -3,6 +3,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -13,7 +14,7 @@ from sana_declaration_uploader.petition_api import SetPetitionDataResult
 
 
 class DirectSetPetitionDataFlowTests(unittest.TestCase):
-    def test_logs_in_posts_directly_and_holds_browser_before_close(self):
+    def test_logs_in_waits_for_close_signal_then_closes_browser(self):
         events = []
         page = Mock()
         context = Mock()
@@ -51,18 +52,17 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                     "submit_one_petition_data",
                     return_value=result,
                 ) as submit,
-                patch.object(
-                    api_test_flow,
-                    "_hold_browser_for_error_inspection",
-                    side_effect=lambda _page, _progress: events.append("hold"),
-                ),
             ):
+                close_event = Event()
+                close_event.set()
                 actual = api_test_flow.run_live_setpetitiondata_test(
                     draft,
                     LoginCredentials("n", "p", "l", "o"),
                     lambda: True,
                     {"Description": "template"},
                     body_path,
+                    progress=events.append,
+                    close_browser_event=close_event,
                 )
 
             envelope = json.loads(body_path.read_text(encoding="utf-8"))
@@ -74,7 +74,8 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         submit.assert_called_once_with(page, {"Description": "شرح"})
         page.goto.assert_not_called()
         page.locator.assert_not_called()
-        self.assertEqual(events, ["hold", "close"])
+        self.assertIn("__api_browser_ready_to_close__", events)
+        self.assertEqual(context.close.call_count, 1)
         browser.close.assert_called_once()
 
 

@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from queue import Queue
 import sys
+from threading import Event
 import traceback
 from typing import Callable
 
@@ -55,7 +56,7 @@ from .api_test_flow import run_live_setpetitiondata_test
 from .petition_api import load_setpetitiondata_template
 from .lookups import LookupResolutionError, resolve_lookup_fields
 from .models import DeclarationDraft, RecipientCandidate
-from .preprocessing import preprocess_candidates
+from .preprocessing import preprocess_candidate, preprocess_candidates
 from .results import ResultPersistenceError, save_verified_result
 
 
@@ -1136,6 +1137,21 @@ class DeclarationContentPage(QWizardPage):
         if index is None or not 0 <= int(index) < len(self._candidates):
             raise ValueError("api_test_recipient_not_selected")
         candidate = self._candidates[int(index)]
+        if "location_defaulted" in candidate.issues:
+            candidate = preprocess_candidate(
+                replace(
+                    candidate,
+                    province="",
+                    province_code="",
+                    county="",
+                    county_code="",
+                    city="",
+                    city_code="",
+                ),
+                lookup_dir,
+            )
+            if "location_defaulted" in candidate.issues:
+                raise LookupResolutionError("recipient_location_not_found")
         location = resolve_lookup_fields(
             {
                 "job_title": "آزاد",
@@ -1370,6 +1386,7 @@ class LoginPage(QWizardPage):
         self.registration_callback = None
         self.login_check_callback = None
         self.api_test_callback = None
+        self.close_browser_callback = None
         self.setTitle("<b>مرحله ۵ از ۵ — ورود امن به سامانه ثنا</b>")
         self.setSubTitle(
             "ورود را جداگانه آزمایش کنید یا پس از بازبینی، پردازش و ثبت را شروع کنید."
@@ -1409,6 +1426,9 @@ class LoginPage(QWizardPage):
             "آزمایش ثبت موقت API برای مخاطب فعال"
         )
         self.api_test_button.clicked.connect(self._test_api_registration)
+        self.close_browser_button = QPushButton("خروج از مرورگر")
+        self.close_browser_button.setEnabled(False)
+        self.close_browser_button.clicked.connect(self._close_api_browser)
         self.api_template_button = QPushButton("انتخاب قالب ثابت SetPetitionData")
         self.api_template_button.clicked.connect(self._choose_api_template)
         self.api_template_status = QLabel()
@@ -1417,6 +1437,7 @@ class LoginPage(QWizardPage):
         test_row.addWidget(self.test_login_button)
         test_row.addWidget(self.api_template_button)
         test_row.addWidget(self.api_test_button)
+        test_row.addWidget(self.close_browser_button)
         test_row.addStretch()
 
         self.python_output = QTextEdit()
@@ -1539,6 +1560,10 @@ class LoginPage(QWizardPage):
         self._save_credentials()
         self.api_test_callback(self._credentials())
 
+    def _close_api_browser(self) -> None:
+        if self.close_browser_callback is not None:
+            self.close_browser_callback()
+
     def _credentials(self) -> LoginCredentials:
         return LoginCredentials(
             national_code=self.national_code.text().strip(),
@@ -1626,9 +1651,12 @@ class RecipientWizard(QWizard):
         self.preprocessing_page = PreprocessingPage()
         self.content_page = DeclarationContentPage()
         self.login_page = LoginPage()
+        self._api_browser_close_event: Event | None = None
+        self._api_browser_ready = False
         self.login_page.registration_callback = self._register_declarations
         self.login_page.login_check_callback = self._start_login_check
         self.login_page.api_test_callback = self._start_api_test
+        self.login_page.close_browser_callback = self._close_api_browser
         self.files_page_id = self.addPage(self.files_page)
         self.review_page_id = self.addPage(self.review_page)
         self.preprocessing_page_id = self.addPage(self.preprocessing_page)
@@ -1724,6 +1752,14 @@ class RecipientWizard(QWizard):
 
     @Slot(str)
     def _background_progressed(self, message: str) -> None:
+        if message == "__api_browser_ready_to_close__":
+            self._api_browser_ready = True
+            self.login_page.append_output(
+                "عملیات API پایان یافت؛ مرورگر باز است. برای بستن آن «خروج از مرورگر» را بزنید.",
+                level="progress",
+            )
+            self._finish_background_ui()
+            return
         if self._background_dialog is not None:
             self._background_dialog.setLabelText(message)
         if self._background_progress is not None:
@@ -1750,6 +1786,7 @@ class RecipientWizard(QWizard):
         self._background_progress = None
         self._background_result = None
         self._background_error = None
+        self._api_browser_ready = False
         self._finish_background_ui()
         if error is not None:
             if failed is not None:
@@ -1774,6 +1811,9 @@ class RecipientWizard(QWizard):
             self.button(role).setEnabled(enabled)
         self.login_page.test_login_button.setEnabled(enabled)
         self.login_page.api_test_button.setEnabled(enabled)
+        self.login_page.close_browser_button.setEnabled(
+            enabled and self._api_browser_ready
+        )
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._background_thread is not None:
@@ -1892,6 +1932,10 @@ class RecipientWizard(QWizard):
             QMessageBox.warning(self, "پیش‌نویس آزمایشی نامعتبر", str(exc))
             return
         self.login_page.start_log()
+        close_browser_event = Event()
+        self._api_browser_close_event = close_browser_event
+        self._api_browser_ready = False
+        self.login_page.close_browser_button.setEnabled(False)
         report = self.login_page.append_output
         report(
             "آزمایش API برای یک مخاطب فعال آغاز شد؛ پیوست و امضای نهایی اجرا نمی‌شود.",
@@ -1913,6 +1957,7 @@ class RecipientWizard(QWizard):
                 petition_template,
                 _setpetitiondata_request_text_path(),
                 progress=progress,
+                close_browser_event=close_browser_event,
             )
 
         def succeeded(result: object) -> None:
@@ -1955,6 +2000,14 @@ class RecipientWizard(QWizard):
             failed,
             lambda message: report(message, level="progress"),
         )
+
+    def _close_api_browser(self) -> None:
+        if self._api_browser_close_event is None:
+            return
+        self._api_browser_close_event.set()
+        self._api_browser_close_event = None
+        self.login_page.close_browser_button.setEnabled(False)
+        self.login_page.append_output("درخواست بستن مرورگر ثبت شد.", level="system")
 
     def _register_declarations(self, credentials: LoginCredentials) -> bool:
         self.login_page.start_log()

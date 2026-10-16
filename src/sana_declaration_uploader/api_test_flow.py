@@ -5,13 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from threading import Event
 from typing import Mapping
 
 from .live_browser import (
     LiveBrowserError,
     LoginCredentials,
     ProgressCallback,
-    _hold_browser_for_error_inspection,
     _report,
     _run_logged_stage,
     _validate_live_draft,
@@ -36,6 +36,7 @@ def run_live_setpetitiondata_test(
     headless: bool = False,
     timeout_ms: int = 60_000,
     progress: ProgressCallback | None = None,
+    close_browser_event: Event,
 ) -> SetPetitionDataResult | None:
     """Log in and submit one template-based temporary save without form navigation."""
 
@@ -85,7 +86,8 @@ def run_live_setpetitiondata_test(
         finally:
             try:
                 if page is not None:
-                    _hold_browser_for_error_inspection(page, progress)
+                    _report(progress, "__api_browser_ready_to_close__")
+                    close_browser_event.wait()
             finally:
                 context.close()
                 browser.close()
