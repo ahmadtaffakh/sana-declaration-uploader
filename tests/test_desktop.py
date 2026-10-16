@@ -386,6 +386,28 @@ class RecipientWizardTests(unittest.TestCase):
             "نیازمند تکمیل",
         )
 
+    def test_preprocessing_page_shows_previous_tracking_code_date_and_color(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "input.docx"
+            (source / "results.json").write_text(json.dumps({
+                "schema_version": 1,
+                "declarations": {
+                    "input.docx": {"registrations": [{
+                        "tracking_code": "1405111222333444",
+                        "registered_at": "2026-10-16T10:20:00+03:30",
+                    }]}
+                },
+            }), encoding="utf-8")
+            page = PreprocessingPage()
+            page.set_candidates((RecipientCandidate(source_path=source_path),))
+
+            code = page.table.item(0, page.HEADERS.index("کد رهگیری"))
+            registered = page.table.item(0, page.HEADERS.index("تاریخ ثبت"))
+            self.assertEqual(code.text(), "1405111222333444")
+            self.assertEqual(registered.text(), "1405/07/24")
+            self.assertEqual(code.background().color().name(), "#fff0c2")
+
     def test_review_uses_requested_column_order_and_numbers_every_page(self) -> None:
         wizard = RecipientWizard()
 
@@ -1051,10 +1073,10 @@ class RecipientWizardTests(unittest.TestCase):
         drafts = (
             DeclarationDraft(source_dir=Path("one"), fields={
                 "recipient_first_name": "شخص", "recipient_last_name": "اول",
-            }),
+            }, source_path=Path("one.docx")),
             DeclarationDraft(source_dir=Path("two"), fields={
                 "recipient_first_name": "شخص", "recipient_last_name": "دوم",
-            }),
+            }, source_path=Path("two.docx")),
         )
         results = (
             UploadResult(status="success", tracking_code="111111111111"),
@@ -1086,7 +1108,7 @@ class RecipientWizardTests(unittest.TestCase):
 
         self.assertFalse(completed)
         save.assert_called_once_with(
-            drafts[0], results[0], filename="result-001.json"
+            drafts[0], results[0], filename="results.json", source_key="one.docx"
         )
         self.assertIn("ناموفق: 1", warning.call_args.args[2])
         self.assertIn("recipient_person_type_not_supported", warning.call_args.args[2])
@@ -1098,6 +1120,64 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertIn(
             "recipient_person_type_not_supported",
             wizard.login_page.python_output.toPlainText(),
+        )
+
+    def test_registration_warns_about_prior_result_then_continues(self) -> None:
+        wizard = RecipientWizard()
+        with TemporaryDirectory() as directory:
+            source_dir = Path(directory)
+            source_path = source_dir / "one.docx"
+            candidate = RecipientCandidate(source_path=source_path, full_name="نمونه")
+            draft = DeclarationDraft(
+                source_dir=source_dir, fields={}, source_path=source_path
+            )
+            from sana_declaration_uploader.results import save_verified_result
+
+            save_verified_result(
+                draft, UploadResult(status="success", tracking_code="T-OLD")
+            )
+            with (
+                patch.object(
+                    wizard.preprocessing_page, "candidates", return_value=(candidate,)
+                ),
+                patch.object(wizard.content_page, "payloads", return_value={}),
+                patch(
+                    "sana_declaration_uploader.desktop._build_desktop_drafts",
+                    return_value=(draft,),
+                ),
+                patch.object(QMessageBox, "warning") as warning,
+                patch.object(
+                    QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+                ) as question,
+                patch.object(QMessageBox, "information"),
+                patch(
+                    "sana_declaration_uploader.desktop.run_live_upload_batch",
+                    return_value=(UploadResult(
+                        status="success", tracking_code="T-NEW"
+                    ),),
+                ) as run_batch,
+            ):
+                completed = wizard._register_declarations(
+                    LoginCredentials("national", "password", "identity", "otp")
+                )
+                self._wait_for_background(wizard)
+            manifest = json.loads(
+                (source_dir / "results.json").read_text(encoding="utf-8")
+            )
+
+        self.assertFalse(completed)
+        warning.assert_called_once()
+        warning_text = warning.call_args.args[2]
+        self.assertIn("T-OLD", warning_text)
+        self.assertIn("تاریخ ثبت", warning_text)
+        question.assert_called_once()
+        run_batch.assert_called_once()
+        self.assertEqual(
+            [
+                item["tracking_code"]
+                for item in manifest["declarations"]["one.docx"]["registrations"]
+            ],
+            ["T-OLD", "T-NEW"],
         )
 
     def test_registration_writes_chained_traceback_to_python_output(self) -> None:

@@ -15,7 +15,7 @@ import traceback
 from typing import Callable
 
 from PySide6.QtCore import QObject, QEventLoop, QSize, Qt, QThread, QUrl, Signal, Slot
-from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -61,7 +61,13 @@ from .lookups import (
 )
 from .models import DeclarationDraft, RecipientCandidate
 from .preprocessing import preprocess_candidate, preprocess_candidates
-from .results import ResultPersistenceError, save_verified_result
+from .results import (
+    ResultPersistenceError,
+    RESULTS_FILENAME,
+    existing_results,
+    read_saved_result,
+    save_verified_result,
+)
 
 
 _SUPPORTED_SUFFIXES = {".docx", ".pdf", ".txt"}
@@ -436,6 +442,33 @@ def _jalali_to_gregorian(year: int, month: int, day: int) -> date:
     return date(gregorian_year, gregorian_month, gregorian_day)
 
 
+def _registration_date_display(value: str) -> str:
+    if not value:
+        return "نامشخص"
+    try:
+        registered = datetime.fromisoformat(value).date()
+    except ValueError:
+        return "نامشخص"
+    year, month, day = registered.year, registered.month, registered.day
+    month_days = (0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
+    adjusted_year = year + (1 if month > 2 else 0)
+    days = (
+        355666 + 365 * year + (adjusted_year + 3) // 4
+        - (adjusted_year + 99) // 100 + (adjusted_year + 399) // 400
+        + day + month_days[month - 1]
+    )
+    jalali_year = -1595 + 33 * (days // 12053)
+    days %= 12053
+    jalali_year += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jalali_year += (days - 1) // 365
+        days = (days - 1) % 365
+    jalali_month = 1 + days // 31 if days < 186 else 7 + (days - 186) // 30
+    jalali_day = 1 + days % 31 if days < 186 else 1 + (days - 186) % 30
+    return f"{jalali_year:04d}/{jalali_month:02d}/{jalali_day:02d}"
+
+
 def _days_since_related_date(value: str, *, today: date | None = None) -> int | None:
     _display, parsed = _parse_related_date(value)
     if parsed is None:
@@ -743,6 +776,8 @@ class PreprocessingPage(QWizardPage):
     HEADERS = (
         "انتخاب",
         "فایل منبع",
+        "کد رهگیری",
+        "تاریخ ثبت",
         "نام شخص",
         "شغل",
         "کد شغل",
@@ -766,7 +801,8 @@ class PreprocessingPage(QWizardPage):
         super().__init__()
         self.setTitle("<b>مرحله ۳ از ۵ — پیش‌پردازش نشانی و کدهای ثنا</b>")
         self.setSubTitle(
-            "کدهای نشانی را بررسی کنید؛ شغل همیشه آزاد و واحد قضایی خودکار است."
+            "کدهای نشانی را بررسی کنید؛ ردیف‌های دارای کد رهگیری قبلی رنگی‌اند. "
+            "شغل همیشه آزاد و واحد قضایی خودکار است."
         )
 
         self.table = QTableWidget(0, len(self.HEADERS))
@@ -809,6 +845,8 @@ class PreprocessingPage(QWizardPage):
             values = (
                 "",
                 candidate.source_path.name,
+                "",
+                "",
                 candidate.full_name,
                 candidate.job_title,
                 candidate.job_code,
@@ -842,10 +880,28 @@ class PreprocessingPage(QWizardPage):
                     item.setData(Qt.ItemDataRole.UserRole, candidate)
                 if self.HEADERS[column] in (
                     "انتخاب", "فایل منبع", "نام شخص", "شغل", "کد شغل",
-                    "حوزه قضایی", "کد حوزه", "بازکردن", "وضعیت", "حذف",
+                    "کد رهگیری", "تاریخ ثبت", "حوزه قضایی", "کد حوزه",
+                    "بازکردن", "وضعیت", "حذف",
                 ):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, column, item)
+            try:
+                saved_result = read_saved_result(
+                    candidate.source_path.parent, candidate.source_path
+                )
+            except ResultPersistenceError:
+                saved_result = {"tracking_code": "رسید نامعتبر", "registered_at": ""}
+            if saved_result is not None:
+                self.table.item(row, self.HEADERS.index("کد رهگیری")).setText(
+                    saved_result["tracking_code"] or "نامشخص"
+                )
+                self.table.item(row, self.HEADERS.index("تاریخ ثبت")).setText(
+                    _registration_date_display(saved_result["registered_at"])
+                )
+                for column in range(len(self.HEADERS)):
+                    item = self.table.item(row, column)
+                    if item is not None:
+                        item.setBackground(QColor("#FFF0C2"))
             open_button = QPushButton("بازکردن")
             open_button.clicked.connect(
                 lambda _checked=False, path=candidate.source_path: _open_source(path)
@@ -2068,6 +2124,21 @@ class RecipientWizard(QWizard):
             QMessageBox.warning(self, "کدهای ثنا ناقص", str(exc))
             return False
 
+        prior_results = existing_results(drafts)
+        if prior_results:
+            details = "\n".join(
+                f"{name}: کد رهگیری {result['tracking_code'] or 'نامشخص'}، "
+                f"تاریخ ثبت {_registration_date_display(result['registered_at'])}"
+                for name, result in prior_results
+            )
+            message = (
+                "برای این فایل‌های Word قبلاً کد رهگیری ثبت شده است. اگر ادامه دهید، "
+                "دوباره در سامانه ثبت می‌شوند؛ ردیف‌های ناخواسته را از ورودی حذف کنید.\n\n"
+                + details
+            )
+            report(message, level="warning")
+            QMessageBox.warning(self, "احتمال ثبت تکراری", message)
+
         report(f"تعداد اظهارنامه‌های آماده: {len(drafts)}", level="system")
 
         answer = QMessageBox.question(
@@ -2156,7 +2227,12 @@ class RecipientWizard(QWizard):
                 save_verified_result(
                     draft,
                     result,
-                    filename=f"result-{index:03d}.json",
+                    filename=RESULTS_FILENAME,
+                    source_key=(
+                        draft.source_path.name
+                        if draft.source_path is not None
+                        else f"ردیف-{index:03d}"
+                    ),
                 )
             except ResultPersistenceError as exc:
                 failures.append(f"ردیف {index}: {exc}")

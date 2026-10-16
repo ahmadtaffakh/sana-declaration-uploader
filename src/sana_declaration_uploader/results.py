@@ -1,22 +1,91 @@
-"""Verified result persistence scoped to one declaration input folder."""
+"""Verified registration history scoped to declaration input files."""
 
 from __future__ import annotations
 
+from datetime import datetime
 import json
 from pathlib import Path
 
 from .models import DeclarationDraft, UploadResult
 
 
+RESULTS_FILENAME = "results.json"
+
+
 class ResultPersistenceError(RuntimeError):
     """Raised when a verified result cannot safely be persisted."""
+
+
+def _load_manifest(source_dir: Path) -> dict[str, object]:
+    path = source_dir / RESULTS_FILENAME
+    if not path.exists():
+        return {"schema_version": 1, "declarations": {}}
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ResultPersistenceError("existing_results_invalid") from exc
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schema_version") != 1
+        or not isinstance(manifest.get("declarations"), dict)
+    ):
+        raise ResultPersistenceError("existing_results_invalid")
+    return manifest
+
+
+def _source_key(draft: DeclarationDraft, source_key: str | None = None) -> str:
+    key = source_key or (draft.source_path.name if draft.source_path else "")
+    if not key:
+        raise ResultPersistenceError("source_file_missing")
+    return key
+
+
+def read_saved_result(source_dir: Path, source_path: Path) -> dict[str, str] | None:
+    """Return the latest saved registration for one Word input, if present."""
+
+    declarations = _load_manifest(source_dir.resolve())["declarations"]
+    record = declarations.get(source_path.name)
+    if record is None:
+        return None
+    if not isinstance(record, dict):
+        raise ResultPersistenceError("existing_results_invalid")
+    registrations = record.get("registrations")
+    if not isinstance(registrations, list) or not registrations:
+        raise ResultPersistenceError("existing_results_invalid")
+    latest = registrations[-1]
+    if not isinstance(latest, dict):
+        raise ResultPersistenceError("existing_results_invalid")
+    tracking_code = str(latest.get("tracking_code", ""))
+    return {
+        "tracking_code": tracking_code or "رسید نامعتبر",
+        "registered_at": str(latest.get("registered_at", "")),
+    }
+
+
+def existing_results(
+    drafts: tuple[DeclarationDraft, ...],
+) -> tuple[tuple[str, dict[str, str]], ...]:
+    """Return prior registrations matching the Word files in this batch."""
+
+    prior = []
+    for draft in drafts:
+        if draft.source_path is None:
+            continue
+        try:
+            result = read_saved_result(draft.source_dir, draft.source_path)
+        except ResultPersistenceError:
+            result = {"tracking_code": "رسید نامعتبر", "registered_at": ""}
+        if result is not None:
+            prior.append((draft.source_path.name, result))
+    return tuple(prior)
 
 
 def save_verified_result(
     draft: DeclarationDraft,
     result: UploadResult,
     *,
-    filename: str = "result.json",
+    filename: str = RESULTS_FILENAME,
+    source_key: str | None = None,
 ) -> Path:
     if result.status != "success" or not result.tracking_code.strip():
         raise ResultPersistenceError("unverified_result")
@@ -25,24 +94,28 @@ def save_verified_result(
     if not source_dir.is_dir():
         raise ResultPersistenceError("source_dir_missing")
 
+    key = _source_key(draft, source_key)
     target = source_dir / filename
-    payload = {
-        "status": "success",
-        "tracking_code": result.tracking_code.strip(),
-    }
     if target.exists():
-        try:
-            current = json.loads(target.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise ResultPersistenceError("existing_result_invalid") from exc
-        if current != payload:
-            raise ResultPersistenceError("existing_result_conflict")
-        return target
+        manifest = _load_manifest(source_dir)
+    else:
+        manifest = {"schema_version": 1, "declarations": {}}
+    declarations = manifest["declarations"]
+    record = declarations.setdefault(key, {"registrations": []})
+    if not isinstance(record, dict):
+        raise ResultPersistenceError("existing_results_invalid")
+    registrations = record.get("registrations")
+    if not isinstance(registrations, list):
+        raise ResultPersistenceError("existing_results_invalid")
+    registrations.append({
+        "tracking_code": result.tracking_code.strip(),
+        "registered_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    })
 
     temporary = target.with_suffix(target.suffix + ".tmp")
     try:
         temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         temporary.replace(target)

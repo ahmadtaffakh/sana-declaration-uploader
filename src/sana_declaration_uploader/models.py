@@ -22,6 +22,7 @@ class DeclarationDraft:
     source_dir: Path
     fields: Mapping[str, str]
     attachments: tuple[Attachment, ...] = field(default_factory=tuple)
+    source_path: Path | None = None
 
 
 @dataclass(frozen=True)

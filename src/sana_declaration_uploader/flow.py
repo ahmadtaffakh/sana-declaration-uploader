@@ -110,6 +110,7 @@ def _build_desktop_drafts(
                 source_dir=candidate.source_path.resolve().parent,
                 fields=fields,
                 attachments=attachments,
+                source_path=candidate.source_path.resolve(),
             )
         )
     return tuple(drafts)

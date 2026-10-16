@@ -103,6 +103,7 @@ class FlowTests(unittest.TestCase):
             self.assertEqual(draft.fields["recipient_main_street"], "تهران")
             self.assertEqual(draft.fields["declaration_text"], "شرح اظهارنامه")
             self.assertEqual(draft.attachments[0].path, root / "agency.pdf")
+            self.assertEqual(draft.source_path, source_path)
 
     def test_prepare_drafts_renders_and_validates_each_request(self) -> None:
         with TemporaryDirectory() as directory:
