@@ -72,13 +72,14 @@ from .results import (
 
 _SUPPORTED_SUFFIXES = {".docx", ".pdf", ".txt"}
 _ATTACHMENT_DEFAULTS = {
-    "attachment_kind": "سایر دلایل و مستندات",
+    "attachment_kind": "تصویر مدرک نمایندگی",
     "attachment_title": "",
     "attachment_number": "شماره مدرک",
     "attachment_date": "۱۴۰۵/۰۷/۲۰",
     "shared_description": "",
     "shared_attachments": "true",
 }
+_LEGACY_ATTACHMENT_KIND = "سایر دلایل و مستندات"
 _DECLARATION_DEFAULTS = {
     "subject": "سایر موضوعات",
     "description": "شرح موضوع",
@@ -284,7 +285,10 @@ def _save_declaration_settings(
 
 def _load_attachment_settings(path: Path | None = None) -> dict[str, str]:
     target = path or _attachment_settings_path()
-    return _load_default_settings(target, _ATTACHMENT_DEFAULTS)
+    settings = _load_default_settings(target, _ATTACHMENT_DEFAULTS)
+    if settings["attachment_kind"] == _LEGACY_ATTACHMENT_KIND:
+        settings["attachment_kind"] = _ATTACHMENT_DEFAULTS["attachment_kind"]
+    return settings
 
 
 def _save_attachment_settings(
@@ -1622,6 +1626,7 @@ class LoginPage(QWizardPage):
         super().__init__()
         self.registration_callback = None
         self.api_test_callback = None
+        self.attach_existing_callback = None
         self.api_session_active_callback = None
         self.close_browser_callback = None
         self.stop_callback = None
@@ -1669,6 +1674,17 @@ class LoginPage(QWizardPage):
         )
         self.api_test_button.setAccessibleName("ثبت موقت API برای همه ردیف‌ها")
         self.api_test_button.clicked.connect(self._test_api_registration)
+        self.attach_existing_button = QPushButton(
+            "افزودن پیوست به اظهارنامه‌های دارای کد رهگیری"
+        )
+        self.attach_existing_button.setToolTip(
+            "کد رهگیری‌های ذخیره‌شده را جستجو می‌کند و فایل‌های انتخاب‌شده را "
+            "به همان اظهارنامه‌ها می‌افزاید؛ اظهارنامه دوباره ثبت نمی‌شود."
+        )
+        self.attach_existing_button.setAccessibleName(
+            "افزودن پیوست بدون ثبت دوباره اظهارنامه"
+        )
+        self.attach_existing_button.clicked.connect(self._attach_existing)
         self.close_browser_button = QPushButton("خروج از مرورگر")
         self.close_browser_button.setEnabled(False)
         self.close_browser_button.setVisible(False)
@@ -1701,6 +1717,7 @@ class LoginPage(QWizardPage):
         test_row = QHBoxLayout()
         test_row.addWidget(self.api_template_button)
         test_row.addWidget(self.api_test_button)
+        test_row.addWidget(self.attach_existing_button)
         test_row.addWidget(self.close_browser_button)
         test_row.addWidget(self.stop_button)
         test_row.addStretch()
@@ -1814,6 +1831,26 @@ class LoginPage(QWizardPage):
         self._save_credentials()
         self.api_test_callback(self._credentials())
 
+    def _attach_existing(self) -> None:
+        if self.attach_existing_callback is None:
+            return
+        active = bool(
+            self.api_session_active_callback
+            and self.api_session_active_callback()
+        )
+        if (
+            not active
+            and not all((self.national_code.text().strip(), self.password.text(),
+                         self.legal_identity.text().strip(), self.otp.text().strip()))
+        ):
+            QMessageBox.warning(
+                self, "اطلاعات ورود ناقص",
+                "برای ورود تازه، مشخصات ورود و OTP را کامل کنید.",
+            )
+            return
+        self._save_credentials()
+        self.attach_existing_callback(self._credentials())
+
     def _close_api_browser(self) -> None:
         if self.close_browser_callback is not None:
             self.close_browser_callback()
@@ -1911,6 +1948,7 @@ class RecipientWizard(QWizard):
         self.login_page.registration_callback = self._register_declarations
         self.login_page.stop_callback = self._request_registration_stop
         self.login_page.api_test_callback = self._start_api_test
+        self.login_page.attach_existing_callback = self._start_attach_existing
         self.login_page.api_session_active_callback = self._api_session_active
         self.login_page.close_browser_callback = self._close_api_browser
         self.files_page_id = self.addPage(self.files_page)
@@ -2098,6 +2136,7 @@ class RecipientWizard(QWizard):
         ):
             self.button(role).setEnabled(enabled)
         self.login_page.api_test_button.setEnabled(enabled)
+        self.login_page.attach_existing_button.setEnabled(enabled)
         close_enabled = enabled and self._api_browser_ready
         self.login_page.close_browser_button.setEnabled(close_enabled)
         self.login_page.close_browser_button.setVisible(close_enabled)
@@ -2118,6 +2157,7 @@ class RecipientWizard(QWizard):
         self.button(QWizard.WizardButton.FinishButton).setEnabled(False)
         self.button(QWizard.WizardButton.CancelButton).setEnabled(False)
         self.login_page.api_test_button.setEnabled(allow_requests)
+        self.login_page.attach_existing_button.setEnabled(allow_requests)
         self.login_page.close_browser_button.setEnabled(True)
         self.login_page.close_browser_button.setVisible(True)
         self.login_page.stop_button.setEnabled(False)
@@ -2342,9 +2382,135 @@ class RecipientWizard(QWizard):
         self.login_page.close_browser_button.setEnabled(False)
         self.login_page.close_browser_button.setVisible(False)
         self.login_page.api_test_button.setEnabled(False)
+        self.login_page.attach_existing_button.setEnabled(False)
         self.login_page.append_output(
             "درخواست بستن مرورگر ثبت شد؛ تا بسته‌شدن آن درخواست تازه پذیرفته نمی‌شود.",
             level="system",
+        )
+
+    def _start_attach_existing(self, credentials: LoginCredentials) -> None:
+        candidates = self.preprocessing_page.candidates()
+        if not candidates:
+            QMessageBox.warning(self, "مخاطب وجود ندارد", "حداقل یک ردیف لازم است.")
+            return
+        try:
+            drafts = _build_desktop_drafts(
+                candidates, self.content_page.payloads(), shared=False,
+                lookup_dir=self._lookup_dir,
+            )
+        except (ValueError, LookupResolutionError) as exc:
+            QMessageBox.warning(self, "پیش‌نویس پیوست نامعتبر", str(exc))
+            return
+        requests = []
+        for draft in drafts:
+            if not draft.attachments or draft.source_path is None:
+                continue
+            try:
+                saved = read_saved_result(draft.source_dir, draft.source_path)
+            except ResultPersistenceError as exc:
+                QMessageBox.warning(self, "خواندن کد رهگیری ناموفق", str(exc))
+                return
+            tracking_code = (saved or {}).get("tracking_code", "").strip()
+            if tracking_code and tracking_code != "رسید نامعتبر":
+                requests.append((draft, tracking_code))
+        if not requests:
+            QMessageBox.information(
+                self, "اظهارنامهٔ آماده وجود ندارد",
+                "برای ردیف‌های دارای پیوست، کد رهگیری ذخیره‌شده پیدا نشد.",
+            )
+            return
+        attachment_count = sum(len(draft.attachments) for draft, _code in requests)
+        answer = QMessageBox.question(
+            self,
+            "تأیید افزودن پیوست",
+            f"برای {len(requests)} اظهارنامهٔ دارای کد رهگیری، "
+            f"{attachment_count} پیوست افزوده می‌شود. کد رهگیری هر اظهارنامه "
+            "برای بازیابی آن استفاده می‌شود؛ SetPetitionData و ثبت دوباره اجرا نمی‌شود. "
+            "در صورت خطا یا پاسخ مبهم، اجرا متوقف می‌شود.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        request_tuple = tuple(requests)
+        if self._api_request_queue is not None:
+            if (
+                self._api_browser_close_event is None
+                or self._api_browser_close_event.is_set()
+            ):
+                self.login_page.append_output(
+                    "مرورگر در حال بسته‌شدن است؛ پس از بسته‌شدن درخواست را دوباره بفرستید.",
+                    level="warning",
+                )
+                return
+            self._api_browser_ready = False
+            self._set_background_controls_enabled(False)
+            self._api_request_queue.put({
+                "kind": "attach_existing",
+                "requests": request_tuple,
+                "credentials": credentials,
+            })
+            self.login_page.append_output(
+                f"درخواست افزودن {attachment_count} پیوست به نشست فعلی صف شد؛ "
+                "اظهارنامه دوباره ثبت نمی‌شود.",
+                level="system",
+            )
+            return
+
+        self.login_page.start_log()
+        close_browser_event = Event()
+        request_queue: Queue = Queue()
+        self._api_drafts = [draft for draft, _code in request_tuple]
+        self._api_browser_close_event = close_browser_event
+        self._api_request_queue = request_queue
+        self._api_browser_ready = False
+        self.login_page.close_browser_button.setEnabled(False)
+        self.login_page.close_browser_button.setVisible(False)
+        report = self.login_page.append_output
+        report(
+            f"افزودن {attachment_count} پیوست به {len(requests)} اظهارنامه آغاز شد؛ "
+            "ثبت مجدد اظهارنامه اجرا نمی‌شود.",
+            level="system",
+        )
+
+        def task(progress: Callable[[str], None]) -> object:
+            def reauth_credentials_provider(
+                current: LoginCredentials,
+            ) -> LoginCredentials | None:
+                response: Queue = Queue(maxsize=1)
+                self.otp_requested.emit(response)
+                otp = response.get()
+                return replace(current, otp=otp) if otp else None
+
+            return run_live_setpetitiondata_batch(
+                (), credentials, lambda: True, {},
+                _setpetitiondata_request_text_path(),
+                lookup_dir=self._lookup_dir,
+                progress=progress,
+                pending_requests=request_queue,
+                reauth_credentials_provider=reauth_credentials_provider,
+                close_browser_event=close_browser_event,
+                attachment_only=request_tuple,
+            )
+
+        def succeeded(_result: object) -> None:
+            report(
+                f"پیوست‌گذاری پایان یافت؛ {attachment_count} پیوست برای "
+                f"{len(requests)} اظهارنامه پردازش شد. کدهای رهگیری در لاگ آمده‌اند.",
+                level="success",
+            )
+
+        def failed(exc: Exception, details: str) -> None:
+            report(f"افزودن پیوست متوقف شد: {exc}", level="error")
+            report("ردیابی کامل خطا:", level="debug")
+            report(details, level="debug")
+            QMessageBox.warning(self, "افزودن پیوست ناموفق", str(exc))
+
+        self._start_background(
+            "افزودن پیوست به اظهارنامه‌های ثبت‌شده...",
+            task, succeeded, failed,
+            lambda message: report(message, level="progress"),
         )
 
     def _register_declarations(self, credentials: LoginCredentials) -> bool:
@@ -2573,7 +2739,10 @@ class RecipientWizard(QWizard):
             self.review_page.set_candidates(())
             QMessageBox.warning(self, "خطا در استخراج", str(exc))
 
-        if self._api_session_active() and self._background_thread is not None:
+        if (
+            self._background_thread is not None
+            and (self._api_session_active() or self._api_browser_ready)
+        ):
             self._start_session_extraction(task, succeeded, failed)
         else:
             self._start_background(

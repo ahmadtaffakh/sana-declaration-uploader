@@ -16,6 +16,128 @@ from sana_declaration_uploader.petition_api import SetPetitionDataResult
 
 
 class DirectSetPetitionDataFlowTests(unittest.TestCase):
+    def test_matches_representation_document_default_to_live_title(self):
+        live_type = AttachmentType(
+            "021", "005", "تصوير مدرک نمايندگي", "شرح", {}, 1
+        )
+
+        actual = api_test_flow._match_attachment_type(
+            "تصویر مدرک نمایندگی", [live_type]
+        )
+
+        self.assertIs(actual, live_type)
+
+    def test_console_file_exists_when_attachment_lookup_fails(self):
+        lookup_client = Mock()
+        lookup_client.get_valid_attachment_types.side_effect = AttachmentApiError(
+            "attachment_lookup_http_failed:http_status=500"
+        )
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            attachment_path = root / "file.pdf"
+            attachment_path.write_bytes(b"fixture")
+            draft = DeclarationDraft(
+                root,
+                {},
+                (Attachment(
+                    attachment_path,
+                    "سایر ضمائم",
+                    "عنوان پیوست",
+                    "1",
+                    "1405/01/01",
+                ),),
+                root / "source.docx",
+            )
+            request_path = root / "request.txt"
+
+            with patch.object(
+                api_test_flow, "AttachmentClient", return_value=lookup_client
+            ):
+                with self.assertRaises(AttachmentApiError):
+                    api_test_flow._attach_draft_files(
+                        Mock(),
+                        {
+                            "PetitionTypeCode": "110",
+                            "theJSSPetitionRelief": [{"Id": "relief-id"}],
+                        },
+                        SetPetitionDataResult("1" * 16, "12", "petition-id"),
+                        draft,
+                        1,
+                        1,
+                        None,
+                        request_path,
+                    )
+
+            self.assertTrue(
+                (root / "request.attachment-001.console.txt").is_file()
+            )
+
+    def test_attaches_to_tracking_code_without_registering_petition(self):
+        events = []
+        page = Mock()
+        page.evaluate.return_value = {
+            "status": 200,
+            "text": json.dumps({
+                "No": "1405000000000001",
+                "Id": "petition-id",
+                "PetitionTypeCode": "110",
+                "theJSSPetitionRelief": [{"Id": "relief-id"}],
+            }),
+        }
+        context = Mock()
+        context.new_page.return_value = page
+        browser = Mock()
+        browser.new_context.return_value = context
+        playwright = SimpleNamespace(chromium=Mock())
+        playwright.chromium.launch.return_value = browser
+        manager = Mock()
+        manager.__enter__ = Mock(return_value=playwright)
+        manager.__exit__ = Mock(return_value=False)
+        sync_api = ModuleType("playwright.sync_api")
+        sync_api.sync_playwright = Mock(return_value=manager)
+        package = ModuleType("playwright")
+        attachment_type = AttachmentType("099", "099", "ضمیمه", "شرح", {}, 1)
+        lookup_client, register_client = Mock(), Mock()
+        draft = None
+
+        with TemporaryDirectory() as directory:
+            attachment_path = Path(directory) / "file.pdf"
+            attachment_path.write_bytes(b"fixture")
+            draft = DeclarationDraft(
+                Path(directory), {},
+                (Attachment(attachment_path, "ضمیمه", "ضمیمه", "1", "1405/01/01"),),
+                Path(directory) / "source.docx",
+            )
+            close_event = Event()
+            close_event.set()
+            with (
+                patch.dict(
+                    sys.modules,
+                    {"playwright": package, "playwright.sync_api": sync_api},
+                ),
+                patch.object(api_test_flow, "login_self_service"),
+                patch.object(api_test_flow, "submit_one_petition_data") as submit,
+                patch.object(
+                    api_test_flow, "AttachmentClient",
+                    side_effect=[lookup_client, register_client],
+                ),
+                patch.object(api_test_flow, "save_attachment_console_text"),
+            ):
+                lookup_client.get_valid_attachment_types.return_value = [attachment_type]
+                actual = api_test_flow.run_live_setpetitiondata_batch(
+                    (), LoginCredentials("n", "p", "l", "o"), lambda: True,
+                    {}, Path(directory) / "request.txt", lookup_dir=Path(directory),
+                    progress=events.append, close_browser_event=close_event,
+                    attachment_only=((draft, "1405000000000001"),),
+                )
+
+        self.assertEqual(actual, ())
+        submit.assert_not_called()
+        self.assertIn("1405000000000001", str(page.evaluate.call_args))
+        self.assertTrue(any("ثبت اظهارنامه اجرا نمی‌شود" in event for event in events))
+        register_client.register_attachment.assert_called_once()
+
     def test_logs_tracking_code_then_submits_next_row_once(self):
         events = []
         page = Mock()
@@ -240,6 +362,9 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                     "AttachmentClient",
                     side_effect=[lookup_client, register_client],
                 ) as client_factory,
+                patch.object(
+                    api_test_flow, "save_attachment_console_text"
+                ) as save_console,
             ):
                 actual = api_test_flow.run_live_setpetitiondata_batch(
                     (draft,),
@@ -254,6 +379,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
 
         self.assertEqual(actual, (result,))
         submit.assert_called_once()
+        self.assertEqual(save_console.call_args.args[1], result.tracking_code)
         self.assertEqual(client_factory.call_count, 2)
         lookup_reliefs = lookup_client.get_valid_attachment_types.call_args.args[0]
         self.assertEqual(lookup_reliefs[0]["JSSPetitionId"], result.petition_id)
@@ -264,7 +390,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
             "110",
         )
         lookup_args, lookup_kwargs = client_factory.call_args_list[0]
-        self.assertEqual(lookup_args[1], result.petition_number)
+        self.assertEqual(lookup_args[1], result.tracking_code)
         self.assertEqual(
             lookup_args[2], result.petition_id
         )
@@ -345,6 +471,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                     "AttachmentClient",
                     side_effect=[lookup_client, register_client],
                 ),
+                patch.object(api_test_flow, "save_attachment_console_text"),
             ):
                 with self.assertRaisesRegex(
                     api_test_flow.LiveBrowserError,

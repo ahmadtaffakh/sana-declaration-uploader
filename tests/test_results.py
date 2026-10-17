@@ -7,6 +7,7 @@ from sana_declaration_uploader.models import DeclarationDraft, UploadResult
 from sana_declaration_uploader.results import (
     ResultPersistenceError,
     existing_results,
+    read_saved_attachment_context,
     read_saved_result,
     save_verified_result,
 )
@@ -88,3 +89,24 @@ class ResultPersistenceTests(unittest.TestCase):
                 save_verified_result(draft, UploadResult(status="failed"))
 
             self.assertFalse((source / "results.json").exists())
+
+    def test_reads_attachment_context_for_saved_tracking_code(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "sample.docx"
+            draft = DeclarationDraft(source, {}, source_path=source_path)
+            context = {
+                "petition_number": "1405000000000001",
+                "petition_id": "petition-id",
+                "petition_type_code": "110",
+                "reliefs": [{"Id": "relief-id"}],
+            }
+            save_verified_result(
+                draft, UploadResult("success", "1405000000000001"),
+                attachment_context=context,
+            )
+
+            self.assertEqual(
+                read_saved_attachment_context(source, source_path),
+                {"tracking_code": "1405000000000001", **context},
+            )

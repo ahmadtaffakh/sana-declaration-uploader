@@ -12,6 +12,8 @@ from sana_declaration_uploader.attachment_api import (
     AttachmentApiError,
     AttachmentClient,
     AttachmentType,
+    _build_document,
+    save_attachment_console_text,
 )
 
 
@@ -23,7 +25,9 @@ class AttachmentClientTests(unittest.TestCase):
         self.file_path.write_bytes(b"%PDF-test")
         self.page = Mock()
         self.client = AttachmentClient(
-            self.page, petition_no="12345", jss_petition_id="petition-id"
+            self.page,
+            petition_no="1405000000000001",
+            jss_petition_id="petition-id",
         )
 
     @staticmethod
@@ -64,6 +68,165 @@ class AttachmentClientTests(unittest.TestCase):
             },
         )
 
+    def test_saves_four_request_chrome_console_script_without_file_content(self):
+        output_path = Path(self.directory.name) / "attachment.console.txt"
+
+        actual = save_attachment_console_text(
+            self.attachment_type(),
+            "1405000000000001",
+            "petition-id",
+            [{"Id": "relief-id", "JSSPetitionId": "petition-id"}],
+            "110",
+            "۱۲۳٤",
+            "۱۴۰۵/۰۱/۰۱",
+            self.file_path,
+            output_path,
+            document_title="عنوان پیوست",
+        )
+
+        script = output_path.read_text(encoding="utf-8")
+        self.assertEqual(actual, output_path)
+        self.assertIn(GET_VALID_ATTACHMENT_URL, script)
+        self.assertIn(ADD_DOCUMENT_URL, script)
+        self.assertIn(ADD_DOCUMENT_FILE_URL, script)
+        self.assertIn(SET_ACCEPT_STATE_URL, script)
+        self.assertIn("const RUN_WRITE_REQUESTS = false", script)
+        self.assertIn("showOpenFilePicker", script)
+        self.assertIn("window.__sanaAttachmentTestOutput", script)
+        self.assertNotIn("%PDF-test", script)
+
+    def test_saves_console_script_before_attachment_type_lookup(self):
+        output_path = Path(self.directory.name) / "pre-lookup.console.txt"
+
+        save_attachment_console_text(
+            None,
+            "1405000000000001",
+            "petition-id",
+            [{"Id": "relief-id", "JSSPetitionId": "petition-id"}],
+            "110",
+            "۱۲۳٤",
+            "۱۴۰۵/۰۱/۰۱",
+            self.file_path,
+            output_path,
+            document_title="عنوان پیوست",
+            requested_title="سایر ضمائم",
+        )
+
+        script = output_path.read_text(encoding="utf-8")
+        self.assertIn('"attachmentTypeId":null', script)
+        self.assertIn('"requestedTitle":"سایر ضمائم"', script)
+        self.assertIn('"documentNumber":"1234"', script)
+        self.assertIn('"documentDate":"1405/01/01"', script)
+        self.assertIn("const buildDocument = (type)", script)
+        self.assertIn("1.GetValidAttachment", script)
+        self.assertIn("4.AcceptFile", script)
+        upload_request = script.split(
+            "const uploadResponse = await fetch", 1
+        )[1].split("const uploadText", 1)[0]
+        self.assertNotIn("x-requested-with", upload_request)
+
+    def test_rejects_short_petition_number_before_writing_console_file(self):
+        output_path = Path(self.directory.name) / "invalid.console.txt"
+
+        with self.assertRaisesRegex(
+            AttachmentApiError, "attachment_petition_number_invalid"
+        ):
+            save_attachment_console_text(
+                None,
+                "12345",
+                "petition-id",
+                [{"Id": "relief-id", "JSSPetitionId": "petition-id"}],
+                "110",
+                "document-number",
+                "1405/01/01",
+                self.file_path,
+                output_path,
+                requested_title="سایر ضمائم",
+            )
+
+        self.assertFalse(output_path.exists())
+
+    def test_rejects_short_petition_number_before_api_client_is_created(self):
+        with self.assertRaisesRegex(
+            AttachmentApiError, "attachment_petition_number_invalid"
+        ):
+            AttachmentClient(
+                self.page, petition_no="12345", jss_petition_id="petition-id"
+            )
+
+        self.page.evaluate.assert_not_called()
+
+    def test_builds_representation_document_like_live_second_request(self):
+        attachment_type = AttachmentType(
+            id="021",
+            code="005",
+            title="تصوير مدرک نمايندگي",
+            description_template="شرح مدرک نمایندگی",
+            state=1,
+            other_data_definition={
+                "Code": None,
+                "ID": None,
+                "Title": None,
+                "TheDocumentList": [
+                    {"Name": "No", "Type": "String", "IsOptional": False},
+                    {"Name": "IssueDate", "Type": "Date", "IsOptional": False},
+                    {
+                        "Name": "IsShowDocument",
+                        "Type": "YesNo",
+                        "IsOptional": True,
+                    },
+                ],
+                "TheInputFileList": [{
+                    "Name": "001",
+                    "Type": "FileUpload",
+                    "FileValid": "jpg;jpeg",
+                    "IsOptional": False,
+                }],
+            },
+        )
+
+        document, file_field = _build_document(
+            attachment_type,
+            "petition-id",
+            "document-number",
+            "1405/01/01",
+            True,
+            "مدرک نمایندگی",
+            1,
+        )
+
+        self.assertEqual(file_field, "001")
+        self.assertEqual(document["AttachmentTypeId"], "021")
+        self.assertEqual(document["TheAttachmentType"]["Code"], "005")
+        self.assertEqual(document["OrderNumber"], 1)
+        self.assertEqual(document["CountFileList"], "0")
+        self.assertEqual(
+            [item["Name"] for item in json.loads(document["OtherData"])],
+            ["No", "IssueDate", "IsShowDocument", "001"],
+        )
+        self.assertEqual(
+            set(document["TheJSSPetitionDocumentFileList"][0]),
+            {"AttachmentName", "AttachmentTitle", "IsEditMode", "OrderNumber"},
+        )
+
+    def test_normalizes_document_number_and_date_digits_for_second_request(self):
+        document, _ = _build_document(
+            self.attachment_type(),
+            "petition-id",
+            "۱۲۳٤",
+            "۱۴۰۵/۰۷/۲۰",
+            True,
+            "عنوان پیوست",
+            1,
+        )
+
+        values = {
+            item["Name"]: item["Value"]
+            for item in json.loads(document["OtherData"])
+        }
+        self.assertEqual(values["No"], "1234")
+        self.assertEqual(values["IssueDate"], "1405/07/20")
+
     def test_get_valid_attachment_types_parses_definition(self):
         raw_type = {
             "Id": "099",
@@ -98,7 +261,7 @@ class AttachmentClientTests(unittest.TestCase):
                     {"ValidAttachmentTypes": ";099;"}
                 ],
                 "petitionTypeCode": "110",
-                "petitionNo": "12345",
+                "petitionNo": "1405000000000001",
                 "pageSize": 10,
             },
         )
@@ -106,7 +269,9 @@ class AttachmentClientTests(unittest.TestCase):
     def test_registers_metadata_upload_and_accepts_in_order(self):
         progress = []
         client = AttachmentClient(
-            self.page, petition_no="12345", jss_petition_id="petition-id",
+            self.page,
+            petition_no="1405000000000001",
+            jss_petition_id="petition-id",
             progress=progress.append,
         )
         self.page.evaluate.side_effect = [
@@ -172,7 +337,10 @@ class AttachmentClientTests(unittest.TestCase):
         self.assertEqual(accept_arg["url"], SET_ACCEPT_STATE_URL)
         self.assertEqual(
             json.loads(accept_arg["body"]),
-            {"petitionNo": "12345", "documentFileId": "document-file-id"},
+            {
+                "petitionNo": "1405000000000001",
+                "documentFileId": "document-file-id",
+            },
         )
         self.assertTrue(any("شروع ثبت مشخصات پیوست" in m for m in progress))
         self.assertTrue(any("شروع بارگذاری فایل" in m for m in progress))

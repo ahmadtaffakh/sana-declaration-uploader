@@ -911,6 +911,24 @@ class RecipientWizardTests(unittest.TestCase):
             LoginCredentials("national", "password", "identity", "")
         )
 
+    def test_attach_existing_button_calls_attachment_only_callback(self) -> None:
+        page = RecipientWizard().login_page
+        callback = Mock()
+        page.attach_existing_callback = callback
+        page.api_session_active_callback = lambda: True
+        page.national_code.setText("national")
+        page.password.setText("password")
+        page.legal_identity.setText("identity")
+        page.otp.clear()
+
+        with patch.object(page, "_save_credentials"):
+            page.attach_existing_button.click()
+
+        callback.assert_called_once_with(
+            LoginCredentials("national", "password", "identity", "")
+        )
+        self.assertIn("دوباره ثبت", page.attach_existing_button.toolTip())
+
     def test_api_browser_close_button_releases_browser_wait(self) -> None:
         wizard = RecipientWizard()
         close_event = threading.Event()
@@ -939,13 +957,12 @@ class RecipientWizardTests(unittest.TestCase):
         )
         self.assertTrue(wizard.login_page.stop_button.isHidden())
 
-    def test_new_file_extraction_uses_separate_worker_while_api_session_is_open(self) -> None:
+    def test_new_file_extraction_uses_separate_worker_while_api_browser_is_open(self) -> None:
         with TemporaryDirectory() as directory:
             source_path = Path(directory) / "new.txt"
             source_path.write_text("متن", encoding="utf-8")
             wizard = RecipientWizard()
-            wizard._api_request_queue = object()
-            wizard._api_browser_close_event = threading.Event()
+            wizard._api_browser_ready = True
             wizard._background_thread = object()
             wizard.files_page._add_paths((source_path,))
 
@@ -1156,6 +1173,24 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertFalse(page.shared_checkbox.isChecked())
             self.assertFalse(page.shared_attachments_checkbox.isChecked())
 
+    def test_legacy_attachment_kind_migrates_to_representation_document(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "attachment-defaults.json"
+            path.write_text(
+                json.dumps({
+                    "attachment_kind": "سایر دلایل و مستندات",
+                    "attachment_title": "عنوان ذخیره‌شده",
+                }, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            settings = _load_attachment_settings(path)
+
+        self.assertEqual(
+            settings["attachment_kind"], "تصویر مدرک نمایندگی"
+        )
+        self.assertEqual(settings["attachment_title"], "عنوان ذخیره‌شده")
+
     def test_declaration_defaults_are_persisted_for_the_next_run(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "declaration-defaults.json"
@@ -1175,7 +1210,7 @@ class RecipientWizardTests(unittest.TestCase):
                 "attachment-defaults.json",
                 _load_attachment_settings,
                 {
-                    "attachment_kind": "سایر دلایل و مستندات",
+                    "attachment_kind": "تصویر مدرک نمایندگی",
                     "attachment_title": "",
                     "attachment_number": "شماره مدرک",
                     "attachment_date": "۱۴۰۵/۰۷/۲۰",

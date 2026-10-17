@@ -10,8 +10,14 @@ from queue import Empty, Queue
 from threading import Event
 from typing import Mapping
 import unicodedata
+import json
 
-from .attachment_api import AttachmentApiError, AttachmentClient, AttachmentType
+from .attachment_api import (
+    AttachmentApiError,
+    AttachmentClient,
+    AttachmentType,
+    save_attachment_console_text,
+)
 from .live_browser import (
     LiveBrowserError,
     LoginCredentials,
@@ -29,7 +35,16 @@ from .petition_api import (
     save_setpetitiondata_debug_text,
     submit_one_petition_data,
 )
-from .results import RESULTS_FILENAME, save_verified_result
+from .results import (
+    RESULTS_FILENAME,
+    read_saved_attachment_context,
+    save_verified_result,
+)
+
+
+GET_PETITION_BY_TRACKING_CODE_URL = (
+    "https://person.adliran.ir/Offices/GetPetitionWidthPetitionType"
+)
 
 
 def run_live_setpetitiondata_batch(
@@ -49,6 +64,7 @@ def run_live_setpetitiondata_batch(
         [LoginCredentials], LoginCredentials | None
     ] | None = None,
     close_browser_event: Event,
+    attachment_only: tuple[tuple[DeclarationDraft, str], ...] = (),
 ) -> tuple[SetPetitionDataResult, ...] | None:
     """Submit rows sequentially; advance only after a verified tracking code."""
 
@@ -59,10 +75,13 @@ def run_live_setpetitiondata_batch(
             "playwright_not_installed: install the project with [browser]"
         ) from exc
 
-    if not drafts:
+    if not drafts and not attachment_only:
         raise LiveBrowserError("set_petition_data_recipients_missing")
-    petition_payloads = _prepare_petition_payloads(
-        drafts, petition_template, request_text_path, lookup_dir, progress
+    petition_payloads = (
+        _prepare_petition_payloads(
+            drafts, petition_template, request_text_path, lookup_dir, progress
+        )
+        if drafts else []
     )
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel="chrome", headless=headless)
@@ -89,10 +108,18 @@ def run_live_setpetitiondata_batch(
                 timeout_ms,
                 progress,
             )
-            results = _submit_petition_payloads(
-                page, drafts, petition_payloads, ensure_authenticated,
-                progress, on_result,
+            results = (
+                _submit_petition_payloads(
+                    page, drafts, petition_payloads, ensure_authenticated,
+                    progress, on_result, request_text_path,
+                )
+                if drafts else ()
             )
+            if attachment_only:
+                _attach_existing_petitions(
+                    page, attachment_only, ensure_authenticated, progress,
+                    request_text_path,
+                )
             all_results = list(results)
             while pending_requests is not None and not close_browser_event.is_set():
                 _report(progress, "__api_browser_ready_to_close__")
@@ -104,6 +131,13 @@ def run_live_setpetitiondata_batch(
                         continue
                 if queued is None:
                     break
+                if isinstance(queued, dict) and queued.get("kind") == "attach_existing":
+                    current_credentials[0] = queued["credentials"]
+                    _attach_existing_petitions(
+                        page, queued["requests"], ensure_authenticated, progress,
+                        request_text_path,
+                    )
+                    continue
                 (
                     queued_drafts, queued_credentials, queued_template,
                     queued_path, queued_lookup_dir,
@@ -234,6 +268,7 @@ def _submit_petition_payloads(
     ensure_authenticated: Callable[[], None],
     progress: ProgressCallback | None,
     on_result: Callable[[DeclarationDraft, SetPetitionDataResult], None] | None,
+    request_text_path: Path,
 ) -> tuple[SetPetitionDataResult, ...]:
     results = []
     for index, petition_data in enumerate(petition_payloads, start=1):
@@ -258,11 +293,21 @@ def _submit_petition_payloads(
                 draft,
                 UploadResult("success", result.tracking_code),
                 filename=RESULTS_FILENAME,
+                attachment_context={
+                    "petition_number": result.tracking_code,
+                    "internal_petition_number": result.petition_number,
+                    "petition_id": result.petition_id,
+                    "petition_type_code": str(
+                        petition_data.get("PetitionTypeCode") or "110"
+                    ),
+                    "reliefs": petition_data.get("theJSSPetitionRelief"),
+                },
             )
         if draft.attachments:
             try:
                 _attach_draft_files(
-                    page, petition_data, result, draft, index, len(drafts), progress
+                    page, petition_data, result, draft, index, len(drafts), progress,
+                    request_text_path,
                 )
             except Exception as exc:
                 detail = (
@@ -292,6 +337,97 @@ def _submit_petition_payloads(
     return tuple(results)
 
 
+def _attach_existing_petitions(
+    page: object,
+    requests: tuple[tuple[DeclarationDraft, str], ...],
+    ensure_authenticated: Callable[[], None],
+    progress: ProgressCallback | None,
+    request_text_path: Path,
+) -> None:
+    for draft, _tracking_code in requests:
+        for attachment in draft.attachments:
+            if (
+                not attachment.path.is_file()
+                or not attachment.kind.strip()
+                or not attachment.title.strip()
+                or not attachment.document_number.strip()
+                or not attachment.document_date.strip()
+            ):
+                raise LiveBrowserError("attachment_preflight_invalid")
+    for index, (draft, tracking_code) in enumerate(requests, start=1):
+        if not draft.attachments:
+            _report(progress, f"[ردیف {index} از {len(requests)}] پیوستی انتخاب نشده؛ رد شد.")
+            continue
+        ensure_authenticated()
+        saved = (
+            read_saved_attachment_context(draft.source_dir, draft.source_path)
+            if draft.source_path is not None else None
+        )
+        if saved and saved.get("tracking_code") == tracking_code:
+            petition_data = {
+                "No": tracking_code,
+                "Id": saved["petition_id"],
+                "PetitionTypeCode": saved["petition_type_code"],
+                "theJSSPetitionRelief": saved["reliefs"],
+            }
+        else:
+            petition_data = _run_logged_stage(
+                progress,
+                f"بازیابی اظهارنامه با کد رهگیری {tracking_code}",
+                lambda: _get_petition_by_tracking_code(page, tracking_code),
+            )
+        petition_number = str(petition_data.get("No") or "").strip()
+        petition_id = str(petition_data.get("Id") or "").strip()
+        reliefs = petition_data.get("theJSSPetitionRelief")
+        type_code = str(petition_data.get("PetitionTypeCode") or "").strip()
+        if petition_number != tracking_code.strip() or not petition_id or not type_code:
+            raise LiveBrowserError("tracked_petition_context_mismatch")
+        result = SetPetitionDataResult(tracking_code, petition_number, petition_id)
+        _report(
+            progress,
+            f"[ردیف {index} از {len(requests)}] اظهارنامه با کد رهگیری "
+            f"{tracking_code} پیدا شد؛ فقط پیوست افزوده می‌شود و ثبت اظهارنامه اجرا نمی‌شود.",
+        )
+        _attach_draft_files(
+            page, petition_data, result, draft, index, len(requests), progress,
+            request_text_path,
+        )
+
+
+def _get_petition_by_tracking_code(
+    page: object, tracking_code: str
+) -> Mapping[str, object]:
+    if not tracking_code.strip():
+        raise LiveBrowserError("tracking_code_missing")
+    try:
+        response = page.evaluate(
+            """async ({ url, trackingCode }) => {
+            const response = await fetch(url, {
+                method: 'POST', credentials: 'include',
+                headers: {
+                    'accept': 'application/json, text/plain, */*',
+                    'content-type': 'application/json;charset=UTF-8',
+                    'x-requested-with': 'XMLHttpRequest',
+                },
+                body: JSON.stringify({ petitionNo: trackingCode, petitionType: 3 }),
+            });
+            return { status: response.status, text: await response.text() };
+        }""",
+            {"url": GET_PETITION_BY_TRACKING_CODE_URL, "trackingCode": tracking_code},
+        )
+    except Exception as exc:
+        raise LiveBrowserError("tracked_petition_lookup_failed") from exc
+    if not isinstance(response, dict) or response.get("status") != 200:
+        raise LiveBrowserError("tracked_petition_lookup_http_error")
+    try:
+        value = json.loads(str(response.get("text", "")))
+    except (TypeError, ValueError) as exc:
+        raise LiveBrowserError("tracked_petition_lookup_response_invalid") from exc
+    if not isinstance(value, dict):
+        raise LiveBrowserError("tracked_petition_lookup_response_invalid")
+    return value
+
+
 def _request_path_for_row(path: Path, index: int, total: int) -> Path:
     if total == 1:
         return path
@@ -306,6 +442,7 @@ def _attach_draft_files(
     row_index: int,
     row_count: int,
     progress: ProgressCallback | None,
+    request_text_path: Path,
 ) -> None:
     """Attach this draft's files to the petition returned for the same row."""
 
@@ -313,15 +450,42 @@ def _attach_draft_files(
     reliefs = _reliefs_for_attachment_lookup(
         petition_data.get("theJSSPetitionRelief"), result.petition_id
     )
+    for attachment_index, attachment in enumerate(draft.attachments, start=1):
+        row_path = _request_path_for_row(
+            request_text_path, row_index, row_count
+        )
+        console_path = row_path.with_name(
+            f"{row_path.stem}.attachment-{attachment_index:03d}.console.txt"
+        )
+        save_attachment_console_text(
+            None,
+            result.tracking_code,
+            result.petition_id,
+            reliefs,
+            str(petition_data.get("PetitionTypeCode") or "110"),
+            attachment.document_number,
+            attachment.document_date,
+            attachment.path,
+            console_path,
+            show_original=attachment.show_to_recipient,
+            document_title=attachment.title,
+            requested_title=attachment.kind,
+        )
+        _report(
+            progress,
+            f"{prefix} [پیوست {attachment_index}/{len(draft.attachments)}] "
+            f"کد چهار درخواست برای کنسول Chrome پیش از ارسال ساخته شد: "
+            f"{console_path}",
+        )
     lookup_client = AttachmentClient(
         page,
-        result.petition_number,
+        result.tracking_code,
         result.petition_id,
         progress=lambda message: _report(progress, f"{prefix} {message}"),
     )
     attachment_types = _run_logged_stage(
         progress,
-        f"دریافت نوع‌های مجاز پیوست برای اظهارنامه {result.petition_number}",
+        f"دریافت نوع‌های مجاز پیوست برای اظهارنامه {result.tracking_code}",
         lambda: lookup_client.get_valid_attachment_types(
             reliefs,
             petition_type_code=str(
@@ -346,7 +510,7 @@ def _attach_draft_files(
         )
         attachment_client = AttachmentClient(
             page,
-            result.petition_number,
+            result.tracking_code,
             result.petition_id,
             progress=lambda message, p=attachment_prefix: _report(
                 progress, f"{p} {message}"
@@ -355,7 +519,7 @@ def _attach_draft_files(
         _run_logged_stage(
             progress,
             f"افزودن پیوست {attachment_index}/{len(draft.attachments)} "
-            f"به اظهارنامه {result.petition_number}",
+            f"به اظهارنامه {result.tracking_code}",
             lambda: attachment_client.register_attachment(
                 attachment_type,
                 document_number=attachment.document_number,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 import json
 from pathlib import Path
+from typing import Mapping
 
 from .models import DeclarationDraft, UploadResult
 
@@ -62,6 +63,43 @@ def read_saved_result(source_dir: Path, source_path: Path) -> dict[str, str] | N
     }
 
 
+def read_saved_attachment_context(
+    source_dir: Path, source_path: Path
+) -> dict[str, object] | None:
+    """Return the identifiers and reliefs needed to append to a prior record."""
+
+    declarations = _load_manifest(source_dir.resolve())["declarations"]
+    record = declarations.get(source_path.name)
+    if not isinstance(record, dict):
+        return None
+    registrations = record.get("registrations")
+    if not isinstance(registrations, list) or not registrations:
+        return None
+    latest = registrations[-1]
+    if not isinstance(latest, dict):
+        return None
+    context = latest.get("attachment_context")
+    if not isinstance(context, dict):
+        return None
+    if not all(
+        isinstance(context.get(key), str) and str(context[key]).strip()
+        for key in ("petition_number", "petition_id", "petition_type_code")
+    ):
+        return None
+    reliefs = context.get("reliefs")
+    if not isinstance(reliefs, list) or not reliefs or not all(
+        isinstance(relief, dict) for relief in reliefs
+    ):
+        return None
+    return {
+        "tracking_code": str(latest.get("tracking_code", "")),
+        "petition_number": str(context["petition_number"]),
+        "petition_id": str(context["petition_id"]),
+        "petition_type_code": str(context["petition_type_code"]),
+        "reliefs": reliefs,
+    }
+
+
 def existing_results(
     drafts: tuple[DeclarationDraft, ...],
 ) -> tuple[tuple[str, dict[str, str]], ...]:
@@ -86,6 +124,7 @@ def save_verified_result(
     *,
     filename: str = RESULTS_FILENAME,
     source_key: str | None = None,
+    attachment_context: Mapping[str, object] | None = None,
 ) -> Path:
     if result.status != "success" or not result.tracking_code.strip():
         raise ResultPersistenceError("unverified_result")
@@ -107,10 +146,13 @@ def save_verified_result(
     registrations = record.get("registrations")
     if not isinstance(registrations, list):
         raise ResultPersistenceError("existing_results_invalid")
-    registrations.append({
+    registration: dict[str, object] = {
         "tracking_code": result.tracking_code.strip(),
         "registered_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-    })
+    }
+    if attachment_context is not None:
+        registration["attachment_context"] = dict(attachment_context)
+    registrations.append(registration)
 
     temporary = target.with_suffix(target.suffix + ".tmp")
     try:
