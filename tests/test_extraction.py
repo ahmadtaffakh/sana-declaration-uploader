@@ -12,6 +12,7 @@ from sana_declaration_uploader.extraction import (
     extract_recipient,
     extract_recipient_candidates,
     extract_recipients,
+    format_recipient_address,
 )
 
 
@@ -63,6 +64,33 @@ class RecipientExtractionTests(unittest.TestCase):
                 "استان تهران", "شهرستان تهران", "تهران",
             ),
             ("بلوار کشاورز", "1234567890"),
+        )
+
+    def test_formats_address_hierarchy_without_repeating_locations(self) -> None:
+        actual = format_recipient_address(
+            "استان خوزستان - شهرستان امیدیه - شهر امیدیه - "
+            "خیابان آزادی، پلاک ۱۲ - کد پستی ۱۲۳۴۵۶۷۸۹۰",
+            "استان خوزستان",
+            "شهرستان امیدیه",
+            "امیدیه",
+        )
+
+        self.assertEqual(
+            actual,
+            "خوزستان - امیدیه - امیدیه - خیابان آزادی، پلاک 12",
+        )
+        self.assertEqual(actual.count("خوزستان"), 1)
+        self.assertEqual(actual.count("امیدیه"), 2)
+
+    def test_formats_address_with_hierarchy_when_remainder_is_empty(self) -> None:
+        self.assertEqual(
+            format_recipient_address(
+                "استان تهران - شهرستان تهران - شهر تهران",
+                "استان تهران",
+                "شهرستان تهران",
+                "تهران",
+            ),
+            "تهران - تهران - تهران",
         )
 
     def test_cleans_organization_prefix_and_keeps_multiword_given_name(self) -> None:
@@ -305,6 +333,9 @@ class RecipientExtractionTests(unittest.TestCase):
 
             self.assertEqual([item.full_name for item in candidates], ["علی احمدی", "رضا کریمی"])
             self.assertEqual([item.role for item in candidates], ["plaintiff", "defendant"])
+            self.assertEqual(
+                [item.source_recipient_ordinal for item in candidates], [1, 2]
+            )
             self.assertTrue(all(item.evidence for item in candidates))
             self.assertTrue(all(item.extraction_method == "local_party" for item in candidates))
 
@@ -316,7 +347,11 @@ class RecipientExtractionTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            self.assertEqual(len(extract_recipients([path])), 2)
+            candidates = extract_recipients([path])
+            self.assertEqual(len(candidates), 2)
+            self.assertEqual(
+                [item.source_recipient_ordinal for item in candidates], [1, 2]
+            )
 
     def test_ignores_role_words_in_narrative_after_structured_section(self) -> None:
         with TemporaryDirectory() as directory:

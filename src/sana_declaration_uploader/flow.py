@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .browser import BrowserUploader
+from .extraction import format_recipient_address
 from .lookups import LookupResolutionError, resolve_lookup_fields
 from .models import (
     Attachment,
@@ -87,7 +88,12 @@ def _build_desktop_drafts(
             "recipient_birth_date": candidate.birth_date,
             "recipient_gender": candidate.gender,
             "recipient_main_street": candidate.main_street or lookup_fields["city"],
-            "recipient_address": candidate.address,
+            "recipient_address": format_recipient_address(
+                candidate.address,
+                lookup_fields["province"],
+                lookup_fields["county"],
+                lookup_fields["city"],
+            ),
             "recipient_postal_code": candidate.postal_code,
             "notice_number": candidate.notice_number,
             "related_declaration_number": candidate.related_declaration_number,
@@ -112,6 +118,7 @@ def _build_desktop_drafts(
                 fields=fields,
                 attachments=attachments,
                 source_path=candidate.source_path.resolve(),
+                source_recipient_ordinal=candidate.source_recipient_ordinal,
             )
         )
     return tuple(drafts)

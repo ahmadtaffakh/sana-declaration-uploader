@@ -34,22 +34,78 @@ def _load_manifest(source_dir: Path) -> dict[str, object]:
     return manifest
 
 
+def _recipient_source_key(source_path: Path, source_recipient_ordinal: int) -> str:
+    if source_recipient_ordinal < 1:
+        raise ResultPersistenceError("source_recipient_ordinal_invalid")
+    return f"{source_path.name}::recipient-{source_recipient_ordinal:03d}"
+
+
 def _source_key(draft: DeclarationDraft, source_key: str | None = None) -> str:
-    key = source_key or (draft.source_path.name if draft.source_path else "")
+    key = source_key or (
+        _recipient_source_key(
+            draft.source_path, draft.source_recipient_ordinal
+        )
+        if draft.source_path else ""
+    )
     if not key:
         raise ResultPersistenceError("source_file_missing")
     return key
 
 
-def read_saved_result(source_dir: Path, source_path: Path) -> dict[str, str] | None:
-    """Return the latest saved registration for one Word input, if present."""
+def _record_for_recipient(
+    declarations: object,
+    source_path: Path,
+    source_recipient_ordinal: int,
+    source_recipient_count: int | None,
+) -> dict[str, object] | None:
+    if not isinstance(declarations, dict):
+        raise ResultPersistenceError("existing_results_invalid")
+    key = _recipient_source_key(source_path, source_recipient_ordinal)
+    record = declarations.get(key)
+    if record is not None:
+        if not isinstance(record, dict):
+            raise ResultPersistenceError("existing_results_invalid")
+        return record
+
+    legacy = declarations.get(source_path.name)
+    if legacy is None:
+        return None
+    if not isinstance(legacy, dict):
+        raise ResultPersistenceError("existing_results_invalid")
+    registrations = legacy.get("registrations")
+    if not isinstance(registrations, list) or not registrations:
+        raise ResultPersistenceError("existing_results_invalid")
+    if source_recipient_count in (None, 1) and source_recipient_ordinal == 1:
+        return legacy
+    if (
+        source_recipient_count is None
+        or source_recipient_count < source_recipient_ordinal
+        or len(registrations) != source_recipient_count
+    ):
+        raise ResultPersistenceError(
+            "legacy_results_ambiguous_for_multiple_recipients"
+        )
+    return {"registrations": [registrations[source_recipient_ordinal - 1]]}
+
+
+def read_saved_result(
+    source_dir: Path,
+    source_path: Path,
+    *,
+    source_recipient_ordinal: int = 1,
+    source_recipient_count: int | None = None,
+) -> dict[str, str] | None:
+    """Return the latest saved registration for one source recipient."""
 
     declarations = _load_manifest(source_dir.resolve())["declarations"]
-    record = declarations.get(source_path.name)
+    record = _record_for_recipient(
+        declarations,
+        source_path,
+        source_recipient_ordinal,
+        source_recipient_count,
+    )
     if record is None:
         return None
-    if not isinstance(record, dict):
-        raise ResultPersistenceError("existing_results_invalid")
     registrations = record.get("registrations")
     if not isinstance(registrations, list) or not registrations:
         raise ResultPersistenceError("existing_results_invalid")
@@ -64,13 +120,22 @@ def read_saved_result(source_dir: Path, source_path: Path) -> dict[str, str] | N
 
 
 def read_saved_attachment_context(
-    source_dir: Path, source_path: Path
+    source_dir: Path,
+    source_path: Path,
+    *,
+    source_recipient_ordinal: int = 1,
+    source_recipient_count: int | None = None,
 ) -> dict[str, object] | None:
     """Return the identifiers and reliefs needed to append to a prior record."""
 
     declarations = _load_manifest(source_dir.resolve())["declarations"]
-    record = declarations.get(source_path.name)
-    if not isinstance(record, dict):
+    record = _record_for_recipient(
+        declarations,
+        source_path,
+        source_recipient_ordinal,
+        source_recipient_count,
+    )
+    if record is None:
         return None
     registrations = record.get("registrations")
     if not isinstance(registrations, list) or not registrations:
@@ -105,16 +170,32 @@ def existing_results(
 ) -> tuple[tuple[str, dict[str, str]], ...]:
     """Return prior registrations matching the Word files in this batch."""
 
+    source_counts: dict[Path, int] = {}
+    for draft in drafts:
+        if draft.source_path is not None:
+            source = draft.source_path.resolve()
+            source_counts[source] = source_counts.get(source, 0) + 1
+
     prior = []
     for draft in drafts:
         if draft.source_path is None:
             continue
+        source = draft.source_path.resolve()
+        source_count = source_counts[source]
         try:
-            result = read_saved_result(draft.source_dir, draft.source_path)
+            result = read_saved_result(
+                draft.source_dir,
+                draft.source_path,
+                source_recipient_ordinal=draft.source_recipient_ordinal,
+                source_recipient_count=source_count,
+            )
         except ResultPersistenceError:
             result = {"tracking_code": "رسید نامعتبر", "registered_at": ""}
         if result is not None:
-            prior.append((draft.source_path.name, result))
+            label = draft.source_path.name
+            if source_count > 1:
+                label += f" — شخص {draft.source_recipient_ordinal}"
+            prior.append((label, result))
     return tuple(prior)
 
 

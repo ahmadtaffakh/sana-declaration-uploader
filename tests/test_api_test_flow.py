@@ -68,10 +68,60 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                         None,
                         request_path,
                     )
-
             self.assertTrue(
                 (root / "request.attachment-001.console.txt").is_file()
             )
+
+    def test_ambiguous_legacy_attachment_context_falls_back_to_tracking_lookup(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            attachment_path = root / "file.pdf"
+            attachment_path.write_bytes(b"fixture")
+            draft = DeclarationDraft(
+                root,
+                {},
+                (Attachment(
+                    attachment_path,
+                    "سایر ضمائم",
+                    "عنوان پیوست",
+                    "1",
+                    "1405/01/01",
+                ),),
+                root / "source.docx",
+                source_recipient_ordinal=2,
+            )
+            petition = {
+                "No": "T-SECOND",
+                "Id": "petition-second",
+                "PetitionTypeCode": "110",
+                "theJSSPetitionRelief": [{"Id": "relief-second"}],
+            }
+
+            with (
+                patch.object(
+                    api_test_flow,
+                    "read_saved_attachment_context",
+                    side_effect=api_test_flow.ResultPersistenceError(
+                        "legacy_results_ambiguous_for_multiple_recipients"
+                    ),
+                ),
+                patch.object(
+                    api_test_flow,
+                    "_get_petition_by_tracking_code",
+                    return_value=petition,
+                ) as lookup,
+                patch.object(api_test_flow, "_attach_draft_files") as attach,
+            ):
+                api_test_flow._attach_existing_petitions(
+                    Mock(),
+                    ((draft, "T-SECOND"),),
+                    Mock(),
+                    None,
+                    root / "request.txt",
+                )
+
+            lookup.assert_called_once()
+            attach.assert_called_once()
 
     def test_attaches_to_tracking_code_without_registering_petition(self):
         events = []

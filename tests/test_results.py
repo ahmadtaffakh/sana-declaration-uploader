@@ -72,7 +72,11 @@ class ResultPersistenceTests(unittest.TestCase):
 
             manifest = json.loads((source / "results.json").read_text(encoding="utf-8"))
             self.assertEqual(
-                len(manifest["declarations"]["sample.docx"]["registrations"]), 2
+                len(
+                    manifest["declarations"]
+                    ["sample.docx::recipient-001"]["registrations"]
+                ),
+                2,
             )
             self.assertEqual(
                 read_saved_result(source, source_path)["tracking_code"], "T-NEW"
@@ -110,3 +114,149 @@ class ResultPersistenceTests(unittest.TestCase):
                 read_saved_attachment_context(source, source_path),
                 {"tracking_code": "1405000000000001", **context},
             )
+
+    def test_keeps_two_recipients_from_one_source_separate(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "sample.docx"
+            first = DeclarationDraft(
+                source, {}, source_path=source_path,
+                source_recipient_ordinal=1,
+            )
+            second = DeclarationDraft(
+                source, {}, source_path=source_path,
+                source_recipient_ordinal=2,
+            )
+
+            first_context = {
+                "petition_number": "T-FIRST",
+                "petition_id": "petition-first",
+                "petition_type_code": "110",
+                "reliefs": [{"Id": "relief-first"}],
+            }
+            second_context = {
+                "petition_number": "T-SECOND",
+                "petition_id": "petition-second",
+                "petition_type_code": "110",
+                "reliefs": [{"Id": "relief-second"}],
+            }
+            save_verified_result(
+                first, UploadResult("success", "T-FIRST"),
+                attachment_context=first_context,
+            )
+            save_verified_result(
+                second, UploadResult("success", "T-SECOND"),
+                attachment_context=second_context,
+            )
+
+            self.assertEqual(
+                read_saved_result(
+                    source, source_path,
+                    source_recipient_ordinal=1,
+                    source_recipient_count=2,
+                )["tracking_code"],
+                "T-FIRST",
+            )
+            self.assertEqual(
+                read_saved_result(
+                    source, source_path,
+                    source_recipient_ordinal=2,
+                    source_recipient_count=2,
+                )["tracking_code"],
+                "T-SECOND",
+            )
+            self.assertEqual(
+                read_saved_attachment_context(
+                    source, source_path,
+                    source_recipient_ordinal=1,
+                    source_recipient_count=2,
+                ),
+                {"tracking_code": "T-FIRST", **first_context},
+            )
+            self.assertEqual(
+                read_saved_attachment_context(
+                    source, source_path,
+                    source_recipient_ordinal=2,
+                    source_recipient_count=2,
+                ),
+                {"tracking_code": "T-SECOND", **second_context},
+            )
+
+    def test_reads_unambiguous_legacy_multi_recipient_history_by_ordinal(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "sample.docx"
+            (source / "results.json").write_text(json.dumps({
+                "schema_version": 1,
+                "declarations": {
+                    "sample.docx": {"registrations": [
+                        {
+                            "tracking_code": "T-FIRST",
+                            "registered_at": "one",
+                            "attachment_context": {
+                                "petition_number": "T-FIRST",
+                                "petition_id": "petition-first",
+                                "petition_type_code": "110",
+                                "reliefs": [{"Id": "relief-first"}],
+                            },
+                        },
+                        {
+                            "tracking_code": "T-SECOND",
+                            "registered_at": "two",
+                            "attachment_context": {
+                                "petition_number": "T-SECOND",
+                                "petition_id": "petition-second",
+                                "petition_type_code": "110",
+                                "reliefs": [{"Id": "relief-second"}],
+                            },
+                        },
+                    ]}
+                },
+            }), encoding="utf-8")
+
+            first = read_saved_result(
+                source, source_path,
+                source_recipient_ordinal=1,
+                source_recipient_count=2,
+            )
+            second = read_saved_result(
+                source, source_path,
+                source_recipient_ordinal=2,
+                source_recipient_count=2,
+            )
+
+            self.assertEqual(first["tracking_code"], "T-FIRST")
+            self.assertEqual(second["tracking_code"], "T-SECOND")
+            self.assertEqual(
+                read_saved_attachment_context(
+                    source, source_path,
+                    source_recipient_ordinal=2,
+                    source_recipient_count=2,
+                )["petition_id"],
+                "petition-second",
+            )
+
+    def test_rejects_ambiguous_legacy_multi_recipient_history(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "sample.docx"
+            (source / "results.json").write_text(json.dumps({
+                "schema_version": 1,
+                "declarations": {
+                    "sample.docx": {"registrations": [
+                        {"tracking_code": "T-OLD", "registered_at": "old"},
+                        {"tracking_code": "T-FIRST", "registered_at": "one"},
+                        {"tracking_code": "T-SECOND", "registered_at": "two"},
+                    ]}
+                },
+            }), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ResultPersistenceError,
+                "legacy_results_ambiguous_for_multiple_recipients",
+            ):
+                read_saved_result(
+                    source, source_path,
+                    source_recipient_ordinal=1,
+                    source_recipient_count=2,
+                )

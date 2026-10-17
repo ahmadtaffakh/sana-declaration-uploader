@@ -277,7 +277,7 @@ def build_setpetitiondata_payload(
             fields.get("recipient_main_street", "") or fields["city"]
         ),
         "HomeAddress": _sanitize_address(
-            fields.get("recipient_address", "")
+            fields.get("recipient_address", ""), max_length=500
         ),
         "PostallCode": fields.get("recipient_postal_code", ""),
         # In SetPetitionData these legacy *Id fields carry the short address

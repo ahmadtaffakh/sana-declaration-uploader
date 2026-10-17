@@ -46,7 +46,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .extraction import extract_address_details, extract_recipients
+from .extraction import (
+    extract_address_details,
+    extract_recipients,
+    format_recipient_address,
+)
 from .flow import _build_desktop_drafts
 from .live_browser import (
     LoginCredentials,
@@ -551,11 +555,31 @@ def _two_line_preview(value: str, width: int = 52) -> str:
     return f"{lines[0]}\n{second[:max(1, width - 1)].rstrip()}…"
 
 
-def _saved_registration(source_path: Path) -> dict[str, str] | None:
+def _saved_registration(
+    source_path: Path,
+    *,
+    source_recipient_ordinal: int = 1,
+    source_recipient_count: int | None = None,
+) -> dict[str, str] | None:
     try:
-        return read_saved_result(source_path.parent, source_path)
+        return read_saved_result(
+            source_path.parent,
+            source_path,
+            source_recipient_ordinal=source_recipient_ordinal,
+            source_recipient_count=source_recipient_count,
+        )
     except ResultPersistenceError:
         return {"tracking_code": "رسید نامعتبر", "registered_at": ""}
+
+
+def _candidate_source_counts(
+    candidates: tuple[RecipientCandidate, ...],
+) -> dict[Path, int]:
+    counts: dict[Path, int] = {}
+    for candidate in candidates:
+        source = candidate.source_path.resolve()
+        counts[source] = counts.get(source, 0) + 1
+    return counts
 
 
 class FileSelectionPage(QWizardPage):
@@ -831,12 +855,23 @@ class RecipientReviewPage(QWizardPage):
         self.refresh_registration_results()
 
     def refresh_registration_results(self) -> None:
+        candidates = []
+        for row in range(self.table.rowCount()):
+            source_item = self.table.item(row, self.HEADERS.index("نام فایل مرتبط"))
+            candidate = source_item.data(Qt.ItemDataRole.UserRole) if source_item else None
+            if isinstance(candidate, RecipientCandidate):
+                candidates.append(candidate)
+        source_counts = _candidate_source_counts(tuple(candidates))
         for row in range(self.table.rowCount()):
             source_item = self.table.item(row, self.HEADERS.index("نام فایل مرتبط"))
             candidate = source_item.data(Qt.ItemDataRole.UserRole) if source_item else None
             if not isinstance(candidate, RecipientCandidate):
                 continue
-            result = _saved_registration(candidate.source_path)
+            result = _saved_registration(
+                candidate.source_path,
+                source_recipient_ordinal=candidate.source_recipient_ordinal,
+                source_recipient_count=source_counts[candidate.source_path.resolve()],
+            )
             if result is None:
                 continue
             code_item = self.table.item(row, self.HEADERS.index("کد رهگیری"))
@@ -976,6 +1011,12 @@ class PreprocessingPage(QWizardPage):
                 candidate.county,
                 candidate.city,
             )
+            formatted_address = format_recipient_address(
+                candidate.address,
+                candidate.province,
+                candidate.county,
+                candidate.city,
+            )
             values = (
                 "",
                 "",
@@ -999,7 +1040,7 @@ class PreprocessingPage(QWizardPage):
                 }),
                 candidate.main_street or main_street,
                 candidate.postal_code or postal_code,
-                candidate.address,
+                formatted_address,
                 self._status(candidate),
             )
             for column, value in enumerate(values):
@@ -1041,6 +1082,13 @@ class PreprocessingPage(QWizardPage):
         self.table.resizeColumnsToContents()
 
     def refresh_registration_results(self) -> None:
+        candidates = []
+        for row in range(self.table.rowCount()):
+            name_item = self.table.item(row, self.HEADERS.index("نام شخص"))
+            candidate = name_item.data(Qt.ItemDataRole.UserRole) if name_item else None
+            if isinstance(candidate, RecipientCandidate):
+                candidates.append(candidate)
+        source_counts = _candidate_source_counts(tuple(candidates))
         for row in range(self.table.rowCount()):
             candidate = self.table.item(
                 row, self.HEADERS.index("نام شخص")
@@ -1049,7 +1097,12 @@ class PreprocessingPage(QWizardPage):
                 continue
             try:
                 saved_result = read_saved_result(
-                    candidate.source_path.parent, candidate.source_path
+                    candidate.source_path.parent,
+                    candidate.source_path,
+                    source_recipient_ordinal=candidate.source_recipient_ordinal,
+                    source_recipient_count=source_counts[
+                        candidate.source_path.resolve()
+                    ],
                 )
             except ResultPersistenceError:
                 saved_result = {"tracking_code": "رسید نامعتبر", "registered_at": ""}
@@ -1079,19 +1132,24 @@ class PreprocessingPage(QWizardPage):
                 item = self.table.item(row, self.HEADERS.index(header))
                 return item.text().strip() if item else ""
 
+            province = _location_value(value("استان"), "استان")
+            county = _location_value(value("شهرستان"), "شهرستان")
+            city = value("شهر")
             updated = replace(
                 original,
                 job_title=value("شغل"),
                 job_code=value("کد شغل"),
-                province=_location_value(value("استان"), "استان"),
+                province=province,
                 province_code=value("کد استان"),
-                county=_location_value(value("شهرستان"), "شهرستان"),
+                county=county,
                 county_code=value("کد شهرستان"),
-                city=value("شهر"),
+                city=city,
                 city_code=value("کد شهر"),
                 main_street=value("خیابان اصلی"),
                 postal_code=value("کد پستی"),
-                address=value("آدرس"),
+                address=format_recipient_address(
+                    value("آدرس"), province, county, city
+                ),
                 court_unit_name=value("حوزه قضایی"),
                 court_unit_code=value("کد حوزه"),
             )
@@ -2472,11 +2530,23 @@ class RecipientWizard(QWizard):
             QMessageBox.warning(self, "پیش‌نویس پیوست نامعتبر", str(exc))
             return
         requests = []
+        source_counts: dict[Path, int] = {}
+        for draft in drafts:
+            if draft.source_path is not None:
+                source = draft.source_path.resolve()
+                source_counts[source] = source_counts.get(source, 0) + 1
         for draft in drafts:
             if not draft.attachments or draft.source_path is None:
                 continue
             try:
-                saved = read_saved_result(draft.source_dir, draft.source_path)
+                saved = read_saved_result(
+                    draft.source_dir,
+                    draft.source_path,
+                    source_recipient_ordinal=draft.source_recipient_ordinal,
+                    source_recipient_count=source_counts[
+                        draft.source_path.resolve()
+                    ],
+                )
             except ResultPersistenceError as exc:
                 QMessageBox.warning(self, "خواندن کد رهگیری ناموفق", str(exc))
                 return
@@ -2722,11 +2792,6 @@ class RecipientWizard(QWizard):
                     draft,
                     result,
                     filename=RESULTS_FILENAME,
-                    source_key=(
-                        draft.source_path.name
-                        if draft.source_path is not None
-                        else f"ردیف-{index:03d}"
-                    ),
                 )
             except ResultPersistenceError as exc:
                 failures.append(f"ردیف {index}: {exc}")

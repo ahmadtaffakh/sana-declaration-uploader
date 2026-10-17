@@ -114,7 +114,9 @@ def extract_recipients(paths: list[Path]) -> tuple[RecipientCandidate, ...]:
                     issues=issues,
                 )
             )
-    return _merge_unique_notice_duplicates(tuple(result))
+    return _number_source_recipients(
+        _merge_unique_notice_duplicates(tuple(result))
+    )
 
 
 def extract_recipient(path: Path) -> RecipientCandidate:
@@ -124,7 +126,21 @@ def extract_recipient(path: Path) -> RecipientCandidate:
 
 
 def extract_recipient_candidates(path: Path) -> tuple[RecipientCandidate, ...]:
-    return _extract_document(path)[0]
+    return _number_source_recipients(_extract_document(path)[0])
+
+
+def _number_source_recipients(
+    candidates: tuple[RecipientCandidate, ...],
+) -> tuple[RecipientCandidate, ...]:
+    counts: dict[Path, int] = {}
+    numbered = []
+    for candidate in candidates:
+        source = candidate.source_path.resolve()
+        counts[source] = counts.get(source, 0) + 1
+        numbered.append(
+            replace(candidate, source_recipient_ordinal=counts[source])
+        )
+    return tuple(numbered)
 
 
 def _extract_document(
@@ -455,26 +471,9 @@ def extract_address_details(
     )
     postal_code = postal_match.group(1) if postal_match else ""
 
-    remainder = normalized
-    locations = tuple(
-        value for value in (
-            province.removeprefix("استان "),
-            county.removeprefix("شهرستان "),
-            city.removeprefix("شهر "),
-            province,
-            county,
-            f"شهر {city.removeprefix('شهر ')}" if city else "",
-            city,
-        ) if value
+    remainder = _without_address_locations(
+        normalized, province, county, city
     )
-    for location in sorted(
-        {_normalize_text(value).strip() for value in locations if value.strip()},
-        key=len,
-        reverse=True,
-    ):
-        remainder = re.sub(
-            rf"(?<!\w){re.escape(location)}(?!\w)", " ", remainder
-        )
 
     street_match = re.search(
         r"خیابان\s*اصلی\s*[:：\-]?\s*(.*)", remainder
@@ -494,6 +493,71 @@ def extract_address_details(
     street = re.sub(r"\s+", " ", street)
     street = street.strip(" \t\r\n-‐‑‒–—،,؛.:")
     return street or "خیابان اصلی", postal_code
+
+
+def format_recipient_address(
+    address: str, province: str = "", county: str = "", city: str = ""
+) -> str:
+    """Build province - county - city - remainder without repeated locations."""
+
+    remainder = _without_address_locations(
+        _normalize_text(address), province, county, city
+    )
+    remainder = re.sub(r"^\s*(?:نشانی|آدرس)\s*[:：\-]?\s*", "", remainder)
+    remainder = re.sub(r"خیابان\s*اصلی\s*[:：\-]?\s*", "", remainder, count=1)
+    remainder = re.sub(
+        r"(?:کد\s*پستی|کدپستی)\s*[:：\-]?\s*[0-9]{10}", "", remainder
+    )
+    remainder = re.sub(
+        r"(?:تلفن|موبایل|همراه|شماره\s*تماس)\s*[:：\-]?.*$", "", remainder
+    )
+    remainder = " - ".join(
+        segment.strip(" \t\r\n،,؛.:")
+        for segment in re.split(r"\s*[-‐‑‒–—]\s*", remainder)
+        if segment.strip(" \t\r\n،,؛.:")
+    )
+    remainder = re.sub(r"\s+", " ", remainder)
+    remainder = remainder.strip(" \t\r\n-‐‑‒–—،,؛.:")
+
+    normalized_province = (
+        _normalize_text(province).strip().removeprefix("استان ").strip()
+    )
+    normalized_county = (
+        _normalize_text(county).strip().removeprefix("شهرستان ").strip()
+    )
+    normalized_city = _normalize_text(city).strip().removeprefix("شهر ").strip()
+    parts = [
+        value
+        for value in (normalized_province, normalized_county, normalized_city, remainder)
+        if value
+    ]
+    return " - ".join(parts)
+
+
+def _without_address_locations(
+    address: str, province: str, county: str, city: str
+) -> str:
+    remainder = address
+    locations = tuple(
+        value for value in (
+            province.removeprefix("استان "),
+            county.removeprefix("شهرستان "),
+            city.removeprefix("شهر "),
+            province,
+            county,
+            f"شهر {city.removeprefix('شهر ')}" if city else "",
+            city,
+        ) if value
+    )
+    for location in sorted(
+        {_normalize_text(value).strip() for value in locations if value.strip()},
+        key=len,
+        reverse=True,
+    ):
+        remainder = re.sub(
+            rf"(?<!\w){re.escape(location)}(?!\w)", " ", remainder
+        )
+    return remainder
 
 
 def _table_descriptions(rows: list[tuple[str, ...]]) -> tuple[str, ...]:

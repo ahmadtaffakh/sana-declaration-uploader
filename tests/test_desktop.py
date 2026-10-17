@@ -433,6 +433,44 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertEqual(registered.text(), "1405/07/24")
             self.assertEqual(code.background().color().name(), "#fff0c2")
 
+    def test_preprocessing_page_keeps_same_file_recipients_separate(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "input.docx"
+            candidates = (
+                RecipientCandidate(
+                    source_path=source_path,
+                    source_recipient_ordinal=1,
+                ),
+                RecipientCandidate(
+                    source_path=source_path,
+                    source_recipient_ordinal=2,
+                ),
+            )
+            for candidate, tracking_code in zip(
+                candidates, ("T-FIRST", "T-SECOND"), strict=True
+            ):
+                save_verified_result(
+                    DeclarationDraft(
+                        source_dir=source,
+                        fields={},
+                        source_path=source_path,
+                        source_recipient_ordinal=(
+                            candidate.source_recipient_ordinal
+                        ),
+                    ),
+                    UploadResult("success", tracking_code),
+                )
+
+            page = PreprocessingPage()
+            page.set_candidates(candidates)
+
+            code_column = page.HEADERS.index("کد رهگیری")
+            self.assertEqual(
+                [page.table.item(row, code_column).text() for row in range(2)],
+                ["T-FIRST", "T-SECOND"],
+            )
+
     def test_preprocessing_actions_are_rightmost_icon_buttons_with_tooltips(self) -> None:
         page = PreprocessingPage()
         page.set_candidates((RecipientCandidate(source_path=Path("sample.docx")),))
@@ -678,7 +716,10 @@ class RecipientWizardTests(unittest.TestCase):
 
         address_item = page.table.item(0, page.HEADERS.index("آدرس"))
         address_item.setText("نشانی اصلاح‌شده")
-        self.assertEqual(page.candidates()[0].address, "نشانی اصلاح‌شده")
+        self.assertEqual(
+            page.candidates()[0].address,
+            "خوزستان - امیدیه - امیدیه - اصلاح‌شده",
+        )
 
         with patch(
             "sana_declaration_uploader.desktop.QDesktopServices.openUrl"
@@ -1513,7 +1554,7 @@ class RecipientWizardTests(unittest.TestCase):
 
         self.assertFalse(completed)
         save.assert_called_once_with(
-            drafts[0], results[0], filename="results.json", source_key="one.docx"
+            drafts[0], results[0], filename="results.json"
         )
         self.assertIn("ناموفق: 1", warning.call_args.args[2])
         self.assertIn("recipient_person_type_not_supported", warning.call_args.args[2])
@@ -1587,7 +1628,8 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertEqual(
             [
                 item["tracking_code"]
-                for item in manifest["declarations"]["one.docx"]["registrations"]
+                for item in manifest["declarations"]
+                ["one.docx::recipient-001"]["registrations"]
             ],
             ["T-OLD", "T-NEW"],
         )

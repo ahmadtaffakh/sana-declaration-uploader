@@ -37,6 +37,7 @@ from .petition_api import (
 )
 from .results import (
     RESULTS_FILENAME,
+    ResultPersistenceError,
     read_saved_attachment_context,
     save_verified_result,
 )
@@ -344,6 +345,11 @@ def _attach_existing_petitions(
     progress: ProgressCallback | None,
     request_text_path: Path,
 ) -> None:
+    source_counts: dict[Path, int] = {}
+    for draft, _tracking_code in requests:
+        if draft.source_path is not None:
+            source = draft.source_path.resolve()
+            source_counts[source] = source_counts.get(source, 0) + 1
     for draft, _tracking_code in requests:
         for attachment in draft.attachments:
             if (
@@ -359,10 +365,20 @@ def _attach_existing_petitions(
             _report(progress, f"[ردیف {index} از {len(requests)}] پیوستی انتخاب نشده؛ رد شد.")
             continue
         ensure_authenticated()
-        saved = (
-            read_saved_attachment_context(draft.source_dir, draft.source_path)
-            if draft.source_path is not None else None
-        )
+        try:
+            saved = (
+                read_saved_attachment_context(
+                    draft.source_dir,
+                    draft.source_path,
+                    source_recipient_ordinal=draft.source_recipient_ordinal,
+                    source_recipient_count=source_counts[
+                        draft.source_path.resolve()
+                    ],
+                )
+                if draft.source_path is not None else None
+            )
+        except ResultPersistenceError:
+            saved = None
         if saved and saved.get("tracking_code") == tracking_code:
             petition_data = {
                 "No": tracking_code,

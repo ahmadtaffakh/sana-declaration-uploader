@@ -23,6 +23,7 @@ class DeclarationDraft:
     fields: Mapping[str, str]
     attachments: tuple[Attachment, ...] = field(default_factory=tuple)
     source_path: Path | None = None
+    source_recipient_ordinal: int = 1
 
 
 @dataclass(frozen=True)
@@ -86,3 +87,4 @@ class RecipientCandidate:
     evidence: str = ""
     extraction_method: str = "local"
     issues: tuple[str, ...] = field(default_factory=tuple)
+    source_recipient_ordinal: int = 1

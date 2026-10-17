@@ -249,7 +249,10 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
         draft = self._draft()
         draft.fields.update({
             "recipient_main_street": "خيابان الف. Tel: 021123456",
-            "recipient_address": "کوچه ب کد پستی: 1234567890",
+            "recipient_address": (
+                "استان تهران - شهرستان تهران - تهران - "
+                "کوچه ب کد پستی: 1234567890"
+            ),
         })
 
         recipient = build_setpetitiondata_payload(
@@ -257,9 +260,12 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
         )["theJSSPetitionPerson"][1]
 
         self.assertEqual(recipient["BasicAvenue"], "خيابان الف")
-        self.assertEqual(recipient["HomeAddress"], "کوچه ب")
+        self.assertEqual(
+            recipient["HomeAddress"],
+            "استان تهران - شهرستان تهران - تهران - کوچه ب",
+        )
         self.assertLessEqual(len(recipient["BasicAvenue"]), 10)
-        self.assertLessEqual(len(recipient["HomeAddress"]), 10)
+        self.assertGreater(len(recipient["HomeAddress"]), 10)
         self.assertNotIn("Tel", recipient["BasicAvenue"])
         self.assertNotIn("پستی", recipient["HomeAddress"])
 
