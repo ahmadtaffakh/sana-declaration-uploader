@@ -30,9 +30,12 @@ from sana_declaration_uploader.desktop import (
     _days_since_related_date,
     _load_attachment_settings,
     _load_declaration_settings,
+    _load_last_source_directory,
     _load_login_settings,
+    _load_saved_attachment_paths,
     _save_attachment_settings,
     _save_declaration_settings,
+    _save_last_source_directory,
     _save_login_settings,
 )
 from sana_declaration_uploader.live_browser import LiveBrowserError, LoginCredentials
@@ -186,6 +189,46 @@ class RecipientWizardTests(unittest.TestCase):
 
             self.assertEqual(
                 page.file_count_label.text(), "تعداد فایل‌های بارگذاری‌شده: 2"
+            )
+
+    def test_file_page_reopens_last_selected_source_directory(self) -> None:
+        with TemporaryDirectory() as directory:
+            source_directory = Path(directory) / "documents"
+            source_directory.mkdir()
+            source = source_directory / "input.docx"
+            source.write_bytes(b"test")
+            with (
+                patch(
+                    "sana_declaration_uploader.desktop._load_last_source_directory",
+                    return_value=source_directory,
+                ),
+                patch(
+                    "sana_declaration_uploader.desktop._save_last_source_directory"
+                ) as save,
+                patch(
+                    "sana_declaration_uploader.desktop.QFileDialog.getOpenFileNames",
+                    return_value=([str(source)], ""),
+                ) as choose,
+            ):
+                page = RecipientWizard().files_page
+                page._choose_files()
+
+        self.assertEqual(choose.call_args.args[2], str(source_directory))
+        save.assert_called_once_with(source_directory.resolve())
+        self.assertEqual(page.selected_paths(), [source.resolve()])
+
+    def test_last_source_directory_is_saved_and_loaded(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_directory = root / "documents"
+            source_directory.mkdir()
+            settings_path = root / "file-selection.json"
+
+            _save_last_source_directory(source_directory, settings_path)
+
+            self.assertEqual(
+                _load_last_source_directory(settings_path),
+                source_directory.resolve(),
             )
 
     def test_review_edits_are_preserved_for_preprocessing(self) -> None:
@@ -750,8 +793,77 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertEqual(payloads[0]["description"], "شرح اول")
         self.assertEqual(payloads[1]["description"], "شرح دوم")
 
-    def test_descriptions_can_differ_while_attachments_stay_shared(self) -> None:
+    def test_content_page_uses_combo_with_representation_document_default(self) -> None:
+        with patch(
+            "sana_declaration_uploader.desktop._load_attachment_settings",
+            return_value={
+                "attachment_kind": "تصویر مدرک نمایندگی",
+                "attachment_title": "",
+                "attachment_number": "شماره مدرک",
+                "attachment_date": "۱۴۰۵/۰۷/۲۰",
+                "shared_description": "true",
+                "shared_attachments": "true",
+            },
+        ):
+            page = DeclarationContentPage()
+
+        self.assertFalse(page.attachment_kind.isEditable())
+        self.assertEqual(
+            page.attachment_kind.currentText(), "تصویر مدرک نمایندگی"
+        )
+        self.assertGreater(page.attachment_kind.count(), 1)
+
+    def test_saved_attachment_files_are_restored_without_reselection(self) -> None:
         with TemporaryDirectory() as directory:
+            attachment = Path(directory) / "representation.jpg"
+            attachment.write_bytes(b"image")
+            with patch(
+                "sana_declaration_uploader.desktop._load_saved_attachment_paths",
+                return_value=(attachment.resolve(),),
+            ):
+                page = DeclarationContentPage()
+                page.set_candidates((RecipientCandidate(
+                    source_path=Path("input.docx"), full_name="شخص اول"
+                ),))
+
+            self.assertEqual(page._attachment_paths(), [attachment.resolve()])
+            self.assertEqual(page.payloads()[0]["attachments"], (attachment.resolve(),))
+
+    def test_choosing_attachment_immediately_persists_its_path(self) -> None:
+        with TemporaryDirectory() as directory:
+            attachment = Path(directory) / "representation.jpg"
+            attachment.write_bytes(b"image")
+            with (
+                patch(
+                    "sana_declaration_uploader.desktop._load_saved_attachment_paths",
+                    return_value=(),
+                ),
+                patch(
+                    "sana_declaration_uploader.desktop.QFileDialog.getOpenFileNames",
+                    return_value=([str(attachment)], ""),
+                ),
+                patch(
+                    "sana_declaration_uploader.desktop._save_attachment_settings"
+                ) as save,
+            ):
+                page = DeclarationContentPage()
+                page.set_candidates((RecipientCandidate(
+                    source_path=Path("input.docx"), full_name="شخص اول"
+                ),))
+                page._choose_attachments()
+
+        self.assertEqual(
+            save.call_args.kwargs["attachment_paths"], (attachment.resolve(),)
+        )
+
+    def test_descriptions_can_differ_while_attachments_stay_shared(self) -> None:
+        with (
+            TemporaryDirectory() as directory,
+            patch(
+                "sana_declaration_uploader.desktop._load_saved_attachment_paths",
+                return_value=(),
+            ),
+        ):
             attachment = Path(directory) / "shared.pdf"
             attachment.write_bytes(b"%PDF-test")
             page = DeclarationContentPage()
@@ -1078,7 +1190,7 @@ class RecipientWizardTests(unittest.TestCase):
             page.set_candidates(candidates)
             page.subject.setText("موضوع اظهارنامه")
             page.description.setPlainText("شرح اظهارنامه")
-            page.attachment_kind.setText("سایر دلایل و مستندات")
+            page.attachment_kind.setCurrentText("سایر ضمائم")
             page.attachment_title.setText("عنوان نمونه")
             page.attachment_number.setText("۱۲۳")
             page.attachment_date.setText("۱۴۰۵/۰۷/۲۰")
@@ -1089,7 +1201,7 @@ class RecipientWizardTests(unittest.TestCase):
 
             self.assertEqual(page.subject.text(), "موضوع اظهارنامه")
             self.assertEqual(page.description.toPlainText(), "شرح اظهارنامه")
-            self.assertEqual(page.attachment_kind.text(), "سایر دلایل و مستندات")
+            self.assertEqual(page.attachment_kind.currentText(), "سایر ضمائم")
             self.assertEqual(page.attachment_title.text(), "عنوان نمونه")
             self.assertEqual(page.attachment_number.text(), "۱۲۳")
             self.assertEqual(page.attachment_date.text(), "۱۴۰۵/۰۷/۲۰")
@@ -1148,11 +1260,15 @@ class RecipientWizardTests(unittest.TestCase):
     def test_attachment_defaults_are_persisted_for_the_next_run(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "attachment-defaults.json"
+            attachment = Path(directory) / "representation.jpg"
+            attachment.write_bytes(b"image")
 
             _save_attachment_settings(
                 "نوع دلخواه", "عنوان دلخواه", "شماره دلخواه",
                 "۱۴۰۵/۰۷/۲۱", shared_description=False,
-                shared_attachments=False, path=path
+                shared_attachments=False,
+                attachment_paths=(attachment,),
+                path=path,
             )
 
             self.assertEqual(_load_attachment_settings(path), {
@@ -1163,6 +1279,9 @@ class RecipientWizardTests(unittest.TestCase):
                 "shared_description": "false",
                 "shared_attachments": "false",
             })
+            self.assertEqual(
+                _load_saved_attachment_paths(path), (attachment.resolve(),)
+            )
 
             defaults = _load_attachment_settings(path)
             with patch(
@@ -1302,25 +1421,32 @@ class RecipientWizardTests(unittest.TestCase):
             patch(
                 "sana_declaration_uploader.desktop._save_attachment_settings"
             ) as save,
+            patch(
+                "sana_declaration_uploader.desktop._load_saved_attachment_paths",
+                return_value=(),
+            ),
         ):
             page = DeclarationContentPage()
-            self.assertEqual(page.attachment_kind.text(), defaults["attachment_kind"])
+            self.assertEqual(
+                page.attachment_kind.currentText(), defaults["attachment_kind"]
+            )
             self.assertEqual(page.attachment_title.text(), defaults["attachment_title"])
             self.assertEqual(
                 page.attachment_number.text(), defaults["attachment_number"]
             )
             self.assertEqual(page.attachment_date.text(), defaults["attachment_date"])
 
-            page.attachment_kind.setText("نوع جدید")
+            page.attachment_kind.setCurrentText("سایر ضمائم")
             page.attachment_title.setText("عنوان جدید")
             page.attachment_number.setText("۴۲")
             page.attachment_date.setText("۱۴۰۵/۰۷/۲۲")
             page.attachment_title.editingFinished.emit()
 
             save.assert_called_once_with(
-                "نوع جدید", "عنوان جدید", "۴۲", "۱۴۰۵/۰۷/۲۲",
+                "سایر ضمائم", "عنوان جدید", "۴۲", "۱۴۰۵/۰۷/۲۲",
                 shared_description=True,
                 shared_attachments=True,
+                attachment_paths=(),
             )
 
     def test_finish_invokes_registration_instead_of_login_check(self) -> None:

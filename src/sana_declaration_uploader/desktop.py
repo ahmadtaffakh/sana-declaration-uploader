@@ -71,6 +71,18 @@ from .results import (
 
 
 _SUPPORTED_SUFFIXES = {".docx", ".pdf", ".txt"}
+_ATTACHMENT_KIND_OPTIONS = (
+    "تصویر مدرک نمایندگی",
+    "تصویر وکالت نامه",
+    "سایر ضمائم",
+    "تصویر فیش نقدی بانک",
+    "استشهادیه محلی",
+    "تصویر نامه اداره معاضدت",
+    "تصویرسند الکترونیک",
+    "تصویر الکترونیک وکالت نامه",
+    "تصویرپاسپورت اتباع",
+    "تقاضای استرداد وجه",
+)
 _ATTACHMENT_DEFAULTS = {
     "attachment_kind": "تصویر مدرک نمایندگی",
     "attachment_title": "",
@@ -230,6 +242,10 @@ def _declaration_settings_path() -> Path:
     return _settings_dir() / "declaration-defaults.json"
 
 
+def _file_selection_settings_path() -> Path:
+    return _settings_dir() / "file-selection.json"
+
+
 def _setpetitiondata_template_path() -> Path:
     return _settings_dir() / "setpetitiondata-template.json"
 
@@ -254,7 +270,7 @@ def _load_default_settings(
     }
 
 
-def _write_default_settings(target: Path, payload: dict[str, str]) -> None:
+def _write_default_settings(target: Path, payload: dict[str, object]) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
@@ -265,6 +281,27 @@ def _write_default_settings(target: Path, payload: dict[str, str]) -> None:
 def _load_declaration_settings(path: Path | None = None) -> dict[str, str]:
     target = path or _declaration_settings_path()
     return _load_default_settings(target, _DECLARATION_DEFAULTS)
+
+
+def _load_last_source_directory(path: Path | None = None) -> Path | None:
+    target = path or _file_selection_settings_path()
+    value = _load_default_settings(target, {"last_directory": ""})[
+        "last_directory"
+    ]
+    directory = Path(value) if value else None
+    return directory if directory and directory.is_dir() else None
+
+
+def _save_last_source_directory(
+    directory: Path, path: Path | None = None
+) -> None:
+    resolved = directory.resolve()
+    if not resolved.is_dir():
+        return
+    _write_default_settings(
+        path or _file_selection_settings_path(),
+        {"last_directory": str(resolved)},
+    )
 
 
 def _save_declaration_settings(
@@ -291,6 +328,19 @@ def _load_attachment_settings(path: Path | None = None) -> dict[str, str]:
     return settings
 
 
+def _load_saved_attachment_paths(path: Path | None = None) -> tuple[Path, ...]:
+    target = path or _attachment_settings_path()
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ()
+    values = payload.get("attachment_paths") if isinstance(payload, dict) else None
+    if not isinstance(values, list):
+        return ()
+    paths = tuple(Path(value) for value in values if isinstance(value, str))
+    return tuple(path.resolve() for path in paths if path.is_file())
+
+
 def _save_attachment_settings(
     kind: str,
     title: str,
@@ -299,6 +349,7 @@ def _save_attachment_settings(
     *,
     shared_description: bool = True,
     shared_attachments: bool = True,
+    attachment_paths: tuple[Path, ...] = (),
     path: Path | None = None,
 ) -> None:
     target = path or _attachment_settings_path()
@@ -311,6 +362,7 @@ def _save_attachment_settings(
             "attachment_date": document_date.strip(),
             "shared_description": str(shared_description).lower(),
             "shared_attachments": str(shared_attachments).lower(),
+            "attachment_paths": [str(item.resolve()) for item in attachment_paths],
         },
     )
 
@@ -515,6 +567,7 @@ class FileSelectionPage(QWizardPage):
             "هیچ اطلاعاتی در سامانه ثنا ثبت نمی‌شود."
         )
         self.setAcceptDrops(True)
+        self._last_source_directory = _load_last_source_directory()
 
         self.file_list = QListWidget()
         self.file_count_label = QLabel("تعداد فایل‌های بارگذاری‌شده: ۰")
@@ -563,9 +616,12 @@ class FileSelectionPage(QWizardPage):
         names, _ = QFileDialog.getOpenFileNames(
             self,
             "انتخاب اسناد مخاطبان",
-            "",
+            str(self._last_source_directory or ""),
             "اسناد پشتیبانی‌شده (*.docx *.pdf *.txt)",
         )
+        if names:
+            self._last_source_directory = Path(names[0]).resolve().parent
+            _save_last_source_directory(self._last_source_directory)
         self._add_paths(Path(name) for name in names)
 
     def _add_paths(self, paths) -> None:
@@ -1166,6 +1222,7 @@ class DeclarationContentPage(QWizardPage):
         self._payloads: dict[int, dict[str, object]] = {}
         self._active_key = -1
         self._attachment_defaults = _load_attachment_settings()
+        self._saved_attachment_paths = _load_saved_attachment_paths()
         self._declaration_defaults = _load_declaration_settings()
 
         self.shared_checkbox = QCheckBox(
@@ -1197,9 +1254,12 @@ class DeclarationContentPage(QWizardPage):
         self.description.setMinimumHeight(480)
         self.attachment_list = QListWidget()
         self.attachment_list.setAlternatingRowColors(True)
-        self.attachment_kind = QLineEdit(
-            self._attachment_defaults["attachment_kind"]
-        )
+        self.attachment_kind = QComboBox()
+        self.attachment_kind.addItems(_ATTACHMENT_KIND_OPTIONS)
+        saved_attachment_kind = self._attachment_defaults["attachment_kind"]
+        if self.attachment_kind.findText(saved_attachment_kind) < 0:
+            self.attachment_kind.addItem(saved_attachment_kind)
+        self.attachment_kind.setCurrentText(saved_attachment_kind)
         self.attachment_number = QLineEdit(
             self._attachment_defaults["attachment_number"]
         )
@@ -1213,12 +1273,12 @@ class DeclarationContentPage(QWizardPage):
         )
         self.attachment_title.setPlaceholderText("عنوانی که در اظهارنامه نمایش داده می‌شود")
         for editor in (
-            self.attachment_kind,
-            self.attachment_title,
-            self.attachment_number,
-            self.attachment_date,
+            self.attachment_title, self.attachment_number, self.attachment_date
         ):
             editor.editingFinished.connect(self._save_attachment_defaults)
+        self.attachment_kind.activated.connect(
+            lambda _index: self._save_attachment_defaults()
+        )
 
         add_button = QPushButton("افزودن پیوست‌ها")
         remove_button = QPushButton("حذف پیوست انتخاب‌شده")
@@ -1477,7 +1537,7 @@ class DeclarationContentPage(QWizardPage):
             "subject": self.subject.text().strip(),
             "description": self.description.toPlainText().strip(),
             "attachments": tuple(self._attachment_paths()),
-            "attachment_kind": self.attachment_kind.text().strip(),
+            "attachment_kind": self.attachment_kind.currentText().strip(),
             "attachment_title": self.attachment_title.text().strip(),
             "attachment_title": self.attachment_title.text().strip(),
             "attachment_number": self.attachment_number.text().strip(),
@@ -1493,7 +1553,10 @@ class DeclarationContentPage(QWizardPage):
         )
         self.subject.setText(str(payload.get("subject", "")))
         self.description.setPlainText(str(payload.get("description", "")))
-        self.attachment_kind.setText(str(payload.get("attachment_kind", "")))
+        attachment_kind = str(payload.get("attachment_kind", ""))
+        if self.attachment_kind.findText(attachment_kind) < 0:
+            self.attachment_kind.addItem(attachment_kind)
+        self.attachment_kind.setCurrentText(attachment_kind)
         self.attachment_title.setText(str(payload.get("attachment_title", "")))
         self.attachment_number.setText(str(payload.get("attachment_number", "")))
         self.attachment_date.setText(str(payload.get("attachment_date", "")))
@@ -1505,6 +1568,9 @@ class DeclarationContentPage(QWizardPage):
         names, _ = QFileDialog.getOpenFileNames(self, "انتخاب فایل‌های پیوست")
         for name in names:
             self._add_attachment(Path(name))
+        if names:
+            self._save_active()
+            self._save_attachment_defaults()
 
     def _add_attachment(self, path: Path) -> None:
         resolved = path.resolve()
@@ -1524,6 +1590,8 @@ class DeclarationContentPage(QWizardPage):
     def _remove_attachments(self) -> None:
         for item in self.attachment_list.selectedItems():
             self.attachment_list.takeItem(self.attachment_list.row(item))
+        self._save_active()
+        self._save_attachment_defaults()
 
     def validatePage(self) -> bool:
         payloads = self.payloads()
@@ -1563,7 +1631,7 @@ class DeclarationContentPage(QWizardPage):
     def _empty_payload(self) -> dict[str, object]:
         return {
             **self._declaration_defaults,
-            "attachments": (),
+            "attachments": self._saved_attachment_paths,
             "attachment_title": "",
             **self._attachment_defaults,
         }
@@ -1580,8 +1648,9 @@ class DeclarationContentPage(QWizardPage):
         _save_declaration_settings(subject, description)
 
     def _save_attachment_defaults(self) -> None:
+        self._saved_attachment_paths = tuple(self._attachment_paths())
         self._attachment_defaults = {
-            "attachment_kind": self.attachment_kind.text().strip(),
+            "attachment_kind": self.attachment_kind.currentText().strip(),
             "attachment_title": self.attachment_title.text().strip(),
             "attachment_number": self.attachment_number.text().strip(),
             "attachment_date": self.attachment_date.text().strip(),
@@ -1597,6 +1666,7 @@ class DeclarationContentPage(QWizardPage):
             self._attachment_defaults["attachment_date"],
             shared_description=self.shared_checkbox.isChecked(),
             shared_attachments=self.shared_attachments_checkbox.isChecked(),
+            attachment_paths=self._saved_attachment_paths,
         )
 
     @staticmethod
