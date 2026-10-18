@@ -4,6 +4,8 @@ import threading
 import time
 import unittest
 from datetime import date
+from queue import Queue
+from threading import Event
 from unittest.mock import Mock, patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -42,11 +44,12 @@ from sana_declaration_uploader.desktop import (
 from sana_declaration_uploader.live_browser import LiveBrowserError, LoginCredentials
 from sana_declaration_uploader.lookups import LookupResolutionError
 from sana_declaration_uploader.models import (
+    Attachment,
     DeclarationDraft,
     RecipientCandidate,
     UploadResult,
 )
-from sana_declaration_uploader.results import save_verified_result
+from sana_declaration_uploader.results import ResultPersistenceError, save_verified_result
 
 
 class RecipientWizardTests(unittest.TestCase):
@@ -464,6 +467,27 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertTrue(page.stop_button.toolTip())
         self.assertTrue(page.stop_button.isHidden())
         self.assertIn("غیرقابل‌بازگشت", page.final_registration_warning.text())
+
+    def test_last_page_places_all_credential_fields_on_one_row(self) -> None:
+        wizard = RecipientWizard()
+        wizard.setStartId(wizard.login_page_id)
+        wizard.show()
+        self.app.processEvents()
+
+        page = wizard.login_page
+        fields = (
+            page.national_code,
+            page.password,
+            page.legal_identity,
+            page.otp,
+        )
+        field_y_positions = {
+            field.mapToGlobal(field.rect().topLeft()).y() for field in fields
+        }
+
+        self.assertEqual(len(field_y_positions), 1)
+        self.assertTrue(all(field.isVisible() for field in fields))
+        wizard.close()
 
     def test_preprocessing_location_edits_survive_reloading_the_same_rows(self) -> None:
         wizard = RecipientWizard()
@@ -1206,6 +1230,84 @@ class RecipientWizardTests(unittest.TestCase):
             LoginCredentials("national", "password", "identity", "")
         )
         self.assertIn("دوباره ثبت", page.attach_existing_button.toolTip())
+
+    def test_ambiguous_legacy_result_asks_for_exact_tracking_code(self) -> None:
+        wizard = RecipientWizard()
+        candidate = RecipientCandidate(source_path=Path("source.docx"))
+        draft = DeclarationDraft(
+            source_dir=Path("."),
+            fields={},
+            attachments=(Attachment(Path("attachment.pdf"), "نوع", "عنوان"),),
+            source_path=Path("source.docx"),
+            source_recipient_ordinal=2,
+        )
+        wizard._api_request_queue = Queue()
+        wizard._api_browser_close_event = Event()
+
+        with (
+            patch.object(
+                wizard.preprocessing_page, "candidates", return_value=(candidate,)
+            ),
+            patch.object(wizard.content_page, "payloads", return_value={}),
+            patch(
+                "sana_declaration_uploader.desktop._build_desktop_drafts",
+                return_value=(draft,),
+            ),
+            patch(
+                "sana_declaration_uploader.desktop.read_saved_result",
+                side_effect=ResultPersistenceError(
+                    "legacy_results_ambiguous_for_multiple_recipients"
+                ),
+            ),
+            patch.object(QInputDialog, "getText", return_value=("TRACK-2", True)),
+            patch.object(
+                QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+            ),
+        ):
+            wizard._start_attach_existing(
+                LoginCredentials("national", "password", "identity", "otp")
+            )
+
+        queued = wizard._api_request_queue.get_nowait()
+        self.assertEqual(queued["kind"], "attach_existing")
+        self.assertEqual(queued["requests"], ((draft, "TRACK-2"),))
+
+    def test_api_registration_skips_unsupported_person_type(self) -> None:
+        wizard = RecipientWizard()
+        candidates = (
+            RecipientCandidate(source_path=Path("natural.docx")),
+            RecipientCandidate(source_path=Path("legal.docx")),
+        )
+        natural = DeclarationDraft(Path("."), {"person_type": "حقیقی"})
+        legal = DeclarationDraft(Path("."), {"person_type": "حقوقی"})
+        wizard._api_request_queue = Queue()
+        wizard._api_browser_close_event = Event()
+
+        with (
+            patch(
+                "sana_declaration_uploader.desktop.load_setpetitiondata_template",
+                return_value={"template": True},
+            ),
+            patch.object(
+                wizard.preprocessing_page, "candidates", return_value=candidates
+            ),
+            patch.object(wizard.content_page, "payloads", return_value={}),
+            patch(
+                "sana_declaration_uploader.desktop._build_desktop_drafts",
+                return_value=(natural, legal),
+            ),
+            patch.object(QMessageBox, "warning") as warning,
+            patch.object(
+                QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+            ),
+        ):
+            wizard._start_api_test(
+                LoginCredentials("national", "password", "identity", "otp")
+            )
+
+        queued_drafts, *_rest = wizard._api_request_queue.get_nowait()
+        self.assertEqual(queued_drafts, (natural,))
+        self.assertIn("1 ردیف", warning.call_args.args[2])
 
     def test_api_browser_close_button_releases_browser_wait(self) -> None:
         wizard = RecipientWizard()

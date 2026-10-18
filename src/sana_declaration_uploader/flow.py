@@ -61,6 +61,13 @@ def _build_desktop_drafts(
     drafts = []
     for index, candidate in enumerate(candidates):
         payload = payloads.get(-1 if shared else index, {})
+        person_type = candidate.person_type
+        if (
+            person_type in {"", "unknown"}
+            and candidate.first_name.strip()
+            and candidate.last_name.strip()
+        ):
+            person_type = "natural"
         lookup_fields = {
             "job_title": "آزاد",
             "province": candidate.province or _DEFAULT_LOCATION["province"],
@@ -78,7 +85,7 @@ def _build_desktop_drafts(
             "recipient_id": f"desktop-{index + 1}",
             "data_source": "manual",
             "person_type": _PERSON_TYPE_DISPLAY.get(
-                candidate.person_type, candidate.person_type
+                person_type, person_type
             ),
             "recipient_national_id": candidate.national_id,
             "recipient_identity_no": candidate.identity_no,

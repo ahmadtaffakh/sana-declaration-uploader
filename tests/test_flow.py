@@ -65,6 +65,23 @@ class StubAttachmentPage:
 
 
 class FlowTests(unittest.TestCase):
+    def test_reviewed_unknown_person_is_treated_as_natural(self) -> None:
+        candidate = RecipientCandidate(
+            source_path=Path("recipient.docx"),
+            first_name="نام",
+            last_name="خانوادگی",
+            person_type="unknown",
+        )
+
+        draft = _build_desktop_drafts(
+            (candidate,),
+            {-1: {"subject": "موضوع", "description": "شرح"}},
+            shared=True,
+            lookup_dir=Path(__file__).parents[1] / "lookups",
+        )[0]
+
+        self.assertEqual(draft.fields["person_type"], "حقیقی")
+
     def test_build_desktop_drafts_preserves_default_lookup_behavior(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

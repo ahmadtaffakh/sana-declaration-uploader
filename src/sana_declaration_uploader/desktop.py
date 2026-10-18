@@ -1822,13 +1822,26 @@ class LoginPage(QWizardPage):
         )
         self.remember_credentials.setChecked(True)
 
-        form_group = QGroupBox("مشخصات ورود")
-        form = QFormLayout(form_group)
-        form.addRow("کد ملی/شناسه ورود:", self.national_code)
-        form.addRow("رمز عبور:", self.password)
-        form.addRow("شناسه شخص حقوقی:", self.legal_identity)
-        form.addRow("رمز موقت (OTP):", self.otp)
-        form.addRow("", self.remember_credentials)
+        self.credentials_group = QGroupBox("مشخصات ورود")
+        credentials_layout = QVBoxLayout(self.credentials_group)
+        credentials_row = QHBoxLayout()
+        for label_text, editor in (
+            ("کد ملی/شناسه ورود:", self.national_code),
+            ("رمز عبور:", self.password),
+            ("شناسه شخص حقوقی:", self.legal_identity),
+            ("رمز موقت (OTP):", self.otp),
+        ):
+            field_widget = QWidget()
+            field_layout = QVBoxLayout(field_widget)
+            field_layout.setContentsMargins(0, 0, 0, 0)
+            field_layout.setSpacing(3)
+            label = QLabel(label_text)
+            label.setBuddy(editor)
+            field_layout.addWidget(label)
+            field_layout.addWidget(editor)
+            credentials_row.addWidget(field_widget, 1)
+        credentials_layout.addLayout(credentials_row)
+        credentials_layout.addWidget(self.remember_credentials)
 
         guidance = QLabel(
             "هشدار امنیتی: با روشن بودن تیک، همهٔ مقادیر این صفحه به‌صورت خوانا "
@@ -1964,7 +1977,7 @@ class LoginPage(QWizardPage):
 
         layout = QVBoxLayout(self)
         layout.addWidget(guidance)
-        layout.addWidget(form_group)
+        layout.addWidget(self.credentials_group)
         layout.addLayout(action_groups)
         layout.addWidget(self.advanced_group)
         layout.addLayout(session_row)
@@ -2584,6 +2597,25 @@ class RecipientWizard(QWizard):
         except (ValueError, LookupResolutionError) as exc:
             QMessageBox.warning(self, "پیش‌نویس آزمایشی نامعتبر", str(exc))
             return
+        unsupported_count = sum(
+            draft.fields.get("person_type", "").strip()
+            not in {"", "حقیقی", "شخص حقیقی"}
+            for draft in drafts
+        )
+        if unsupported_count:
+            drafts = tuple(
+                draft for draft in drafts
+                if draft.fields.get("person_type", "").strip()
+                in {"", "حقیقی", "شخص حقیقی"}
+            )
+            QMessageBox.warning(
+                self,
+                "ردیف غیرحقیقی اجرا نمی‌شود",
+                f"{unsupported_count} ردیف حقوقی یا نامشخص از ثبت موقت کنار "
+                "گذاشته شد؛ سامانه فقط ردیف‌های حقیقیِ پشتیبانی‌شده را اجرا می‌کند.",
+            )
+            if not drafts:
+                return
         answer = QMessageBox.question(
             self,
             "تأیید ثبت موقت و پیوست",
@@ -2758,8 +2790,27 @@ class RecipientWizard(QWizard):
                     ],
                 )
             except ResultPersistenceError as exc:
-                QMessageBox.warning(self, "خواندن کد رهگیری ناموفق", str(exc))
-                return
+                if str(exc) != "legacy_results_ambiguous_for_multiple_recipients":
+                    QMessageBox.warning(self, "خواندن کد رهگیری ناموفق", str(exc))
+                    return
+                tracking_code, accepted = QInputDialog.getText(
+                    self,
+                    "کد رهگیری این مخاطب",
+                    f"برای فایل {draft.source_path.name}، مخاطب شمارهٔ "
+                    f"{draft.source_recipient_ordinal}، سابقهٔ قدیمی قابل تطبیق "
+                    "قطعی نیست. کد رهگیری همین مخاطب را وارد کنید:",
+                )
+                tracking_code = tracking_code.strip()
+                if not accepted:
+                    return
+                if not tracking_code:
+                    QMessageBox.warning(
+                        self,
+                        "کد رهگیری وارد نشده",
+                        "بدون کد رهگیری قطعی، پیوست ارسال نمی‌شود.",
+                    )
+                    return
+                saved = {"tracking_code": tracking_code}
             tracking_code = (saved or {}).get("tracking_code", "").strip()
             if tracking_code and tracking_code != "رسید نامعتبر":
                 requests.append((draft, tracking_code))
