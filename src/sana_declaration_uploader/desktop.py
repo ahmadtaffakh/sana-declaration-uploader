@@ -3126,7 +3126,36 @@ class RecipientWizard(QWizard):
             except (ValueError, LookupResolutionError):
                 self.login_page.set_operation_drafts((), reset=True)
             else:
-                self.login_page.set_operation_drafts(drafts, reset=True)
+                source_counts: dict[Path, int] = {}
+                for draft in drafts:
+                    if draft.source_path is not None:
+                        source = draft.source_path.resolve()
+                        source_counts[source] = source_counts.get(source, 0) + 1
+                tracking_codes = {}
+                for draft in drafts:
+                    if draft.source_path is None:
+                        continue
+                    try:
+                        saved = read_saved_result(
+                            draft.source_dir,
+                            draft.source_path,
+                            source_recipient_ordinal=draft.source_recipient_ordinal,
+                            source_recipient_count=source_counts[
+                                draft.source_path.resolve()
+                            ],
+                        )
+                    except ResultPersistenceError:
+                        continue
+                    tracking_code = (saved or {}).get("tracking_code", "").strip()
+                    if tracking_code and tracking_code != "رسید نامعتبر":
+                        tracking_codes[
+                            self.login_page._draft_status_key(draft)
+                        ] = tracking_code
+                self.login_page.set_operation_drafts(
+                    drafts,
+                    reset=True,
+                    tracking_codes=tracking_codes,
+                )
             return
         if page_id == self.preprocessing_page_id:
             source = self.review_page.candidates()

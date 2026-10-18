@@ -213,9 +213,18 @@ class RecipientWizardTests(unittest.TestCase):
             source_path=Path("input.docx"),
         )
 
-        with patch(
-            "sana_declaration_uploader.desktop._build_desktop_drafts",
-            return_value=(draft,),
+        with (
+            patch(
+                "sana_declaration_uploader.desktop._build_desktop_drafts",
+                return_value=(draft,),
+            ),
+            patch(
+                "sana_declaration_uploader.desktop.read_saved_result",
+                return_value={
+                    "tracking_code": "TRACK-SAVED",
+                    "registered_at": "1405/07/26",
+                },
+            ),
         ):
             wizard._page_changed(wizard.login_page_id)
 
@@ -231,7 +240,19 @@ class RecipientWizardTests(unittest.TestCase):
             page.status_table.item(
                 0, page.STATUS_HEADERS.index("وضعیت اظهارنامه")
             ).text(),
-            "… در انتظار",
+            "✓ موفق",
+        )
+        self.assertEqual(
+            page.status_table.item(
+                0, page.STATUS_HEADERS.index("کد رهگیری")
+            ).text(),
+            "TRACK-SAVED",
+        )
+        self.assertEqual(
+            page.status_table.item(
+                0, page.STATUS_HEADERS.index("وضعیت اظهارنامه")
+            ).foreground().color().name(),
+            "#247a3d",
         )
 
     def test_last_page_log_is_colored_numbered_and_traceable(self) -> None:
