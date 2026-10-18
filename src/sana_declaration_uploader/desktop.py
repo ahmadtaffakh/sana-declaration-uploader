@@ -2111,12 +2111,17 @@ class LoginPage(QWizardPage):
         self.otp.editingFinished.connect(self._save_credentials)
 
     def _refresh_api_template_status(self) -> None:
-        ready = _setpetitiondata_template_path().is_file()
-        self.api_template_status.setText(
-            "قالب فنی ثبت آماده است."
-            if ready
-            else "قالب فنی ثبت را یک‌بار انتخاب کنید."
-        )
+        path = _setpetitiondata_template_path()
+        if not path.is_file():
+            status = "قالب فنی ثبت را یک‌بار انتخاب کنید."
+        else:
+            try:
+                load_setpetitiondata_template(path)
+            except (OSError, ValueError, RuntimeError):
+                status = "قالب فنی ثبت نامعتبر است؛ آن را دوباره انتخاب کنید."
+            else:
+                status = "قالب فنی ثبت آماده است."
+        self.api_template_status.setText(status)
 
     def _request_stop(self) -> None:
         if self.stop_callback is not None:
@@ -2724,7 +2729,13 @@ class RecipientWizard(QWizard):
                 _setpetitiondata_template_path()
             )
         except (OSError, ValueError, RuntimeError) as exc:
-            QMessageBox.warning(self, "قالب SetPetitionData موجود نیست", str(exc))
+            message = (
+                "قالب فنی ثبت نامعتبر است؛ از بخش تنظیمات پیشرفته قالب صحیح "
+                "را دوباره انتخاب کنید."
+                if str(exc) == "set_petition_data_template_invalid"
+                else str(exc)
+            )
+            QMessageBox.warning(self, "قالب فنی ثبت آماده نیست", message)
             return
         candidates = self.preprocessing_page.candidates()
         if not candidates:
@@ -2746,6 +2757,7 @@ class RecipientWizard(QWizard):
                 source = draft.source_path.resolve()
                 source_counts[source] = source_counts.get(source, 0) + 1
         eligible_drafts = []
+        legacy_drafts = []
         for draft in drafts:
             if (
                 draft.fields.get("person_type", "").strip()
@@ -2762,23 +2774,31 @@ class RecipientWizard(QWizard):
                             draft.source_path.resolve()
                         ],
                     )
-                except ResultPersistenceError:
+                except ResultPersistenceError as exc:
+                    if str(exc) == (
+                        "legacy_results_ambiguous_for_multiple_recipients"
+                    ):
+                        legacy_drafts.append(draft)
                     continue
                 tracking_code = (saved or {}).get("tracking_code", "").strip()
                 if tracking_code and tracking_code != "رسید نامعتبر":
                     continue
             eligible_drafts.append(draft)
         drafts = tuple(eligible_drafts)
-        if not drafts:
+        legacy_drafts = tuple(legacy_drafts)
+        operation_drafts = drafts + legacy_drafts
+        if not operation_drafts:
             return
         answer = QMessageBox.question(
             self,
             "تأیید ثبت موقت و پیوست",
-            f"برای {len(drafts)} ردیف، SetPetitionData به‌ترتیب و هر ردیف "
+            f"برای حداکثر {len(operation_drafts)} ردیف، SetPetitionData به‌ترتیب "
+            "و هر ردیف "
             "فقط یک‌بار فراخوانی می‌شود. پس از دریافت کد رهگیری، پیوست‌های "
             "همان ردیف به همان اظهارنامه افزوده می‌شوند. در خطا یا پاسخ مبهم، "
             "ادامه متوقف می‌شود؛ پیش از اقدام دوباره باید وضعیت بررسی شود. "
-            "امضای نهایی انجام نمی‌شود.",
+            "سوابق قدیمی ابتدا از ثنا تطبیق داده می‌شوند و دوباره ثبت نخواهند "
+            "شد. امضای نهایی انجام نمی‌شود.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -2786,7 +2806,7 @@ class RecipientWizard(QWizard):
             return
         request_text_path = _setpetitiondata_request_text_path()
         self.login_page.set_operation_drafts(
-            drafts,
+            operation_drafts,
             reset=self._api_request_queue is None,
         )
         if self._api_request_queue is not None:
@@ -2802,16 +2822,17 @@ class RecipientWizard(QWizard):
             self._api_browser_ready = False
             self._set_background_controls_enabled(False)
             if self._api_drafts is not None:
-                self._api_drafts.extend(drafts)
+                self._api_drafts.extend(operation_drafts)
             self._api_request_queue.put((
                 drafts,
                 credentials,
                 petition_template,
                 request_text_path,
                 self._lookup_dir,
+                legacy_drafts,
             ))
             self.login_page.append_output(
-                f"درخواست {len(drafts)} ردیفی به نشست فعلی صف شد؛ ورود دوباره "
+                f"درخواست {len(operation_drafts)} ردیفی به نشست فعلی صف شد؛ ورود دوباره "
                 "فقط در صورت پایان نشست لازم می‌شود.",
                 level="system",
             )
@@ -2819,7 +2840,7 @@ class RecipientWizard(QWizard):
         self.login_page.start_log()
         close_browser_event = Event()
         request_queue: Queue = Queue()
-        self._api_drafts = list(drafts)
+        self._api_drafts = list(operation_drafts)
         self._api_browser_close_event = close_browser_event
         self._api_request_queue = request_queue
         self._api_browser_ready = False
@@ -2827,7 +2848,7 @@ class RecipientWizard(QWizard):
         self.login_page.close_browser_button.setVisible(False)
         report = self.login_page.append_output
         report(
-            f"ثبت موقت برای {len(drafts)} ردیف آغاز شد؛ "
+            f"بررسی و ثبت موقت برای {len(operation_drafts)} ردیف آغاز شد؛ "
             "پیوست هر ردیف پس از دریافت کد رهگیری به همان اظهارنامه افزوده "
             "می‌شود؛ امضای نهایی اجرا نمی‌شود.",
             level="system",
@@ -2856,6 +2877,7 @@ class RecipientWizard(QWizard):
                 pending_requests=request_queue,
                 reauth_credentials_provider=reauth_credentials_provider,
                 close_browser_event=close_browser_event,
+                legacy_registration=legacy_drafts,
             )
 
         def succeeded(result: object) -> None:
@@ -2890,7 +2912,13 @@ class RecipientWizard(QWizard):
                 f"{_setpetitiondata_request_text_path().with_name('setpetitiondata-request.console.txt')}",
                 level="debug",
             )
-            QMessageBox.warning(self, "ثبت موقت ناموفق", str(exc))
+            message = (
+                "قالب فنی ثبت با ساختار موردنیاز سازگار نیست؛ قالب صحیح را "
+                "از بخش تنظیمات پیشرفته دوباره انتخاب کنید."
+                if str(exc) == "set_petition_data_template_invalid"
+                else str(exc)
+            )
+            QMessageBox.warning(self, "ثبت موقت ناموفق", message)
 
         self._start_background(
             "ثبت موقت اظهارنامه‌ها...",
@@ -2939,6 +2967,8 @@ class RecipientWizard(QWizard):
         if not drafts:
             return
         requests = []
+        legacy_drafts = []
+        skipped_without_tracking = 0
         for draft in drafts:
             if not draft.attachments or draft.source_path is None:
                 continue
@@ -2952,43 +2982,35 @@ class RecipientWizard(QWizard):
                     ],
                 )
             except ResultPersistenceError as exc:
-                if str(exc) != "legacy_results_ambiguous_for_multiple_recipients":
-                    QMessageBox.warning(self, "خواندن کد رهگیری ناموفق", str(exc))
-                    return
-                tracking_code, accepted = QInputDialog.getText(
-                    self,
-                    "کد رهگیری این مخاطب",
-                    f"برای فایل {draft.source_path.name}، مخاطب شمارهٔ "
-                    f"{draft.source_recipient_ordinal}، سابقهٔ قدیمی قابل تطبیق "
-                    "قطعی نیست. کد رهگیری همین مخاطب را وارد کنید:",
-                )
-                tracking_code = tracking_code.strip()
-                if not accepted:
-                    return
-                if not tracking_code:
-                    QMessageBox.warning(
-                        self,
-                        "کد رهگیری وارد نشده",
-                        "بدون کد رهگیری قطعی، پیوست ارسال نمی‌شود.",
-                    )
-                    return
-                saved = {"tracking_code": tracking_code}
+                if str(exc) == (
+                    "legacy_results_ambiguous_for_multiple_recipients"
+                ):
+                    legacy_drafts.append(draft)
+                else:
+                    skipped_without_tracking += 1
+                continue
             tracking_code = (saved or {}).get("tracking_code", "").strip()
             if tracking_code and tracking_code != "رسید نامعتبر":
                 requests.append((draft, tracking_code))
-        if not requests:
-            QMessageBox.information(
-                self, "اظهارنامهٔ آماده وجود ندارد",
-                "برای ردیف‌های دارای پیوست، کد رهگیری ذخیره‌شده پیدا نشد.",
+            else:
+                skipped_without_tracking += 1
+        if skipped_without_tracking:
+            self.login_page.append_output(
+                f"{skipped_without_tracking} ردیف بدون کد رهگیری قطعی "
+                "به‌صورت خودکار کنار گذاشته شد.",
+                level="system",
             )
+        if not requests and not legacy_drafts:
             return
         attachment_count = sum(len(draft.attachments) for draft, _code in requests)
+        attachment_count += sum(len(draft.attachments) for draft in legacy_drafts)
+        operation_count = len(requests) + len(legacy_drafts)
         answer = QMessageBox.question(
             self,
             "تأیید افزودن پیوست",
-            f"برای {len(requests)} اظهارنامهٔ دارای کد رهگیری، "
-            f"{attachment_count} پیوست افزوده می‌شود. کد رهگیری هر اظهارنامه "
-            "برای بازیابی آن استفاده می‌شود؛ SetPetitionData و ثبت دوباره اجرا نمی‌شود. "
+            f"برای حداکثر {operation_count} اظهارنامه، {attachment_count} پیوست "
+            "افزوده می‌شود. سوابق قدیمی چندمخاطبی ابتدا با اطلاعات ثنا تطبیق "
+            "داده می‌شوند؛ SetPetitionData و ثبت دوباره اجرا نمی‌شود. "
             "در صورت خطا یا پاسخ مبهم، اجرا متوقف می‌شود.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -2997,12 +3019,13 @@ class RecipientWizard(QWizard):
             return
 
         request_tuple = tuple(requests)
+        legacy_tuple = tuple(legacy_drafts)
         tracking_codes = {
             self.login_page._draft_status_key(draft): tracking_code
             for draft, tracking_code in request_tuple
         }
         self.login_page.set_operation_drafts(
-            tuple(draft for draft, _tracking_code in request_tuple),
+            tuple(draft for draft, _tracking_code in request_tuple) + legacy_tuple,
             reset=self._api_request_queue is None,
             tracking_codes=tracking_codes,
         )
@@ -3021,6 +3044,7 @@ class RecipientWizard(QWizard):
             self._api_request_queue.put({
                 "kind": "attach_existing",
                 "requests": request_tuple,
+                "legacy_drafts": legacy_tuple,
                 "credentials": credentials,
             })
             self.login_page.append_output(
@@ -3033,7 +3057,9 @@ class RecipientWizard(QWizard):
         self.login_page.start_log()
         close_browser_event = Event()
         request_queue: Queue = Queue()
-        self._api_drafts = [draft for draft, _code in request_tuple]
+        self._api_drafts = (
+            [draft for draft, _code in request_tuple] + list(legacy_tuple)
+        )
         self._api_browser_close_event = close_browser_event
         self._api_request_queue = request_queue
         self._api_browser_ready = False
@@ -3041,7 +3067,7 @@ class RecipientWizard(QWizard):
         self.login_page.close_browser_button.setVisible(False)
         report = self.login_page.append_output
         report(
-            f"افزودن {attachment_count} پیوست به {len(requests)} اظهارنامه آغاز شد؛ "
+            f"افزودن حداکثر {attachment_count} پیوست به {operation_count} اظهارنامه آغاز شد؛ "
             "ثبت مجدد اظهارنامه اجرا نمی‌شود.",
             level="system",
         )
@@ -3065,12 +3091,13 @@ class RecipientWizard(QWizard):
                 reauth_credentials_provider=reauth_credentials_provider,
                 close_browser_event=close_browser_event,
                 attachment_only=request_tuple,
+                legacy_attachment_only=legacy_tuple,
             )
 
         def succeeded(_result: object) -> None:
             report(
-                f"پیوست‌گذاری پایان یافت؛ {attachment_count} پیوست برای "
-                f"{len(requests)} اظهارنامه پردازش شد. کدهای رهگیری در لاگ آمده‌اند.",
+                "پیوست‌گذاری پایان یافت؛ نتیجه دقیق هر ردیف و کد رهگیری "
+                "تطبیق‌داده‌شده در جدول و لاگ آمده است.",
                 level="success",
             )
 

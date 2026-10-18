@@ -278,6 +278,16 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
         self.assertNotIn("Tel", recipient["BasicAvenue"])
         self.assertIn("کد پستی: 1234567890", recipient["HomeAddress"])
 
+    def test_adds_overwritten_national_code_when_template_omits_key(self):
+        template = self._template()
+        template["theJSSPetitionPerson"][1].pop("NationalityCode")
+
+        recipient = build_setpetitiondata_payload(
+            template, self._draft()
+        )["theJSSPetitionPerson"][1]
+
+        self.assertEqual(recipient["NationalityCode"], "0012345678")
+
     def test_main_street_is_limited_to_twenty_nine_characters(self):
         draft = self._draft()
         main_street = "الف" * 35

@@ -38,6 +38,8 @@ from .petition_api import (
 from .results import (
     RESULTS_FILENAME,
     ResultPersistenceError,
+    migrate_legacy_registration,
+    read_legacy_tracking_codes,
     read_saved_attachment_context,
     save_attachment_count,
     save_verified_result,
@@ -94,6 +96,8 @@ def run_live_setpetitiondata_batch(
     ] | None = None,
     close_browser_event: Event,
     attachment_only: tuple[tuple[DeclarationDraft, str], ...] = (),
+    legacy_registration: tuple[DeclarationDraft, ...] = (),
+    legacy_attachment_only: tuple[DeclarationDraft, ...] = (),
 ) -> tuple[SetPetitionDataResult, ...] | None:
     """Submit rows sequentially; advance only after a verified tracking code."""
 
@@ -104,15 +108,11 @@ def run_live_setpetitiondata_batch(
             "playwright_not_installed: install the project with [browser]"
         ) from exc
 
-    if not drafts and not attachment_only:
+    if not (
+        drafts or attachment_only or legacy_registration
+        or legacy_attachment_only
+    ):
         raise LiveBrowserError("set_petition_data_recipients_missing")
-    petition_payloads = (
-        _prepare_petition_payloads(
-            drafts, petition_template, request_text_path, lookup_dir, progress,
-            status,
-        )
-        if drafts else []
-    )
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
             channel="chrome",
@@ -144,16 +144,40 @@ def run_live_setpetitiondata_batch(
                 timeout_ms,
                 progress,
             )
+            _matched_registration, safe_legacy_registration = (
+                _reconcile_legacy_registrations(
+                    page, legacy_registration, ensure_authenticated, progress,
+                    status,
+                )
+                if legacy_registration else ((), ())
+            )
+            registration_drafts = drafts + safe_legacy_registration
+            petition_payloads = (
+                _prepare_petition_payloads(
+                    registration_drafts, petition_template, request_text_path,
+                    lookup_dir, progress, status,
+                )
+                if registration_drafts else []
+            )
             results = (
                 _submit_petition_payloads(
-                    page, drafts, petition_payloads, ensure_authenticated,
+                    page, registration_drafts, petition_payloads,
+                    ensure_authenticated,
                     progress, status, on_result, request_text_path,
                 )
-                if drafts else ()
+                if registration_drafts else ()
             )
-            if attachment_only:
+            reconciled_attachment, _safe_unused = (
+                _reconcile_legacy_registrations(
+                    page, legacy_attachment_only, ensure_authenticated,
+                    progress, status,
+                )
+                if legacy_attachment_only else ((), ())
+            )
+            attachment_requests = attachment_only + reconciled_attachment
+            if attachment_requests:
                 _attach_existing_petitions(
-                    page, attachment_only, ensure_authenticated, progress,
+                    page, attachment_requests, ensure_authenticated, progress,
                     request_text_path, status,
                 )
             all_results = list(results)
@@ -169,16 +193,29 @@ def run_live_setpetitiondata_batch(
                     break
                 if isinstance(queued, dict) and queued.get("kind") == "attach_existing":
                     current_credentials[0] = queued["credentials"]
+                    reconciled, _safe_unused = _reconcile_legacy_registrations(
+                        page,
+                        queued.get("legacy_drafts", ()),
+                        ensure_authenticated,
+                        progress,
+                        status,
+                    )
                     _attach_existing_petitions(
-                        page, queued["requests"], ensure_authenticated, progress,
+                        page, queued["requests"] + reconciled,
+                        ensure_authenticated, progress,
                         request_text_path, status,
                     )
                     continue
-                (
-                    queued_drafts, queued_credentials, queued_template,
-                    queued_path, queued_lookup_dir,
-                ) = queued
+                queued_drafts, queued_credentials, queued_template, queued_path, \
+                    queued_lookup_dir = queued[:5]
+                queued_legacy = queued[5] if len(queued) > 5 else ()
                 current_credentials[0] = queued_credentials
+                _matched, safe_queued_legacy = _reconcile_legacy_registrations(
+                    page, queued_legacy, ensure_authenticated, progress, status,
+                )
+                queued_drafts = queued_drafts + safe_queued_legacy
+                if not queued_drafts:
+                    continue
                 queued_payloads = _prepare_petition_payloads(
                     queued_drafts, queued_template, queued_path,
                     queued_lookup_dir, progress, status,
@@ -308,6 +345,137 @@ def _authentication_guard(
         current_credentials[0] = credentials
 
     return ensure_authenticated
+
+
+def _normalize_recipient_identity(value: object) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    normalized = normalized.translate(str.maketrans({
+        "ي": "ی", "ك": "ک", "۰": "0", "۱": "1", "۲": "2",
+        "۳": "3", "۴": "4", "۵": "5", "۶": "6", "۷": "7",
+        "۸": "8", "۹": "9", "٠": "0", "١": "1", "٢": "2",
+        "٣": "3", "٤": "4", "٥": "5", "٦": "6", "٧": "7",
+        "٨": "8", "٩": "9", "\u200c": " ",
+    }))
+    return " ".join(normalized.split()).casefold()
+
+
+def _match_legacy_draft(
+    petition: Mapping[str, object],
+    drafts: tuple[DeclarationDraft, ...],
+) -> DeclarationDraft | None:
+    people = petition.get("theJSSPetitionPerson")
+    if not isinstance(people, list):
+        return None
+    recipients = [
+        person for person in people
+        if isinstance(person, dict) and str(person.get("RoleType")) == "2"
+    ]
+    if len(recipients) != 1:
+        return None
+    recipient = recipients[0]
+    portal_national_id = _normalize_recipient_identity(
+        recipient.get("NationalityCode")
+    )
+    name_candidates = drafts
+    if portal_national_id:
+        matches = [
+            draft for draft in drafts
+            if _normalize_recipient_identity(
+                draft.fields.get("recipient_national_id")
+            ) == portal_national_id
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            return None
+        name_candidates = tuple(
+            draft for draft in drafts
+            if not _normalize_recipient_identity(
+                draft.fields.get("recipient_national_id")
+            )
+        )
+
+    portal_name = _normalize_recipient_identity(
+        f"{recipient.get('Name', '')} {recipient.get('Family', '')}"
+    )
+    if not portal_name:
+        return None
+    matches = [
+        draft for draft in name_candidates
+        if _normalize_recipient_identity(
+            f"{draft.fields.get('recipient_first_name', '')} "
+            f"{draft.fields.get('recipient_last_name', '')}"
+        ) == portal_name
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _reconcile_legacy_registrations(
+    page: object,
+    drafts: tuple[DeclarationDraft, ...],
+    ensure_authenticated: Callable[[], None],
+    progress: ProgressCallback | None,
+    status: StatusCallback | None = None,
+) -> tuple[
+    tuple[tuple[DeclarationDraft, str], ...],
+    tuple[DeclarationDraft, ...],
+]:
+    """Match old file-level codes to recipients without guessing."""
+
+    groups: dict[tuple[Path, Path], list[DeclarationDraft]] = {}
+    for draft in drafts:
+        if draft.source_path is None:
+            continue
+        key = draft.source_dir.resolve(), draft.source_path.resolve()
+        groups.setdefault(key, []).append(draft)
+
+    matched: list[tuple[DeclarationDraft, str]] = []
+    safe_unregistered: list[DeclarationDraft] = []
+    for group in groups.values():
+        source_path = group[0].source_path
+        if source_path is None:
+            continue
+        codes = read_legacy_tracking_codes(group[0].source_dir, source_path)
+        unresolved = list(group)
+        complete = bool(codes)
+        for code in codes:
+            ensure_authenticated()
+            petition = _run_logged_stage(
+                progress,
+                "بررسی سابقه قدیمی اظهارنامه چندمخاطبی",
+                lambda code=code: _get_petition_by_tracking_code(page, code),
+            )
+            if str(petition.get("No") or "").strip() != code:
+                complete = False
+                continue
+            draft = _match_legacy_draft(petition, tuple(unresolved))
+            if draft is None:
+                complete = False
+                continue
+            migrate_legacy_registration(draft, code)
+            unresolved.remove(draft)
+            matched.append((draft, code))
+            _report_status(
+                status,
+                draft,
+                "petition",
+                "success",
+                tracking_code=code,
+                message=(
+                    "کد رهگیری سابقه قدیمی به مخاطب همین ردیف تطبیق داده شد؛ "
+                    "ثبت دوباره انجام نشد."
+                ),
+            )
+        if complete:
+            safe_unregistered.extend(unresolved)
+        elif unresolved:
+            _report(
+                progress,
+                f"{len(unresolved)} ردیف از فایل {source_path.name} به‌دلیل "
+                "تطبیق‌ناپذیری قطعی سابقه قدیمی کنار گذاشته شد؛ ثبت دوباره "
+                "انجام نمی‌شود.",
+            )
+    return tuple(matched), tuple(safe_unregistered)
 
 
 def _submit_petition_payloads(

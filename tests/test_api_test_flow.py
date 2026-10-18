@@ -16,6 +16,141 @@ from sana_declaration_uploader.petition_api import SetPetitionDataResult
 
 
 class DirectSetPetitionDataFlowTests(unittest.TestCase):
+    def test_reconciles_each_legacy_code_to_one_recipient(self):
+        source = Path("shared.docx")
+        drafts = tuple(
+            DeclarationDraft(
+                Path("."),
+                {
+                    "recipient_national_id": national_id,
+                    "recipient_first_name": first_name,
+                    "recipient_last_name": last_name,
+                },
+                source_path=source,
+                source_recipient_ordinal=index,
+            )
+            for index, (national_id, first_name, last_name) in enumerate((
+                ("001", "اول", "نمونه"),
+                ("002", "دوم", "نمونه"),
+                ("003", "سوم", "نمونه"),
+            ), start=1)
+        )
+        petitions = {
+            "T-FIRST": {
+                "No": "T-FIRST",
+                "theJSSPetitionPerson": [{
+                    "RoleType": 2, "NationalityCode": "۰۰۱",
+                    "Name": "اول", "Family": "نمونه",
+                }],
+            },
+            "T-SECOND": {
+                "No": "T-SECOND",
+                "theJSSPetitionPerson": [{
+                    "RoleType": 2, "NationalityCode": "002",
+                    "Name": "دوم", "Family": "نمونه",
+                }],
+            },
+        }
+
+        with (
+            patch.object(
+                api_test_flow, "read_legacy_tracking_codes",
+                return_value=("T-FIRST", "T-SECOND"),
+            ),
+            patch.object(
+                api_test_flow, "_get_petition_by_tracking_code",
+                side_effect=lambda _page, code: petitions[code],
+            ),
+            patch.object(
+                api_test_flow, "migrate_legacy_registration"
+            ) as migrate,
+        ):
+            matched, safe = api_test_flow._reconcile_legacy_registrations(
+                Mock(), drafts, Mock(), None
+            )
+
+        self.assertEqual(
+            matched,
+            ((drafts[0], "T-FIRST"), (drafts[1], "T-SECOND")),
+        )
+        self.assertEqual(safe, (drafts[2],))
+        self.assertEqual(migrate.call_count, 2)
+
+    def test_blocks_unmatched_legacy_group_from_registration(self):
+        drafts = (
+            DeclarationDraft(
+                Path("."),
+                {"recipient_national_id": "001"},
+                source_path=Path("shared.docx"),
+                source_recipient_ordinal=1,
+            ),
+            DeclarationDraft(
+                Path("."),
+                {"recipient_national_id": "002"},
+                source_path=Path("shared.docx"),
+                source_recipient_ordinal=2,
+            ),
+        )
+        petition = {
+            "No": "T-UNKNOWN",
+            "theJSSPetitionPerson": [{
+                "RoleType": 2, "NationalityCode": "999",
+            }],
+        }
+
+        with (
+            patch.object(
+                api_test_flow, "read_legacy_tracking_codes",
+                return_value=("T-UNKNOWN",),
+            ),
+            patch.object(
+                api_test_flow, "_get_petition_by_tracking_code",
+                return_value=petition,
+            ),
+            patch.object(
+                api_test_flow, "migrate_legacy_registration"
+            ) as migrate,
+        ):
+            matched, safe = api_test_flow._reconcile_legacy_registrations(
+                Mock(), drafts, Mock(), None
+            )
+
+        self.assertEqual(matched, ())
+        self.assertEqual(safe, ())
+        migrate.assert_not_called()
+
+    def test_legacy_match_falls_back_to_name_only_when_draft_has_no_id(self):
+        unnamed_id = DeclarationDraft(
+            Path("."),
+            {
+                "recipient_national_id": "",
+                "recipient_first_name": "علي",
+                "recipient_last_name": "نمونه",
+            },
+        )
+        conflicting_id = DeclarationDraft(
+            Path("."),
+            {
+                "recipient_national_id": "111",
+                "recipient_first_name": "علی",
+                "recipient_last_name": "نمونه",
+            },
+        )
+        petition = {
+            "theJSSPetitionPerson": [{
+                "RoleType": 2,
+                "NationalityCode": "222",
+                "Name": "علی",
+                "Family": "نمونه",
+            }],
+        }
+
+        actual = api_test_flow._match_legacy_draft(
+            petition, (conflicting_id, unnamed_id)
+        )
+
+        self.assertIs(actual, unnamed_id)
+
     def test_stores_final_attachment_count_from_verified_petition(self):
         page = Mock()
         page.evaluate.return_value = {

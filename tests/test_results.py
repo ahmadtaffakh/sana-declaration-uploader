@@ -7,6 +7,8 @@ from sana_declaration_uploader.models import DeclarationDraft, UploadResult
 from sana_declaration_uploader.results import (
     ResultPersistenceError,
     existing_results,
+    migrate_legacy_registration,
+    read_legacy_tracking_codes,
     read_saved_attachment_context,
     read_saved_result,
     save_attachment_count,
@@ -15,6 +17,57 @@ from sana_declaration_uploader.results import (
 
 
 class ResultPersistenceTests(unittest.TestCase):
+    def test_migrates_legacy_codes_to_each_recipient_key(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "shared.docx"
+            (source / "results.json").write_text(json.dumps({
+                "schema_version": 1,
+                "declarations": {
+                    "shared.docx": {"registrations": [
+                        {"tracking_code": "T-FIRST", "registered_at": "one"},
+                        {"tracking_code": "T-SECOND", "registered_at": "two"},
+                    ]},
+                },
+            }), encoding="utf-8")
+            first = DeclarationDraft(
+                source, {}, source_path=source_path,
+                source_recipient_ordinal=1,
+            )
+            second = DeclarationDraft(
+                source, {}, source_path=source_path,
+                source_recipient_ordinal=2,
+            )
+
+            self.assertEqual(
+                read_legacy_tracking_codes(source, source_path),
+                ("T-FIRST", "T-SECOND"),
+            )
+            migrate_legacy_registration(second, "T-SECOND")
+            migrate_legacy_registration(first, "T-FIRST")
+
+            manifest = json.loads(
+                (source / "results.json").read_text(encoding="utf-8")
+            )
+            declarations = manifest["declarations"]
+            self.assertNotIn("shared.docx", declarations)
+            self.assertEqual(
+                declarations["shared.docx::recipient-001"]["registrations"][0]
+                ["tracking_code"],
+                "T-FIRST",
+            )
+            self.assertEqual(
+                declarations["shared.docx::recipient-002"]["source_file"],
+                "shared.docx",
+            )
+            self.assertEqual(
+                read_saved_result(
+                    source, source_path, source_recipient_ordinal=2,
+                    source_recipient_count=2,
+                )["tracking_code"],
+                "T-SECOND",
+            )
+
     def test_finds_existing_result_only_for_matching_word_file(self):
         with TemporaryDirectory() as directory:
             source = Path(directory)

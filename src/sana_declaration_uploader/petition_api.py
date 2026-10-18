@@ -321,9 +321,9 @@ def build_setpetitiondata_payload(
         "NotifyOwnerOrganizationCode", "NotifyOwnerOrganizationTitle",
         "GetLocationForAddressId",
     )
+    recipient.update(replacements)
     if any(name not in recipient for name in required_fields):
         raise SetPetitionDataError("set_petition_data_template_invalid")
-    recipient.update(replacements)
 
     # Match the observed HTML wrapper expected by the endpoint.
     payload["Description"] = f"<p>{fields.get('declaration_text', '')}</p>"

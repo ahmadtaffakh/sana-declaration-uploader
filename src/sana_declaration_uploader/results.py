@@ -165,6 +165,87 @@ def read_saved_attachment_context(
     }
 
 
+def read_legacy_tracking_codes(
+    source_dir: Path,
+    source_path: Path,
+) -> tuple[str, ...]:
+    """Return verified-looking codes stored under the old file-level key."""
+
+    declarations = _load_manifest(source_dir.resolve())["declarations"]
+    if not isinstance(declarations, dict):
+        raise ResultPersistenceError("existing_results_invalid")
+    record = declarations.get(source_path.name)
+    if record is None:
+        return ()
+    if not isinstance(record, dict):
+        raise ResultPersistenceError("existing_results_invalid")
+    registrations = record.get("registrations")
+    if not isinstance(registrations, list):
+        raise ResultPersistenceError("existing_results_invalid")
+    codes = []
+    for registration in registrations:
+        if not isinstance(registration, dict):
+            raise ResultPersistenceError("existing_results_invalid")
+        code = str(registration.get("tracking_code", "")).strip()
+        if code and code != "رسید نامعتبر" and code not in codes:
+            codes.append(code)
+    return tuple(codes)
+
+
+def migrate_legacy_registration(
+    draft: DeclarationDraft,
+    tracking_code: str,
+) -> Path:
+    """Move one uniquely matched legacy registration to its recipient key."""
+
+    code = tracking_code.strip()
+    if not code or draft.source_path is None:
+        raise ResultPersistenceError("legacy_migration_input_invalid")
+    source_dir = draft.source_dir.resolve()
+    target = source_dir / RESULTS_FILENAME
+    manifest = _load_manifest(source_dir)
+    declarations = manifest["declarations"]
+    if not isinstance(declarations, dict):
+        raise ResultPersistenceError("existing_results_invalid")
+    legacy_key = draft.source_path.name
+    legacy = declarations.get(legacy_key)
+    if not isinstance(legacy, dict):
+        raise ResultPersistenceError("legacy_registration_not_found")
+    legacy_registrations = legacy.get("registrations")
+    if not isinstance(legacy_registrations, list):
+        raise ResultPersistenceError("existing_results_invalid")
+    matches = [
+        registration for registration in legacy_registrations
+        if isinstance(registration, dict)
+        and str(registration.get("tracking_code", "")).strip() == code
+    ]
+    if len(matches) != 1:
+        raise ResultPersistenceError("legacy_registration_not_unique")
+
+    key = _source_key(draft)
+    destination = declarations.setdefault(key, {"registrations": []})
+    if not isinstance(destination, dict):
+        raise ResultPersistenceError("existing_results_invalid")
+    registrations = destination.get("registrations")
+    if not isinstance(registrations, list):
+        raise ResultPersistenceError("existing_results_invalid")
+    if registrations and not any(
+        isinstance(item, dict)
+        and str(item.get("tracking_code", "")).strip() == code
+        for item in registrations
+    ):
+        raise ResultPersistenceError("recipient_registration_conflict")
+    if not registrations:
+        registrations.append(matches[0])
+    destination["source_file"] = draft.source_path.name
+    destination["source_recipient_ordinal"] = draft.source_recipient_ordinal
+    legacy_registrations.remove(matches[0])
+    if not legacy_registrations:
+        declarations.pop(legacy_key)
+    _write_manifest(target, manifest)
+    return target
+
+
 def existing_results(
     drafts: tuple[DeclarationDraft, ...],
 ) -> tuple[tuple[str, dict[str, str]], ...]:
@@ -224,6 +305,9 @@ def save_verified_result(
     record = declarations.setdefault(key, {"registrations": []})
     if not isinstance(record, dict):
         raise ResultPersistenceError("existing_results_invalid")
+    if draft.source_path is not None:
+        record["source_file"] = draft.source_path.name
+        record["source_recipient_ordinal"] = draft.source_recipient_ordinal
     registrations = record.get("registrations")
     if not isinstance(registrations, list):
         raise ResultPersistenceError("existing_results_invalid")
