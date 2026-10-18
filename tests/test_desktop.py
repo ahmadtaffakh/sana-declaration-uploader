@@ -84,8 +84,11 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertTrue(all(button.geometry().x() > wizard.width() / 2 for button in buttons))
         self.assertEqual(
             wizard.buttonText(QWizard.WizardButton.FinishButton),
-            "شروع پردازش و ثبت",
+            "ثبت نهایی در ثنا با روش مرورگر",
         )
+        finish_button = wizard.button(QWizard.WizardButton.FinishButton)
+        self.assertEqual(finish_button.objectName(), "DangerButton")
+        self.assertIn("غیرقابل‌بازگشت", finish_button.toolTip())
         self.assertFalse(wizard.button(QWizard.WizardButton.BackButton).icon().isNull())
         self.assertFalse(wizard.button(QWizard.WizardButton.NextButton).icon().isNull())
         self.assertGreater(buttons[1].geometry().x(), buttons[2].geometry().x())
@@ -345,13 +348,28 @@ class RecipientWizardTests(unittest.TestCase):
         page = RecipientWizard().login_page
 
         self.assertFalse(hasattr(page, "test_login_button"))
+        self.assertEqual(page.primary_action_group.title(), "اقدام پیشنهادی")
+        self.assertEqual(
+            page.api_test_button.text(),
+            "ثبت موقت اظهارنامه‌ها و افزودن پیوست‌ها",
+        )
+        self.assertEqual(page.api_test_button.objectName(), "PrimaryButton")
         self.assertTrue(page.api_test_button.toolTip())
         self.assertFalse(page.api_test_button.isHidden())
+        self.assertEqual(
+            page.existing_attachment_group.title(),
+            "اظهارنامه قبلاً ثبت شده است؟",
+        )
+        self.assertTrue(page.attach_existing_button.text().startswith("فقط افزودن"))
+        self.assertEqual(page.advanced_group.title(), "تنظیمات پیشرفته")
+        self.assertNotIn("API", page.api_template_button.text())
         self.assertTrue(page.api_template_button.toolTip())
+        self.assertEqual(page.close_browser_button.text(), "بستن نشست ثنا")
         self.assertTrue(page.close_browser_button.toolTip())
         self.assertTrue(page.close_browser_button.isHidden())
         self.assertTrue(page.stop_button.toolTip())
         self.assertTrue(page.stop_button.isHidden())
+        self.assertIn("غیرقابل‌بازگشت", page.final_registration_warning.text())
 
     def test_preprocessing_location_edits_survive_reloading_the_same_rows(self) -> None:
         wizard = RecipientWizard()
@@ -1534,7 +1552,7 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertEqual(len(received), 1)
         self.assertEqual(received[0].otp, "otp")
         self.assertFalse(hasattr(page, "test_login_button"))
-        self.assertIn("ثبت موقت API برای همهٔ ردیف‌ها", [
+        self.assertIn("ثبت موقت اظهارنامه‌ها و افزودن پیوست‌ها", [
             button.text() for button in page.findChildren(QPushButton)
         ])
 

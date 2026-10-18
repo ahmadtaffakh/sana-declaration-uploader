@@ -141,7 +141,7 @@ QLabel#qt_wizard_subtitle {
     color: #526579;
     font-size: 10pt;
 }
-QLabel#Guidance {
+QLabel#Guidance, QLabel#ActionHint {
     background-color: #EAF2F8;
     border: 1px solid #C8D9E8;
     border-radius: 6px;
@@ -231,6 +231,13 @@ QPushButton#PrimaryButton {
     font-weight: 600;
 }
 QPushButton#PrimaryButton:hover { background-color: #125A92; }
+QPushButton#DangerButton {
+    background-color: #FFF4DD;
+    border-color: #B42318;
+    color: #8F1D14;
+    font-weight: 600;
+}
+QPushButton#DangerButton:hover { background-color: #FFE8BF; }
 """
 
 
@@ -1778,7 +1785,7 @@ class LoginPage(QWizardPage):
         self.stop_callback = None
         self.setTitle("<b>مرحله ۵ از ۵ — ورود امن به سامانه ثنا</b>")
         self.setSubTitle(
-            "ورود را جداگانه آزمایش کنید یا پس از بازبینی، پردازش و ثبت را شروع کنید."
+            "مشخصات ورود را کامل کنید، سپس عملیات موردنظر را از بخش مناسب انتخاب کنید."
         )
 
         saved = _load_login_settings()
@@ -1811,17 +1818,20 @@ class LoginPage(QWizardPage):
         guidance.setWordWrap(True)
 
         self.api_test_button = QPushButton(
-            "ثبت موقت API برای همهٔ ردیف‌ها"
+            "ثبت موقت اظهارنامه‌ها و افزودن پیوست‌ها"
         )
+        self.api_test_button.setObjectName("PrimaryButton")
         self.api_test_button.setToolTip(
             "اظهارنامه‌های آماده را موقت ثبت می‌کند و امضای نهایی ندارد. "
             "تا وقتی مرورگر باز است از همان نشست استفاده می‌شود؛ اگر نشست "
             "تمام شود، برای ورود دوباره OTP تازه می‌پرسد."
         )
-        self.api_test_button.setAccessibleName("ثبت موقت API برای همه ردیف‌ها")
+        self.api_test_button.setAccessibleName(
+            "ثبت موقت اظهارنامه‌ها و افزودن پیوست‌ها"
+        )
         self.api_test_button.clicked.connect(self._test_api_registration)
         self.attach_existing_button = QPushButton(
-            "افزودن پیوست به اظهارنامه‌های دارای کد رهگیری"
+            "فقط افزودن پیوست به اظهارنامه‌های دارای کد رهگیری"
         )
         self.attach_existing_button.setToolTip(
             "کد رهگیری‌های ذخیره‌شده را جستجو می‌کند و فایل‌های انتخاب‌شده را "
@@ -1831,7 +1841,7 @@ class LoginPage(QWizardPage):
             "افزودن پیوست بدون ثبت دوباره اظهارنامه"
         )
         self.attach_existing_button.clicked.connect(self._attach_existing)
-        self.close_browser_button = QPushButton("خروج از مرورگر")
+        self.close_browser_button = QPushButton("بستن نشست ثنا")
         self.close_browser_button.setEnabled(False)
         self.close_browser_button.setVisible(False)
         self.close_browser_button.setToolTip(
@@ -1852,21 +1862,54 @@ class LoginPage(QWizardPage):
             "QPushButton:disabled { background:#D8A6A3; color:#F7EEEE; }"
         )
         self.stop_button.clicked.connect(self._request_stop)
-        self.api_template_button = QPushButton("انتخاب یا تغییر قالب API")
+        self.api_template_button = QPushButton("انتخاب یا تغییر قالب فنی ثبت")
         self.api_template_button.setToolTip(
-            "فایل قالب ثابت درخواست API را انتخاب می‌کند. این فایل یک‌بار برای اجراهای بعدی استفاده می‌شود."
+            "فایل قالب فنی ثبت را انتخاب می‌کند؛ این انتخاب برای اجراهای بعدی حفظ می‌شود."
         )
-        self.api_template_button.setAccessibleName("انتخاب فایل قالب ثابت API")
+        self.api_template_button.setAccessibleName("انتخاب فایل قالب فنی ثبت")
         self.api_template_button.clicked.connect(self._choose_api_template)
         self.api_template_status = QLabel()
         self._refresh_api_template_status()
-        test_row = QHBoxLayout()
-        test_row.addWidget(self.api_template_button)
-        test_row.addWidget(self.api_test_button)
-        test_row.addWidget(self.attach_existing_button)
-        test_row.addWidget(self.close_browser_button)
-        test_row.addWidget(self.stop_button)
-        test_row.addStretch()
+
+        self.primary_action_group = QGroupBox("اقدام پیشنهادی")
+        primary_action_layout = QVBoxLayout(self.primary_action_group)
+        primary_action_layout.addWidget(self.api_test_button)
+        primary_action_hint = QLabel("اظهارنامه‌ها موقت ثبت می‌شوند؛ امضای نهایی انجام نمی‌شود.")
+        primary_action_hint.setObjectName("ActionHint")
+        primary_action_hint.setWordWrap(True)
+        primary_action_layout.addWidget(primary_action_hint)
+
+        self.existing_attachment_group = QGroupBox("اظهارنامه قبلاً ثبت شده است؟")
+        existing_attachment_layout = QVBoxLayout(self.existing_attachment_group)
+        existing_attachment_layout.addWidget(self.attach_existing_button)
+        existing_attachment_hint = QLabel(
+            "فقط پیوست‌ها به کدهای رهگیری ذخیره‌شده افزوده می‌شوند."
+        )
+        existing_attachment_hint.setObjectName("ActionHint")
+        existing_attachment_hint.setWordWrap(True)
+        existing_attachment_layout.addWidget(existing_attachment_hint)
+
+        action_groups = QHBoxLayout()
+        action_groups.addWidget(self.primary_action_group, 3)
+        action_groups.addWidget(self.existing_attachment_group, 2)
+
+        self.advanced_group = QGroupBox("تنظیمات پیشرفته")
+        advanced_layout = QHBoxLayout(self.advanced_group)
+        advanced_layout.addWidget(self.api_template_button)
+        advanced_layout.addWidget(self.api_template_status)
+        advanced_layout.addStretch()
+
+        session_row = QHBoxLayout()
+        session_row.addWidget(self.close_browser_button)
+        session_row.addWidget(self.stop_button)
+        session_row.addStretch()
+
+        self.final_registration_warning = QLabel(
+            "توجه: دکمهٔ «ثبت نهایی در ثنا با روش مرورگر» در پایین صفحه، "
+            "عملیات نهایی و غیرقابل‌بازگشت را آغاز می‌کند."
+        )
+        self.final_registration_warning.setObjectName("ActionHint")
+        self.final_registration_warning.setWordWrap(True)
 
         self.python_output = QTextEdit()
         self.python_output.setReadOnly(True)
@@ -1881,8 +1924,10 @@ class LoginPage(QWizardPage):
         layout = QVBoxLayout(self)
         layout.addWidget(guidance)
         layout.addWidget(form_group)
-        layout.addLayout(test_row)
-        layout.addWidget(self.api_template_status)
+        layout.addLayout(action_groups)
+        layout.addWidget(self.advanced_group)
+        layout.addLayout(session_row)
+        layout.addWidget(self.final_registration_warning)
         layout.addWidget(QLabel("گزارش اجرای عملیات (قابل انتخاب و کپی):"))
         layout.addWidget(self.python_output)
         layout.addStretch()
@@ -1896,9 +1941,9 @@ class LoginPage(QWizardPage):
     def _refresh_api_template_status(self) -> None:
         ready = _setpetitiondata_template_path().is_file()
         self.api_template_status.setText(
-            "قالب SetPetitionData آماده است."
+            "قالب فنی ثبت آماده است."
             if ready
-            else "قالب ثابت را یک‌بار انتخاب کنید."
+            else "قالب فنی ثبت را یک‌بار انتخاب کنید."
         )
 
     def _request_stop(self) -> None:
@@ -1954,8 +1999,8 @@ class LoginPage(QWizardPage):
         if self.api_test_callback is None:
             QMessageBox.warning(
                 self,
-                "آزمایش API در دسترس نیست",
-                "مسیر آزمایش API مقداردهی نشده است.",
+                "ثبت موقت در دسترس نیست",
+                "مسیر ثبت موقت مقداردهی نشده است.",
             )
             return
         missing = any(
@@ -2134,7 +2179,8 @@ class RecipientWizard(QWizard):
         self.setButtonText(QWizard.WizardButton.BackButton, "قبلی")
         self.setButtonText(QWizard.WizardButton.NextButton, "بعدی")
         self.setButtonText(
-            QWizard.WizardButton.FinishButton, "شروع پردازش و ثبت"
+            QWizard.WizardButton.FinishButton,
+            "ثبت نهایی در ثنا با روش مرورگر",
         )
         self.setButtonText(QWizard.WizardButton.CancelButton, "انصراف")
         self.button(QWizard.WizardButton.BackButton).setIcon(
@@ -2144,7 +2190,12 @@ class RecipientWizard(QWizard):
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack)
         )
         self.button(QWizard.WizardButton.NextButton).setObjectName("PrimaryButton")
-        self.button(QWizard.WizardButton.FinishButton).setObjectName("PrimaryButton")
+        finish_button = self.button(QWizard.WizardButton.FinishButton)
+        finish_button.setObjectName("DangerButton")
+        finish_button.setToolTip(
+            "عملیات نهایی و غیرقابل‌بازگشت را با روش مرورگر آغاز می‌کند."
+        )
+        finish_button.setAccessibleName("ثبت نهایی و غیرقابل‌بازگشت در ثنا")
 
     def _start_background(
         self,
@@ -2208,7 +2259,7 @@ class RecipientWizard(QWizard):
             self.review_page.refresh_registration_results()
             self.files_page.refresh_registration_results()
             self.login_page.append_output(
-                "درخواست API ناموفق شد؛ مرورگر برای بررسی باز می‌ماند. "
+                "درخواست ثبت موقت ناموفق شد؛ مرورگر برای بررسی باز می‌ماند. "
                 "درخواست تازه تا بستن مرورگر پذیرفته نمی‌شود.",
                 level="error",
             )
@@ -2399,7 +2450,7 @@ class RecipientWizard(QWizard):
             return
         answer = QMessageBox.question(
             self,
-            "تأیید ثبت موقت و پیوست با API",
+            "تأیید ثبت موقت و پیوست",
             f"برای {len(drafts)} ردیف، SetPetitionData به‌ترتیب و هر ردیف "
             "فقط یک‌بار فراخوانی می‌شود. پس از دریافت کد رهگیری، پیوست‌های "
             "همان ردیف به همان اظهارنامه افزوده می‌شوند. در خطا یا پاسخ مبهم، "
@@ -2449,7 +2500,7 @@ class RecipientWizard(QWizard):
         self.login_page.close_browser_button.setVisible(False)
         report = self.login_page.append_output
         report(
-            f"ثبت موقت API برای {len(drafts)} ردیف آغاز شد؛ "
+            f"ثبت موقت برای {len(drafts)} ردیف آغاز شد؛ "
             "پیوست هر ردیف پس از دریافت کد رهگیری به همان اظهارنامه افزوده "
             "می‌شود؛ امضای نهایی اجرا نمی‌شود.",
             level="system",
@@ -2487,7 +2538,7 @@ class RecipientWizard(QWizard):
             session_drafts = self._api_drafts or list(drafts)
             attachment_count = sum(len(draft.attachments) for draft in session_drafts)
             report(
-                f"ثبت موقت و پیوست API تمام شد؛ موفق: {len(results)} ردیف؛ "
+                f"ثبت موقت و پیوست تمام شد؛ موفق: {len(results)} ردیف؛ "
                 f"پیوست تأییدشده: {attachment_count} فایل.",
                 level="success",
             )
@@ -2500,7 +2551,7 @@ class RecipientWizard(QWizard):
             )
 
         def failed(exc: Exception, details: str) -> None:
-            report(f"آزمایش API متوقف شد: {exc}", level="error")
+            report(f"ثبت موقت متوقف شد: {exc}", level="error")
             report("ردیابی کامل خطا:", level="debug")
             report(details, level="debug")
             report(
@@ -2511,10 +2562,10 @@ class RecipientWizard(QWizard):
                 f"{_setpetitiondata_request_text_path().with_name('setpetitiondata-request.console.txt')}",
                 level="debug",
             )
-            QMessageBox.warning(self, "آزمایش API ناموفق", str(exc))
+            QMessageBox.warning(self, "ثبت موقت ناموفق", str(exc))
 
         self._start_background(
-            "آزمایش ثبت موقت یک اظهارنامه با API...",
+            "ثبت موقت اظهارنامه‌ها...",
             task,
             succeeded,
             failed,
