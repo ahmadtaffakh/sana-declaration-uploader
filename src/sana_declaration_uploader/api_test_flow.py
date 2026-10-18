@@ -46,6 +46,32 @@ from .results import (
 GET_PETITION_BY_TRACKING_CODE_URL = (
     "https://person.adliran.ir/Offices/GetPetitionWidthPetitionType"
 )
+StatusCallback = Callable[[dict[str, object]], None]
+
+
+def _report_status(
+    callback: StatusCallback | None,
+    draft: DeclarationDraft,
+    stage: str,
+    state: str,
+    *,
+    tracking_code: str = "",
+    message: str = "",
+    completed: int = 0,
+    total: int = 0,
+) -> None:
+    if callback is None:
+        return
+    callback({
+        "source_path": str(draft.source_path.resolve()) if draft.source_path else "",
+        "source_recipient_ordinal": draft.source_recipient_ordinal,
+        "stage": stage,
+        "state": state,
+        "tracking_code": tracking_code,
+        "message": message,
+        "completed": completed,
+        "total": total,
+    })
 
 
 def run_live_setpetitiondata_batch(
@@ -59,6 +85,7 @@ def run_live_setpetitiondata_batch(
     headless: bool = False,
     timeout_ms: int = 60_000,
     progress: ProgressCallback | None = None,
+    status: StatusCallback | None = None,
     on_result: Callable[[DeclarationDraft, SetPetitionDataResult], None] | None = None,
     pending_requests: Queue | None = None,
     reauth_credentials_provider: Callable[
@@ -80,7 +107,8 @@ def run_live_setpetitiondata_batch(
         raise LiveBrowserError("set_petition_data_recipients_missing")
     petition_payloads = (
         _prepare_petition_payloads(
-            drafts, petition_template, request_text_path, lookup_dir, progress
+            drafts, petition_template, request_text_path, lookup_dir, progress,
+            status,
         )
         if drafts else []
     )
@@ -118,14 +146,14 @@ def run_live_setpetitiondata_batch(
             results = (
                 _submit_petition_payloads(
                     page, drafts, petition_payloads, ensure_authenticated,
-                    progress, on_result, request_text_path,
+                    progress, status, on_result, request_text_path,
                 )
                 if drafts else ()
             )
             if attachment_only:
                 _attach_existing_petitions(
                     page, attachment_only, ensure_authenticated, progress,
-                    request_text_path,
+                    request_text_path, status,
                 )
             all_results = list(results)
             while pending_requests is not None and not close_browser_event.is_set():
@@ -142,7 +170,7 @@ def run_live_setpetitiondata_batch(
                     current_credentials[0] = queued["credentials"]
                     _attach_existing_petitions(
                         page, queued["requests"], ensure_authenticated, progress,
-                        request_text_path,
+                        request_text_path, status,
                     )
                     continue
                 (
@@ -152,11 +180,11 @@ def run_live_setpetitiondata_batch(
                 current_credentials[0] = queued_credentials
                 queued_payloads = _prepare_petition_payloads(
                     queued_drafts, queued_template, queued_path,
-                    queued_lookup_dir, progress,
+                    queued_lookup_dir, progress, status,
                 )
                 queued_results = _submit_petition_payloads(
                     page, queued_drafts, queued_payloads, ensure_authenticated,
-                    progress, on_result,
+                    progress, status, on_result, queued_path,
                 )
                 all_results.extend(queued_results)
             return tuple(all_results)
@@ -208,23 +236,36 @@ def _prepare_petition_payloads(
     request_text_path: Path,
     lookup_dir: Path,
     progress: ProgressCallback | None,
+    status: StatusCallback | None = None,
 ) -> list[Mapping[str, object]]:
     if not drafts:
         raise LiveBrowserError("set_petition_data_recipients_missing")
     payloads = []
     for index, draft in enumerate(drafts, start=1):
-        _validate_live_draft(draft)
         try:
+            _validate_live_draft(draft)
             jurisdiction = resolve_captured_jurisdiction_fields(
                 draft.fields, lookup_dir
             )
-        except LookupResolutionError as exc:
-            raise LiveBrowserError(str(exc)) from exc
-        payload = build_setpetitiondata_payload(
-            petition_template, replace(draft, fields={**draft.fields, **jurisdiction})
-        )
-        debug_path = _request_path_for_row(request_text_path, index, len(drafts))
-        body_path, command_path = save_setpetitiondata_debug_text(payload, debug_path)
+            payload = build_setpetitiondata_payload(
+                petition_template,
+                replace(draft, fields={**draft.fields, **jurisdiction}),
+            )
+            debug_path = _request_path_for_row(request_text_path, index, len(drafts))
+            body_path, command_path = save_setpetitiondata_debug_text(
+                payload, debug_path
+            )
+        except Exception as exc:
+            _report_status(
+                status,
+                draft,
+                "petition",
+                "failed",
+                message="اطلاعات این ردیف برای ثبت معتبر نیست.",
+            )
+            if isinstance(exc, LookupResolutionError):
+                raise LiveBrowserError(str(exc)) from exc
+            raise
         payloads.append(payload)
         _report(
             progress,
@@ -274,25 +315,54 @@ def _submit_petition_payloads(
     petition_payloads: list[Mapping[str, object]],
     ensure_authenticated: Callable[[], None],
     progress: ProgressCallback | None,
+    status: StatusCallback | None,
     on_result: Callable[[DeclarationDraft, SetPetitionDataResult], None] | None,
     request_text_path: Path,
 ) -> tuple[SetPetitionDataResult, ...]:
     results = []
     for index, petition_data in enumerate(petition_payloads, start=1):
-        ensure_authenticated()
-        result = _run_logged_stage(
-            progress,
-            f"ثبت موقت SetPetitionData ردیف {index} از {len(drafts)}",
-            lambda: submit_one_petition_data(page, petition_data),
-        )
+        draft = drafts[index - 1]
+        try:
+            ensure_authenticated()
+        except Exception:
+            _report_status(
+                status,
+                draft,
+                "petition",
+                "failed",
+                message="ورود معتبر برای ثبت این ردیف فراهم نشد.",
+            )
+            raise
+        _report_status(status, draft, "petition", "running")
+        try:
+            result = _run_logged_stage(
+                progress,
+                f"ثبت موقت SetPetitionData ردیف {index} از {len(drafts)}",
+                lambda: submit_one_petition_data(page, petition_data),
+            )
+        except Exception:
+            _report_status(
+                status,
+                draft,
+                "petition",
+                "unknown",
+                message="پاسخ ثبت قطعی نیست؛ پیش از تکرار بررسی شود.",
+            )
+            raise
         results.append(result)
+        _report_status(
+            status,
+            draft,
+            "petition",
+            "success",
+            tracking_code=result.tracking_code,
+        )
         _report(
             progress,
             f"[ردیف {index} از {len(drafts)}] ثبت موفق؛ "
             f"کد رهگیری: {result.tracking_code}؛ "
             f"شماره اظهارنامه: {result.petition_number}",
         )
-        draft = drafts[index - 1]
         if on_result is not None:
             on_result(draft, result)
         elif draft.source_path is not None:
@@ -311,10 +381,18 @@ def _submit_petition_payloads(
                 },
             )
         if draft.attachments:
+            _report_status(
+                status,
+                draft,
+                "attachment",
+                "running",
+                tracking_code=result.tracking_code,
+                total=len(draft.attachments),
+            )
             try:
                 _attach_draft_files(
                     page, petition_data, result, draft, index, len(drafts), progress,
-                    request_text_path,
+                    request_text_path, status,
                 )
             except Exception as exc:
                 detail = (
@@ -336,6 +414,10 @@ def _submit_petition_payloads(
                     f"petition_number={result.petition_number}:cause={detail}"
                 ) from exc
         else:
+            _report_status(
+                status, draft, "attachment", "skipped",
+                tracking_code=result.tracking_code,
+            )
             _report(
                 progress,
                 f"[ردیف {index} از {len(drafts)}] پیوستی انتخاب نشده؛ "
@@ -350,6 +432,7 @@ def _attach_existing_petitions(
     ensure_authenticated: Callable[[], None],
     progress: ProgressCallback | None,
     request_text_path: Path,
+    status: StatusCallback | None = None,
 ) -> None:
     source_counts: dict[Path, int] = {}
     for draft, _tracking_code in requests:
@@ -365,12 +448,41 @@ def _attach_existing_petitions(
                 or not attachment.document_number.strip()
                 or not attachment.document_date.strip()
             ):
+                _report_status(
+                    status,
+                    draft,
+                    "attachment",
+                    "failed",
+                    message="مشخصات یا فایل پیوست ناقص است.",
+                    total=len(draft.attachments),
+                )
                 raise LiveBrowserError("attachment_preflight_invalid")
     for index, (draft, tracking_code) in enumerate(requests, start=1):
         if not draft.attachments:
+            _report_status(status, draft, "attachment", "skipped")
             _report(progress, f"[ردیف {index} از {len(requests)}] پیوستی انتخاب نشده؛ رد شد.")
             continue
-        ensure_authenticated()
+        _report_status(
+            status,
+            draft,
+            "attachment",
+            "running",
+            tracking_code=tracking_code,
+            total=len(draft.attachments),
+        )
+        try:
+            ensure_authenticated()
+        except Exception:
+            _report_status(
+                status,
+                draft,
+                "attachment",
+                "failed",
+                tracking_code=tracking_code,
+                message="ورود معتبر برای افزودن پیوست فراهم نشد.",
+                total=len(draft.attachments),
+            )
+            raise
         try:
             saved = (
                 read_saved_attachment_context(
@@ -393,16 +505,37 @@ def _attach_existing_petitions(
                 "theJSSPetitionRelief": saved["reliefs"],
             }
         else:
-            petition_data = _run_logged_stage(
-                progress,
-                f"بازیابی اظهارنامه با کد رهگیری {tracking_code}",
-                lambda: _get_petition_by_tracking_code(page, tracking_code),
-            )
+            try:
+                petition_data = _run_logged_stage(
+                    progress,
+                    f"بازیابی اظهارنامه با کد رهگیری {tracking_code}",
+                    lambda: _get_petition_by_tracking_code(page, tracking_code),
+                )
+            except Exception:
+                _report_status(
+                    status,
+                    draft,
+                    "attachment",
+                    "failed",
+                    tracking_code=tracking_code,
+                    message="اظهارنامه برای افزودن پیوست بازیابی نشد.",
+                    total=len(draft.attachments),
+                )
+                raise
         petition_number = str(petition_data.get("No") or "").strip()
         petition_id = str(petition_data.get("Id") or "").strip()
         reliefs = petition_data.get("theJSSPetitionRelief")
         type_code = str(petition_data.get("PetitionTypeCode") or "").strip()
         if petition_number != tracking_code.strip() or not petition_id or not type_code:
+            _report_status(
+                status,
+                draft,
+                "attachment",
+                "failed",
+                tracking_code=tracking_code,
+                message="مشخصات اظهارنامه با کد رهگیری تطابق ندارد.",
+                total=len(draft.attachments),
+            )
             raise LiveBrowserError("tracked_petition_context_mismatch")
         result = SetPetitionDataResult(tracking_code, petition_number, petition_id)
         _report(
@@ -412,7 +545,7 @@ def _attach_existing_petitions(
         )
         _attach_draft_files(
             page, petition_data, result, draft, index, len(requests), progress,
-            request_text_path,
+            request_text_path, status,
         )
 
 
@@ -465,13 +598,26 @@ def _attach_draft_files(
     row_count: int,
     progress: ProgressCallback | None,
     request_text_path: Path,
+    status: StatusCallback | None = None,
 ) -> None:
     """Attach this draft's files to the petition returned for the same row."""
 
     prefix = f"[ردیف {row_index} از {row_count}]"
-    reliefs = _reliefs_for_attachment_lookup(
-        petition_data.get("theJSSPetitionRelief"), result.petition_id
-    )
+    try:
+        reliefs = _reliefs_for_attachment_lookup(
+            petition_data.get("theJSSPetitionRelief"), result.petition_id
+        )
+    except Exception:
+        _report_status(
+            status,
+            draft,
+            "attachment",
+            "failed",
+            tracking_code=result.tracking_code,
+            message="اطلاعات لازم برای پیوست کامل نیست.",
+            total=len(draft.attachments),
+        )
+        raise
     for attachment_index, attachment in enumerate(draft.attachments, start=1):
         row_path = _request_path_for_row(
             request_text_path, row_index, row_count
@@ -505,21 +651,46 @@ def _attach_draft_files(
         result.petition_id,
         progress=lambda message: _report(progress, f"{prefix} {message}"),
     )
-    attachment_types = _run_logged_stage(
-        progress,
-        f"دریافت نوع‌های مجاز پیوست برای اظهارنامه {result.tracking_code}",
-        lambda: lookup_client.get_valid_attachment_types(
-            reliefs,
-            petition_type_code=str(
-                petition_data.get("PetitionTypeCode") or "110"
+    try:
+        attachment_types = _run_logged_stage(
+            progress,
+            f"دریافت نوع‌های مجاز پیوست برای اظهارنامه {result.tracking_code}",
+            lambda: lookup_client.get_valid_attachment_types(
+                reliefs,
+                petition_type_code=str(
+                    petition_data.get("PetitionTypeCode") or "110"
+                ),
             ),
-        ),
-    )
+        )
+    except Exception:
+        _report_status(
+            status,
+            draft,
+            "attachment",
+            "failed",
+            tracking_code=result.tracking_code,
+            message="نوع‌های مجاز پیوست دریافت نشد.",
+            total=len(draft.attachments),
+        )
+        raise
 
     for attachment_index, attachment in enumerate(draft.attachments, start=1):
-        attachment_type = _match_attachment_type(
-            attachment.kind, attachment_types
-        )
+        try:
+            attachment_type = _match_attachment_type(
+                attachment.kind, attachment_types
+            )
+        except Exception:
+            _report_status(
+                status,
+                draft,
+                "attachment",
+                "failed",
+                tracking_code=result.tracking_code,
+                message="نوع انتخاب‌شده برای این اظهارنامه مجاز نیست.",
+                completed=attachment_index - 1,
+                total=len(draft.attachments),
+            )
+            raise
         attachment_prefix = (
             f"{prefix} [پیوست {attachment_index}/"
             f"{len(draft.attachments)}]"
@@ -538,18 +709,40 @@ def _attach_draft_files(
                 progress, f"{p} {message}"
             ),
         )
-        _run_logged_stage(
-            progress,
-            f"افزودن پیوست {attachment_index}/{len(draft.attachments)} "
-            f"به اظهارنامه {result.tracking_code}",
-            lambda: attachment_client.register_attachment(
-                attachment_type,
-                document_number=attachment.document_number,
-                document_date=attachment.document_date,
-                file_path=attachment.path,
-                show_original=attachment.show_to_recipient,
-                document_title=attachment.title,
-            ),
+        try:
+            _run_logged_stage(
+                progress,
+                f"افزودن پیوست {attachment_index}/{len(draft.attachments)} "
+                f"به اظهارنامه {result.tracking_code}",
+                lambda: attachment_client.register_attachment(
+                    attachment_type,
+                    document_number=attachment.document_number,
+                    document_date=attachment.document_date,
+                    file_path=attachment.path,
+                    show_original=attachment.show_to_recipient,
+                    document_title=attachment.title,
+                ),
+            )
+        except Exception:
+            _report_status(
+                status,
+                draft,
+                "attachment",
+                "unknown",
+                tracking_code=result.tracking_code,
+                message="نتیجه پیوست قطعی نیست؛ پیش از تکرار بررسی شود.",
+                completed=attachment_index - 1,
+                total=len(draft.attachments),
+            )
+            raise
+        _report_status(
+            status,
+            draft,
+            "attachment",
+            "success",
+            tracking_code=result.tracking_code,
+            completed=attachment_index,
+            total=len(draft.attachments),
         )
 
 

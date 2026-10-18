@@ -137,6 +137,100 @@ class RecipientWizardTests(unittest.TestCase):
             output.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse
         )
 
+    def test_last_page_status_tab_tracks_each_source_recipient(self) -> None:
+        page = RecipientWizard().login_page
+        source = Path("shared.docx")
+        drafts = (
+            DeclarationDraft(
+                Path("."),
+                {
+                    "recipient_first_name": "علی",
+                    "recipient_last_name": "احمدی",
+                    "declaration_subject": "موضوع اول",
+                },
+                source_path=source,
+                source_recipient_ordinal=1,
+            ),
+            DeclarationDraft(
+                Path("."),
+                {
+                    "recipient_first_name": "رضا",
+                    "recipient_last_name": "کریمی",
+                    "declaration_subject": "موضوع دوم",
+                },
+                source_path=source,
+                source_recipient_ordinal=2,
+            ),
+        )
+
+        page.set_operation_drafts(drafts, reset=True)
+        page.update_operation_status({
+            "source_path": str(source.resolve()),
+            "source_recipient_ordinal": 1,
+            "stage": "petition",
+            "state": "success",
+            "tracking_code": "T-FIRST",
+        })
+        page.update_operation_status({
+            "source_path": str(source.resolve()),
+            "source_recipient_ordinal": 2,
+            "stage": "attachment",
+            "state": "unknown",
+            "completed": 1,
+            "total": 2,
+            "message": "نیازمند بررسی دستی",
+        })
+
+        self.assertEqual(page.output_tabs.tabText(0), "وضعیت اظهارنامه‌ها")
+        self.assertEqual(page.output_tabs.tabText(1), "گزارش فنی")
+        self.assertEqual(page.output_tabs.currentIndex(), 0)
+        self.assertEqual(page.status_table.rowCount(), 2)
+        tracking_column = page.STATUS_HEADERS.index("کد رهگیری")
+        petition_column = page.STATUS_HEADERS.index("وضعیت اظهارنامه")
+        attachment_column = page.STATUS_HEADERS.index("وضعیت پیوست")
+        self.assertEqual(page.status_table.item(0, tracking_column).text(), "T-FIRST")
+        self.assertEqual(page.status_table.item(0, petition_column).text(), "✓ موفق")
+        self.assertEqual(
+            page.status_table.item(1, attachment_column).text(),
+            "؟ نیازمند بررسی 1 از 2",
+        )
+
+        page.append_output("خطای نمونه", level="error")
+        self.assertEqual(page.output_tabs.tabText(1), "گزارش فنی — دارای خطا")
+
+    def test_entering_last_page_prepares_status_rows_before_execution(self) -> None:
+        wizard = RecipientWizard()
+        draft = DeclarationDraft(
+            Path("."),
+            {
+                "recipient_first_name": "نام",
+                "recipient_last_name": "نمونه",
+                "declaration_subject": "موضوع نمونه",
+            },
+            source_path=Path("input.docx"),
+        )
+
+        with patch(
+            "sana_declaration_uploader.desktop._build_desktop_drafts",
+            return_value=(draft,),
+        ):
+            wizard._page_changed(wizard.login_page_id)
+
+        page = wizard.login_page
+        self.assertEqual(page.status_table.rowCount(), 1)
+        self.assertEqual(
+            page.status_table.item(
+                0, page.STATUS_HEADERS.index("نام مخاطب")
+            ).text(),
+            "نام نمونه",
+        )
+        self.assertEqual(
+            page.status_table.item(
+                0, page.STATUS_HEADERS.index("وضعیت اظهارنامه")
+            ).text(),
+            "… در انتظار",
+        )
+
     def test_last_page_log_is_colored_numbered_and_traceable(self) -> None:
         page = RecipientWizard().login_page
         page.start_log()

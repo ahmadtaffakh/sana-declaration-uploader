@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWizard,
@@ -1766,6 +1767,25 @@ class DeclarationContentPage(QWizardPage):
 
 
 class LoginPage(QWizardPage):
+    STATUS_HEADERS = (
+        "ردیف",
+        "نام مخاطب",
+        "فایل Word",
+        "موضوع اظهارنامه",
+        "کد رهگیری",
+        "وضعیت اظهارنامه",
+        "وضعیت پیوست",
+        "توضیح",
+    )
+    STATUS_DISPLAY = {
+        "pending": ("… در انتظار", "#667085"),
+        "running": ("● در حال اجرا", "#1769AA"),
+        "success": ("✓ موفق", "#247A3D"),
+        "failed": ("✕ ناموفق", "#B42318"),
+        "unknown": ("؟ نیازمند بررسی", "#A15C00"),
+        "skipped": ("— پیوستی ندارد", "#667085"),
+    }
+
     LOG_COLORS = {
         "system": ("#E8F1FB", "#245B88", "اطلاعات"),
         "progress": ("#E6F7FA", "#087C8C", "در حال اجرا"),
@@ -1783,6 +1803,7 @@ class LoginPage(QWizardPage):
         self.api_session_active_callback = None
         self.close_browser_callback = None
         self.stop_callback = None
+        self._operation_rows: dict[tuple[str, int], int] = {}
         self.setTitle("<b>مرحله ۵ از ۵ — ورود امن به سامانه ثنا</b>")
         self.setSubTitle(
             "مشخصات ورود را کامل کنید، سپس عملیات موردنظر را از بخش مناسب انتخاب کنید."
@@ -1918,6 +1939,26 @@ class LoginPage(QWizardPage):
         self.python_output.setPlaceholderText(
             "گزارش مرحله‌به‌مرحلهٔ عملیات و جزئیات فنی در این بخش نمایش داده می‌شود."
         )
+        self.status_table = QTableWidget(0, len(self.STATUS_HEADERS))
+        self.status_table.setHorizontalHeaderLabels(self.STATUS_HEADERS)
+        _configure_table(self.status_table)
+        self.status_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.status_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        status_header = self.status_table.horizontalHeader()
+        status_header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        status_header.setSectionResizeMode(
+            self.STATUS_HEADERS.index("توضیح"), QHeaderView.ResizeMode.Stretch
+        )
+
+        self.output_tabs = QTabWidget()
+        self.output_tabs.addTab(self.status_table, "وضعیت اظهارنامه‌ها")
+        self.output_tabs.addTab(self.python_output, "گزارش فنی")
+        self.output_tabs.setCurrentIndex(0)
+        self.output_tabs.setMinimumHeight(220)
         self._log_run_id = ""
         self._log_sequence = 0
 
@@ -1928,9 +1969,7 @@ class LoginPage(QWizardPage):
         layout.addWidget(self.advanced_group)
         layout.addLayout(session_row)
         layout.addWidget(self.final_registration_warning)
-        layout.addWidget(QLabel("گزارش اجرای عملیات (قابل انتخاب و کپی):"))
-        layout.addWidget(self.python_output)
-        layout.addStretch()
+        layout.addWidget(self.output_tabs, 1)
 
         for field in (
             self.national_code, self.password, self.legal_identity, self.otp
@@ -1949,6 +1988,96 @@ class LoginPage(QWizardPage):
     def _request_stop(self) -> None:
         if self.stop_callback is not None:
             self.stop_callback()
+
+    @staticmethod
+    def _draft_status_key(draft: DeclarationDraft) -> tuple[str, int]:
+        source = str(draft.source_path.resolve()) if draft.source_path else ""
+        return source, draft.source_recipient_ordinal
+
+    def set_operation_drafts(
+        self,
+        drafts: tuple[DeclarationDraft, ...],
+        *,
+        reset: bool,
+        tracking_codes: dict[tuple[str, int], str] | None = None,
+    ) -> None:
+        if reset:
+            self.status_table.setRowCount(0)
+            self._operation_rows.clear()
+        known_codes = tracking_codes or {}
+        for draft in drafts:
+            key = self._draft_status_key(draft)
+            row = self._operation_rows.get(key)
+            if row is None:
+                row = self.status_table.rowCount()
+                self.status_table.insertRow(row)
+                self._operation_rows[key] = row
+            code = known_codes.get(key, "")
+            name = " ".join(filter(None, (
+                str(draft.fields.get("recipient_first_name", "")).strip(),
+                str(draft.fields.get("recipient_last_name", "")).strip(),
+            )))
+            values = (
+                str(row + 1),
+                name or "نامشخص",
+                draft.source_path.name if draft.source_path else "دستی",
+                str(draft.fields.get("declaration_subject", "")),
+                code,
+                "success" if code else "pending",
+                "pending" if draft.attachments else "skipped",
+                "",
+            )
+            for column, value in enumerate(values):
+                item = self.status_table.item(row, column) or QTableWidgetItem()
+                self.status_table.setItem(row, column, item)
+                if column in (
+                    self.STATUS_HEADERS.index("وضعیت اظهارنامه"),
+                    self.STATUS_HEADERS.index("وضعیت پیوست"),
+                ):
+                    self._set_status_item(item, value)
+                else:
+                    item.setText(value)
+
+    def update_operation_status(self, event: object) -> None:
+        if not isinstance(event, dict):
+            return
+        key = (
+            str(event.get("source_path", "")),
+            int(event.get("source_recipient_ordinal", 1)),
+        )
+        row = self._operation_rows.get(key)
+        if row is None:
+            return
+        stage = str(event.get("stage", ""))
+        header = "وضعیت اظهارنامه" if stage == "petition" else "وضعیت پیوست"
+        item = self.status_table.item(row, self.STATUS_HEADERS.index(header))
+        if item is None:
+            item = QTableWidgetItem()
+            self.status_table.setItem(row, self.STATUS_HEADERS.index(header), item)
+        state = str(event.get("state", "pending"))
+        completed = int(event.get("completed", 0) or 0)
+        total = int(event.get("total", 0) or 0)
+        suffix = f" {completed} از {total}" if stage == "attachment" and total else ""
+        self._set_status_item(item, state, suffix=suffix)
+        tracking_code = str(event.get("tracking_code", "")).strip()
+        if tracking_code:
+            self.status_table.item(
+                row, self.STATUS_HEADERS.index("کد رهگیری")
+            ).setText(tracking_code)
+        detail = str(event.get("message", "")).strip()
+        self.status_table.item(row, self.STATUS_HEADERS.index("توضیح")).setText(
+            detail
+        )
+
+    def _set_status_item(
+        self, item: QTableWidgetItem, state: str, *, suffix: str = ""
+    ) -> None:
+        text, color = self.STATUS_DISPLAY.get(
+            state, self.STATUS_DISPLAY["unknown"]
+        )
+        item.setText(f"{text}{suffix}")
+        item.setForeground(QColor(color))
+        item.setData(Qt.ItemDataRole.UserRole, state)
 
     def _choose_api_template(self) -> None:
         source, _ = QFileDialog.getOpenFileName(
@@ -2070,6 +2199,7 @@ class LoginPage(QWizardPage):
         )
         self._log_sequence = 0
         self.python_output.clear()
+        self.output_tabs.setTabText(1, "گزارش فنی")
         self.append_output("اجرای جدید آغاز شد.", level="system")
 
     def append_output(self, message: str, *, level: str = "system") -> None:
@@ -2081,6 +2211,8 @@ class LoginPage(QWizardPage):
         background, foreground, label = self.LOG_COLORS.get(
             level, self.LOG_COLORS["system"]
         )
+        if level == "error":
+            self.output_tabs.setTabText(1, "گزارش فنی — دارای خطا")
         technical = level == "debug"
         direction = "ltr" if technical else "rtl"
         alignment = "left" if technical else "right"
@@ -2119,6 +2251,7 @@ class LoginPage(QWizardPage):
 class RecipientWizard(QWizard):
     otp_requested = Signal(object)
     final_confirmation_requested = Signal(object, object)
+    operation_status_changed = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -2169,6 +2302,9 @@ class RecipientWizard(QWizard):
         self.currentIdChanged.connect(self._page_changed)
         self.otp_requested.connect(self._show_otp_prompt)
         self.final_confirmation_requested.connect(self._show_final_confirmation)
+        self.operation_status_changed.connect(
+            self.login_page.update_operation_status
+        )
         self.setButtonLayout([
             QWizard.WizardButton.BackButton,
             QWizard.WizardButton.NextButton,
@@ -2462,6 +2598,10 @@ class RecipientWizard(QWizard):
         if answer != QMessageBox.StandardButton.Yes:
             return
         request_text_path = _setpetitiondata_request_text_path()
+        self.login_page.set_operation_drafts(
+            drafts,
+            reset=self._api_request_queue is None,
+        )
         if self._api_request_queue is not None:
             if (
                 self._api_browser_close_event is None
@@ -2525,6 +2665,7 @@ class RecipientWizard(QWizard):
                 request_text_path,
                 lookup_dir=self._lookup_dir,
                 progress=progress,
+                status=lambda event: self.operation_status_changed.emit(event),
                 pending_requests=request_queue,
                 reauth_credentials_provider=reauth_credentials_provider,
                 close_browser_event=close_browser_event,
@@ -2643,6 +2784,15 @@ class RecipientWizard(QWizard):
             return
 
         request_tuple = tuple(requests)
+        tracking_codes = {
+            self.login_page._draft_status_key(draft): tracking_code
+            for draft, tracking_code in request_tuple
+        }
+        self.login_page.set_operation_drafts(
+            tuple(draft for draft, _tracking_code in request_tuple),
+            reset=self._api_request_queue is None,
+            tracking_codes=tracking_codes,
+        )
         if self._api_request_queue is not None:
             if (
                 self._api_browser_close_event is None
@@ -2697,6 +2847,7 @@ class RecipientWizard(QWizard):
                 _setpetitiondata_request_text_path(),
                 lookup_dir=self._lookup_dir,
                 progress=progress,
+                status=lambda event: self.operation_status_changed.emit(event),
                 pending_requests=request_queue,
                 reauth_credentials_provider=reauth_credentials_provider,
                 close_browser_event=close_browser_event,
@@ -2910,6 +3061,21 @@ class RecipientWizard(QWizard):
             self._loaded_paths = ()
             self._preprocess_source = ()
             self.files_page.refresh_registration_results()
+            return
+        if page_id == self.login_page_id:
+            if self._api_session_active() or self._api_browser_ready:
+                return
+            try:
+                drafts = _build_desktop_drafts(
+                    self.preprocessing_page.candidates(),
+                    self.content_page.payloads(),
+                    shared=False,
+                    lookup_dir=self._lookup_dir,
+                )
+            except (ValueError, LookupResolutionError):
+                self.login_page.set_operation_drafts((), reset=True)
+            else:
+                self.login_page.set_operation_drafts(drafts, reset=True)
             return
         if page_id == self.preprocessing_page_id:
             source = self.review_page.candidates()

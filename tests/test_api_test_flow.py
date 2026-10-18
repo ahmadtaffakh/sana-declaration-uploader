@@ -125,6 +125,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
 
     def test_attaches_to_tracking_code_without_registering_petition(self):
         events = []
+        statuses = []
         page = Mock()
         page.evaluate.return_value = {
             "status": 200,
@@ -178,7 +179,8 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                 actual = api_test_flow.run_live_setpetitiondata_batch(
                     (), LoginCredentials("n", "p", "l", "o"), lambda: True,
                     {}, Path(directory) / "request.txt", lookup_dir=Path(directory),
-                    progress=events.append, close_browser_event=close_event,
+                    progress=events.append, status=statuses.append,
+                    close_browser_event=close_event,
                     attachment_only=((draft, "1405000000000001"),),
                 )
 
@@ -187,9 +189,17 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         self.assertIn("1405000000000001", str(page.evaluate.call_args))
         self.assertTrue(any("ثبت اظهارنامه اجرا نمی‌شود" in event for event in events))
         register_client.register_attachment.assert_called_once()
+        self.assertEqual(
+            [
+                (event["state"], event["completed"], event["total"])
+                for event in statuses if event["stage"] == "attachment"
+            ],
+            [("running", 0, 1), ("success", 1, 1)],
+        )
 
     def test_logs_tracking_code_then_submits_next_row_once(self):
         events = []
+        statuses = []
         page = Mock()
         context = Mock()
         context.new_page.return_value = page
@@ -284,6 +294,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                     body_path,
                     lookup_dir=Path(directory),
                     progress=events.append,
+                    status=statuses.append,
                     pending_requests=request_queue,
                     close_browser_event=close_event,
                 )
@@ -321,6 +332,18 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         )
         self.assertTrue(any("کد رهگیری: " + "1" * 16 in e for e in events))
         self.assertTrue(any("کد رهگیری: " + "2" * 16 in e for e in events))
+        successful_statuses = [
+            event for event in statuses
+            if event["stage"] == "petition" and event["state"] == "success"
+        ]
+        self.assertEqual(
+            [event["tracking_code"] for event in successful_statuses],
+            ["1" * 16, "2" * 16],
+        )
+        self.assertEqual(
+            [event["source_recipient_ordinal"] for event in successful_statuses],
+            [1, 1],
+        )
         page.goto.assert_not_called()
         self.assertEqual(page.locator.call_count, 2)
         self.assertIn("__api_browser_ready_to_close__", events)
@@ -464,6 +487,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
 
     def test_attachment_failure_after_registration_stops_batch(self):
         events = []
+        statuses = []
         page = Mock()
         context = Mock()
         context.new_page.return_value = page
@@ -535,6 +559,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                         Path(directory) / "request.txt",
                         lookup_dir=Path(directory),
                         progress=events.append,
+                        status=statuses.append,
                         close_browser_event=close_event,
                     )
 
@@ -542,6 +567,15 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         self.assertTrue(
             any("ثبت اظهارنامه موفق است، اما پیوست کامل نشد" in m for m in events)
         )
+        self.assertTrue(any(
+            event["stage"] == "petition" and event["state"] == "success"
+            for event in statuses
+        ))
+        self.assertTrue(any(
+            event["stage"] == "attachment" and event["state"] == "unknown"
+            and "پیش از تکرار" in event["message"]
+            for event in statuses
+        ))
 
 
 if __name__ == "__main__":
