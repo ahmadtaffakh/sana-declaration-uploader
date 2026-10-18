@@ -276,11 +276,9 @@ class AttachmentClientTests(unittest.TestCase):
         )
         self.page.evaluate.side_effect = [
             {"status": 200, "text": json.dumps({"Id": "document-id"})},
+            {"status": 200, "text": json.dumps(["document-file-id"])},
             {"status": 200, "text": "true"},
         ]
-        upload_response = Mock(status=200)
-        upload_response.json.return_value = ["document-file-id"]
-        self.page.context.request.post.return_value = upload_response
 
         result = client.register_attachment(
             self.attachment_type(),
@@ -295,8 +293,7 @@ class AttachmentClientTests(unittest.TestCase):
             result.document_id, "document-id"
         )
         self.assertEqual(result.document_file_id, "document-file-id")
-        self.assertEqual(self.page.evaluate.call_count, 2)
-        self.assertEqual(self.page.context.request.post.call_count, 1)
+        self.assertEqual(self.page.evaluate.call_count, 3)
         first_expr, first_arg = self.page.evaluate.call_args_list[0].args
         self.assertEqual(first_arg["url"], ADD_DOCUMENT_URL)
         self.assertIn("fetch(url", first_expr)
@@ -315,25 +312,25 @@ class AttachmentClientTests(unittest.TestCase):
                 {"Name": "001", "Value": "1", "Type": "FileUpload"},
             ],
         )
-        upload_args, upload_kwargs = self.page.context.request.post.call_args
-        self.assertEqual(upload_args, (ADD_DOCUMENT_FILE_URL,))
+        upload_expr, upload_arg = self.page.evaluate.call_args_list[1].args
+        self.assertIn("new FormData()", upload_expr)
+        self.assertIn("credentials: 'include'", upload_expr)
+        self.assertEqual(upload_arg["url"], ADD_DOCUMENT_FILE_URL)
         self.assertEqual(
-            upload_kwargs["params"],
+            upload_arg["params"],
             {
-                "orderNumber": 1,
+                "orderNumber": "1",
                 "documentId": "document-id",
                 "documentFileID": "",
                 "attachmentTypeID": "099",
                 "checkQuality": "true",
             },
         )
-        self.assertEqual(
-            upload_kwargs["multipart"]["001"]["buffer"], b"%PDF-test"
-        )
-        self.assertEqual(
-            upload_kwargs["multipart"]["001"]["mimeType"], "application/pdf"
-        )
-        _, accept_arg = self.page.evaluate.call_args_list[1].args
+        self.assertEqual(upload_arg["fileField"], "001")
+        self.assertEqual(upload_arg["fileName"], self.file_path.name)
+        self.assertEqual(upload_arg["mimeType"], "application/pdf")
+        self.assertEqual(upload_arg["fileBase64"], "JVBERi10ZXN0")
+        _, accept_arg = self.page.evaluate.call_args_list[2].args
         self.assertEqual(accept_arg["url"], SET_ACCEPT_STATE_URL)
         self.assertEqual(
             json.loads(accept_arg["body"]),
@@ -348,12 +345,10 @@ class AttachmentClientTests(unittest.TestCase):
         self.assertTrue(any("تأیید پیوست موفق" in m for m in progress))
 
     def test_stops_on_ambiguous_upload_without_accept_or_retry(self):
-        self.page.evaluate.return_value = {
-            "status": 200, "text": json.dumps({"Id": "document-id"})
-        }
-        self.page.context.request.post.side_effect = TimeoutError(
-            "transport details"
-        )
+        self.page.evaluate.side_effect = [
+            {"status": 200, "text": json.dumps({"Id": "document-id"})},
+            TimeoutError("transport details"),
+        ]
 
         with self.assertRaisesRegex(
             AttachmentApiError,
@@ -364,8 +359,7 @@ class AttachmentClientTests(unittest.TestCase):
                 document_title="مدرک آزمایشی",
             )
 
-        self.page.evaluate.assert_called_once()
-        self.page.context.request.post.assert_called_once()
+        self.assertEqual(self.page.evaluate.call_count, 2)
 
     def test_rejects_disallowed_extension_before_any_write(self):
         with TemporaryDirectory() as directory:
@@ -396,11 +390,9 @@ class AttachmentClientTests(unittest.TestCase):
     def test_accept_false_is_not_reported_as_success(self):
         self.page.evaluate.side_effect = [
             {"status": 200, "text": json.dumps({"Id": "document-id"})},
+            {"status": 200, "text": json.dumps(["document-file-id"])},
             {"status": 200, "text": "false"},
         ]
-        upload_response = Mock(status=200)
-        upload_response.json.return_value = ["document-file-id"]
-        self.page.context.request.post.return_value = upload_response
 
         with self.assertRaisesRegex(
             AttachmentApiError, "attachment_accept_rejected"
@@ -411,9 +403,8 @@ class AttachmentClientTests(unittest.TestCase):
             )
 
         self.page.evaluate.assert_has_calls(
-            [unittest.mock.call(unittest.mock.ANY, unittest.mock.ANY)] * 2
+            [unittest.mock.call(unittest.mock.ANY, unittest.mock.ANY)] * 3
         )
-        self.page.context.request.post.assert_called_once()
 
 
 if __name__ == "__main__":

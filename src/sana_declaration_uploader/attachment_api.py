@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from copy import deepcopy
 from dataclasses import dataclass
 import json
@@ -50,8 +51,6 @@ class AttachmentApiError(RuntimeError):
 
 class _BrowserPage(Protocol):
     """Browser surface needed by the API client."""
-
-    context: object
 
     def evaluate(self, expression: str, argument: object) -> object: ...
 
@@ -175,46 +174,15 @@ class AttachmentClient:
             f"شروع بارگذاری فایل؛ پسوند: {file_path.suffix or 'نامشخص'}؛ "
             f"حجم: {len(file_bytes)} بایت؛ نوع محتوا: {mime_type}"
         )
-        try:
-            context = self.page.context
-            request = context.request  # type: ignore[attr-defined]
-            response = request.post(
-                ADD_DOCUMENT_FILE_URL,
-                params={
-                    "orderNumber": order_number,
-                    "documentId": document_id,
-                    "documentFileID": "",
-                    "attachmentTypeID": attachment_type.id,
-                    "checkQuality": "true",
-                },
-                multipart={
-                    file_field: {
-                        "name": file_path.name,
-                        "mimeType": mime_type,
-                        "buffer": file_bytes,
-                    }
-                },
-            )
-        except Exception:
-            raise AttachmentApiError(
-                "attachment_file_upload_transport_ambiguous"
-            ) from None
-        upload_status = getattr(response, "status", None)
-        if not _is_success_status(upload_status):
-            status_detail = (
-                f":http_status={upload_status}"
-                if isinstance(upload_status, int)
-                else ""
-            )
-            raise AttachmentApiError(
-                f"attachment_file_upload_http_failed{status_detail}"
-            )
-        try:
-            uploaded = response.json()
-        except Exception:
-            raise AttachmentApiError(
-                "attachment_file_upload_response_invalid"
-            ) from None
+        uploaded = self._upload_file(
+            attachment_type.id,
+            document_id,
+            file_field,
+            file_path.name,
+            mime_type,
+            file_bytes,
+            order_number,
+        )
         if (
             not isinstance(uploaded, list)
             or len(uploaded) != 1
@@ -253,6 +221,86 @@ class AttachmentClient:
 
         if self.progress is not None:
             self.progress(message)
+
+    def _upload_file(
+        self,
+        attachment_type_id: str,
+        document_id: str,
+        file_field: str,
+        file_name: str,
+        mime_type: str,
+        file_bytes: bytes,
+        order_number: int,
+    ) -> object:
+        """Upload one file through the authenticated browser page once."""
+
+        try:
+            result = self.page.evaluate(
+                """async ({
+                    url, params, fileField, fileName, mimeType, fileBase64,
+                }) => {
+                    const uploadUrl = new URL(url);
+                    uploadUrl.search = new URLSearchParams(params).toString();
+                    const binary = atob(fileBase64);
+                    const bytes = new Uint8Array(binary.length);
+                    for (let index = 0; index < binary.length; index += 1) {
+                        bytes[index] = binary.charCodeAt(index);
+                    }
+                    const form = new FormData();
+                    form.append(
+                        fileField,
+                        new Blob([bytes], { type: mimeType }),
+                        fileName,
+                    );
+                    const response = await fetch(uploadUrl, {
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: { 'accept': 'application/json, text/plain, */*' },
+                        body: form,
+                    });
+                    return {
+                        status: response.status,
+                        text: await response.text(),
+                    };
+                }""",
+                {
+                    "url": ADD_DOCUMENT_FILE_URL,
+                    "params": {
+                        "orderNumber": str(order_number),
+                        "documentId": document_id,
+                        "documentFileID": "",
+                        "attachmentTypeID": attachment_type_id,
+                        "checkQuality": "true",
+                    },
+                    "fileField": file_field,
+                    "fileName": file_name,
+                    "mimeType": mime_type,
+                    "fileBase64": base64.b64encode(file_bytes).decode("ascii"),
+                },
+            )
+        except Exception:
+            raise AttachmentApiError(
+                "attachment_file_upload_transport_ambiguous"
+            ) from None
+        if not isinstance(result, dict):
+            raise AttachmentApiError("attachment_file_upload_response_invalid")
+        status = result.get("status")
+        if not _is_success_status(status):
+            status_detail = (
+                f":http_status={status}" if isinstance(status, int) else ""
+            )
+            raise AttachmentApiError(
+                f"attachment_file_upload_http_failed{status_detail}"
+            )
+        response_text = result.get("text")
+        if not isinstance(response_text, str):
+            raise AttachmentApiError("attachment_file_upload_response_invalid")
+        try:
+            return json.loads(response_text)
+        except (TypeError, ValueError):
+            raise AttachmentApiError(
+                "attachment_file_upload_response_invalid"
+            ) from None
 
     def _fetch_json(
         self, url: str, body: str, operation: str
