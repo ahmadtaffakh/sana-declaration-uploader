@@ -82,6 +82,7 @@ from .results import (
 
 
 _SUPPORTED_SUFFIXES = {".docx", ".pdf", ".txt"}
+_SUPPORTED_API_PERSON_TYPES = {"", "حقیقی", "شخص حقیقی"}
 _ATTACHMENT_KIND_OPTIONS = (
     "تصویر مدرک نمایندگی",
     "تصویر وکالت نامه",
@@ -724,6 +725,8 @@ class RecipientReviewPage(QWizardPage):
         "بازکردن",
         "تاریخ اظهارنامه مرتبط",
         "تعداد روز گذشته از آن تاریخ",
+        "کد رهگیری",
+        "تاریخ ثبت",
         "نام و نام خانوادگی",
         "نام پدر",
         "کد ملی",
@@ -731,8 +734,6 @@ class RecipientReviewPage(QWizardPage):
         "نام",
         "نام خانوادگی",
         "نام فایل مرتبط",
-        "کد رهگیری",
-        "تاریخ ثبت",
         "آدرس",
         "شاهد استخراج",
     )
@@ -824,6 +825,8 @@ class RecipientReviewPage(QWizardPage):
             "",
             date_value,
             days_since,
+            "",
+            "",
             candidate.full_name if candidate else "",
             candidate.father_name if candidate else "",
             candidate.national_id if candidate else "",
@@ -831,8 +834,6 @@ class RecipientReviewPage(QWizardPage):
             (candidate.first_name or suggested_first) if candidate else "",
             (candidate.last_name or suggested_last) if candidate else "",
             candidate.source_path.name if candidate else "دستی",
-            "",
-            "",
             candidate.address if candidate else "",
             candidate.evidence if candidate else "",
         )
@@ -2597,25 +2598,37 @@ class RecipientWizard(QWizard):
         except (ValueError, LookupResolutionError) as exc:
             QMessageBox.warning(self, "پیش‌نویس آزمایشی نامعتبر", str(exc))
             return
-        unsupported_count = sum(
-            draft.fields.get("person_type", "").strip()
-            not in {"", "حقیقی", "شخص حقیقی"}
-            for draft in drafts
-        )
-        if unsupported_count:
-            drafts = tuple(
-                draft for draft in drafts
-                if draft.fields.get("person_type", "").strip()
-                in {"", "حقیقی", "شخص حقیقی"}
-            )
-            QMessageBox.warning(
-                self,
-                "ردیف غیرحقیقی اجرا نمی‌شود",
-                f"{unsupported_count} ردیف حقوقی یا نامشخص از ثبت موقت کنار "
-                "گذاشته شد؛ سامانه فقط ردیف‌های حقیقیِ پشتیبانی‌شده را اجرا می‌کند.",
-            )
-            if not drafts:
-                return
+        source_counts: dict[Path, int] = {}
+        for draft in drafts:
+            if draft.source_path is not None:
+                source = draft.source_path.resolve()
+                source_counts[source] = source_counts.get(source, 0) + 1
+        eligible_drafts = []
+        for draft in drafts:
+            if (
+                draft.fields.get("person_type", "").strip()
+                not in _SUPPORTED_API_PERSON_TYPES
+            ):
+                continue
+            if draft.source_path is not None:
+                try:
+                    saved = read_saved_result(
+                        draft.source_dir,
+                        draft.source_path,
+                        source_recipient_ordinal=draft.source_recipient_ordinal,
+                        source_recipient_count=source_counts[
+                            draft.source_path.resolve()
+                        ],
+                    )
+                except ResultPersistenceError:
+                    continue
+                tracking_code = (saved or {}).get("tracking_code", "").strip()
+                if tracking_code and tracking_code != "رسید نامعتبر":
+                    continue
+            eligible_drafts.append(draft)
+        drafts = tuple(eligible_drafts)
+        if not drafts:
+            return
         answer = QMessageBox.question(
             self,
             "تأیید ثبت موقت و پیوست",
@@ -2771,12 +2784,19 @@ class RecipientWizard(QWizard):
         except (ValueError, LookupResolutionError) as exc:
             QMessageBox.warning(self, "پیش‌نویس پیوست نامعتبر", str(exc))
             return
-        requests = []
         source_counts: dict[Path, int] = {}
         for draft in drafts:
             if draft.source_path is not None:
                 source = draft.source_path.resolve()
                 source_counts[source] = source_counts.get(source, 0) + 1
+        drafts = tuple(
+            draft for draft in drafts
+            if draft.fields.get("person_type", "").strip()
+            in _SUPPORTED_API_PERSON_TYPES
+        )
+        if not drafts:
+            return
+        requests = []
         for draft in drafts:
             if not draft.attachments or draft.source_path is None:
                 continue

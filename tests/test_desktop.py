@@ -692,9 +692,9 @@ class RecipientWizardTests(unittest.TestCase):
         )
         self.assertEqual(wizard.review_page.HEADERS, (
             "حذف", "بازکردن", "تاریخ اظهارنامه مرتبط",
-            "تعداد روز گذشته از آن تاریخ", "نام و نام خانوادگی", "نام پدر",
-            "کد ملی", "شماره اظهارنامه", "نام", "نام خانوادگی",
-            "نام فایل مرتبط", "کد رهگیری", "تاریخ ثبت", "آدرس", "شاهد استخراج",
+            "تعداد روز گذشته از آن تاریخ", "کد رهگیری", "تاریخ ثبت",
+            "نام و نام خانوادگی", "نام پدر", "کد ملی", "شماره اظهارنامه",
+            "نام", "نام خانوادگی", "نام فایل مرتبط", "آدرس", "شاهد استخراج",
         ))
         self.assertTrue(wizard.review_page.table.isSortingEnabled())
         self.assertFalse(wizard.review_page.table.wordWrap())
@@ -1328,7 +1328,99 @@ class RecipientWizardTests(unittest.TestCase):
 
         queued_drafts, *_rest = wizard._api_request_queue.get_nowait()
         self.assertEqual(queued_drafts, (natural,))
-        self.assertIn("1 ردیف", warning.call_args.args[2])
+        warning.assert_not_called()
+
+    def test_api_registration_silently_skips_saved_tracking_code(self) -> None:
+        wizard = RecipientWizard()
+        candidates = (
+            RecipientCandidate(source_path=Path("registered.docx")),
+            RecipientCandidate(source_path=Path("new.docx")),
+        )
+        registered = DeclarationDraft(
+            Path("."), {"person_type": "حقیقی"},
+            source_path=Path("registered.docx"),
+        )
+        new = DeclarationDraft(
+            Path("."), {"person_type": "حقیقی"},
+            source_path=Path("new.docx"),
+        )
+        wizard._api_request_queue = Queue()
+        wizard._api_browser_close_event = Event()
+
+        with (
+            patch(
+                "sana_declaration_uploader.desktop.load_setpetitiondata_template",
+                return_value={"template": True},
+            ),
+            patch.object(
+                wizard.preprocessing_page, "candidates", return_value=candidates
+            ),
+            patch.object(wizard.content_page, "payloads", return_value={}),
+            patch(
+                "sana_declaration_uploader.desktop._build_desktop_drafts",
+                return_value=(registered, new),
+            ),
+            patch(
+                "sana_declaration_uploader.desktop.read_saved_result",
+                side_effect=[{"tracking_code": "1" * 16}, None],
+            ),
+            patch.object(QMessageBox, "warning") as warning,
+            patch.object(
+                QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+            ),
+        ):
+            wizard._start_api_test(
+                LoginCredentials("national", "password", "identity", "otp")
+            )
+
+        queued_drafts, *_rest = wizard._api_request_queue.get_nowait()
+        self.assertEqual(queued_drafts, (new,))
+        warning.assert_not_called()
+
+    def test_attachment_only_silently_skips_unsupported_person_type(self) -> None:
+        wizard = RecipientWizard()
+        candidates = (
+            RecipientCandidate(source_path=Path("natural.docx")),
+            RecipientCandidate(source_path=Path("legal.docx")),
+        )
+        attachment = Attachment(Path("attachment.pdf"), "نوع", "عنوان")
+        natural = DeclarationDraft(
+            Path("."), {"person_type": "حقیقی"},
+            attachments=(attachment,), source_path=Path("natural.docx"),
+        )
+        legal = DeclarationDraft(
+            Path("."), {"person_type": "حقوقی"},
+            attachments=(attachment,), source_path=Path("legal.docx"),
+        )
+        wizard._api_request_queue = Queue()
+        wizard._api_browser_close_event = Event()
+
+        with (
+            patch.object(
+                wizard.preprocessing_page, "candidates", return_value=candidates
+            ),
+            patch.object(wizard.content_page, "payloads", return_value={}),
+            patch(
+                "sana_declaration_uploader.desktop._build_desktop_drafts",
+                return_value=(natural, legal),
+            ),
+            patch(
+                "sana_declaration_uploader.desktop.read_saved_result",
+                return_value={"tracking_code": "1" * 16},
+            ) as read_result,
+            patch.object(QMessageBox, "warning") as warning,
+            patch.object(
+                QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+            ),
+        ):
+            wizard._start_attach_existing(
+                LoginCredentials("national", "password", "identity", "otp")
+            )
+
+        queued = wizard._api_request_queue.get_nowait()
+        self.assertEqual(queued["requests"], ((natural, "1" * 16),))
+        read_result.assert_called_once()
+        warning.assert_not_called()
 
     def test_api_browser_close_button_releases_browser_wait(self) -> None:
         wizard = RecipientWizard()
