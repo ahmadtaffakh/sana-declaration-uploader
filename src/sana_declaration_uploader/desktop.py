@@ -11,12 +11,18 @@ from pathlib import Path
 from queue import Queue
 import sys
 from threading import Event
-import textwrap
 import traceback
 from typing import Callable
 
 from PySide6.QtCore import QObject, QEventLoop, QSize, Qt, QThread, QUrl, Signal, Slot
-from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import (
+    QColor,
+    QCloseEvent,
+    QDesktopServices,
+    QDragEnterEvent,
+    QDropEvent,
+    QPalette,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -150,6 +156,14 @@ QListWidget, QTableWidget {
     gridline-color: #DCE5ED;
     selection-background-color: #B9D7EE;
     selection-color: #102F49;
+}
+QListWidget::item {
+    color: #1F2937;
+    padding: 4px 6px;
+}
+QListWidget::item:selected {
+    background-color: #B9D7EE;
+    color: #102F49;
 }
 QLineEdit, QTextEdit, QComboBox {
     background-color: #FFFFFF;
@@ -547,12 +561,8 @@ def _days_since_related_date(value: str, *, today: date | None = None) -> int | 
     return ((today or date.today()) - parsed).days
 
 
-def _two_line_preview(value: str, width: int = 52) -> str:
-    lines = textwrap.wrap(value.strip(), width=width, break_long_words=True)
-    if len(lines) <= 2:
-        return "\n".join(lines)
-    second = lines[1]
-    return f"{lines[0]}\n{second[:max(1, width - 1)].rstrip()}…"
+def _single_line_preview(value: str) -> str:
+    return " ".join(value.split())
 
 
 def _saved_registration(
@@ -594,6 +604,12 @@ class FileSelectionPage(QWizardPage):
         self._last_source_directory = _load_last_source_directory()
 
         self.file_list = QListWidget()
+        palette = self.file_list.palette()
+        palette.setColor(QPalette.ColorRole.Base, QColor("#FFFFFF"))
+        palette.setColor(QPalette.ColorRole.Text, QColor("#1F2937"))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor("#B9D7EE"))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#102F49"))
+        self.file_list.setPalette(palette)
         self.file_count_label = QLabel("تعداد فایل‌های بارگذاری‌شده: ۰")
         add_button = QPushButton("افزودن فایل‌ها")
         remove_button = QPushButton("حذف انتخاب‌شده")
@@ -669,7 +685,8 @@ class FileSelectionPage(QWizardPage):
             item = self.file_list.item(index)
             source_path = Path(item.data(Qt.ItemDataRole.UserRole))
             result = _saved_registration(source_path)
-            item.setBackground(QColor("#FFF0C2") if result else QColor())
+            item.setBackground(QColor("#FFF0C2") if result else QColor("#FFFFFF"))
+            item.setForeground(QColor("#1F2937"))
             if result:
                 code = result["tracking_code"] or "نامشخص"
                 registered = _registration_date_display(result["registered_at"])
@@ -703,13 +720,13 @@ class RecipientReviewPage(QWizardPage):
         "نام پدر",
         "کد ملی",
         "شماره اظهارنامه",
-        "آدرس",
-        "شاهد استخراج",
         "نام",
         "نام خانوادگی",
         "نام فایل مرتبط",
         "کد رهگیری",
         "تاریخ ثبت",
+        "آدرس",
+        "شاهد استخراج",
     )
     COLUMN_WIDTHS = {
         "حذف": 48,
@@ -720,8 +737,8 @@ class RecipientReviewPage(QWizardPage):
         "نام پدر": 82,
         "کد ملی": 118,
         "شماره اظهارنامه": 150,
-        "آدرس": 260,
-        "شاهد استخراج": 220,
+        "آدرس": 520,
+        "شاهد استخراج": 660,
         "نام": 110,
         "نام خانوادگی": 135,
         "نام فایل مرتبط": 175,
@@ -739,6 +756,7 @@ class RecipientReviewPage(QWizardPage):
         self.table = QTableWidget(0, len(self.HEADERS))
         self.table.setHorizontalHeaderLabels(self.HEADERS)
         _configure_table(self.table)
+        self.table.setWordWrap(False)
         self.table.setSortingEnabled(True)
         self.table.itemChanged.connect(self._date_changed)
         header = self.table.horizontalHeader()
@@ -802,13 +820,13 @@ class RecipientReviewPage(QWizardPage):
             candidate.father_name if candidate else "",
             candidate.national_id if candidate else "",
             candidate.related_declaration_number if candidate else "",
-            candidate.address if candidate else "",
-            candidate.evidence if candidate else "",
             (candidate.first_name or suggested_first) if candidate else "",
             (candidate.last_name or suggested_last) if candidate else "",
             candidate.source_path.name if candidate else "دستی",
             "",
             "",
+            candidate.address if candidate else "",
+            candidate.evidence if candidate else "",
         )
         for column, value in enumerate(values):
             item = QTableWidgetItem()
@@ -816,7 +834,7 @@ class RecipientReviewPage(QWizardPage):
             header_name = self.HEADERS[column]
             if header_name in ("آدرس", "شاهد استخراج"):
                 full_text = str(value or "")
-                item.setText(_two_line_preview(full_text))
+                item.setText(_single_line_preview(full_text))
                 item.setToolTip(full_text)
             if self.HEADERS[column] in (
                 "حذف", "بازکردن", "تعداد روز گذشته از آن تاریخ",

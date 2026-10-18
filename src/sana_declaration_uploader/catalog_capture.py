@@ -314,8 +314,14 @@ def run_interactive_catalog_capture(
         ) from exc
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(channel="chrome", headless=False)
-        context = browser.new_context()
+        browser = playwright.chromium.launch(
+            channel="chrome",
+            headless=False,
+            # proxy={"server": "http://127.0.0.1:8080"},
+        )
+        context = browser.new_context(
+            ignore_https_errors=True,
+        )
         page = None
         try:
             page = context.new_page()

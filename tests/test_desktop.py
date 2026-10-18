@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -535,11 +536,23 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertEqual(wizard.review_page.HEADERS, (
             "حذف", "بازکردن", "تاریخ اظهارنامه مرتبط",
             "تعداد روز گذشته از آن تاریخ", "نام و نام خانوادگی", "نام پدر",
-            "کد ملی", "شماره اظهارنامه", "آدرس", "شاهد استخراج", "نام",
-            "نام خانوادگی", "نام فایل مرتبط", "کد رهگیری", "تاریخ ثبت",
+            "کد ملی", "شماره اظهارنامه", "نام", "نام خانوادگی",
+            "نام فایل مرتبط", "کد رهگیری", "تاریخ ثبت", "آدرس", "شاهد استخراج",
         ))
         self.assertTrue(wizard.review_page.table.isSortingEnabled())
-        self.assertTrue(wizard.review_page.table.wordWrap())
+        self.assertFalse(wizard.review_page.table.wordWrap())
+        self.assertEqual(
+            wizard.review_page.table.columnWidth(
+                wizard.review_page.HEADERS.index("آدرس")
+            ),
+            520,
+        )
+        self.assertEqual(
+            wizard.review_page.table.columnWidth(
+                wizard.review_page.HEADERS.index("شاهد استخراج")
+            ),
+            660,
+        )
         self.assertLess(
             wizard.review_page.table.columnWidth(
                 wizard.review_page.HEADERS.index("نام پدر")
@@ -1149,7 +1162,7 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertEqual(results, [("candidate",)])
         self.assertEqual(failures, [])
 
-    def test_review_page_shows_saved_tracking_and_two_line_tooltips(self) -> None:
+    def test_review_page_shows_saved_tracking_and_single_line_tooltips(self) -> None:
         with TemporaryDirectory() as directory:
             source_path = Path(directory) / "input.docx"
             (Path(directory) / "results.json").write_text(json.dumps({
@@ -1161,7 +1174,7 @@ class RecipientWizardTests(unittest.TestCase):
                     }]}
                 },
             }), encoding="utf-8")
-            address = "نشانی نمونه " * 30
+            address = "نشانی نمونه\n" + "کوچه نمونه " * 30
             evidence = "شاخص استخراج نمونه " * 30
             page = RecipientReviewPage()
             page.set_candidates((RecipientCandidate(
@@ -1185,8 +1198,8 @@ class RecipientWizardTests(unittest.TestCase):
                 table.item(0, page.HEADERS.index("شاهد استخراج")).toolTip(), evidence
             )
             for header in ("آدرس", "شاهد استخراج"):
-                self.assertLessEqual(
-                    table.item(0, page.HEADERS.index(header)).text().count("\n"), 1
+                self.assertNotIn(
+                    "\n", table.item(0, page.HEADERS.index(header)).text()
                 )
             self.assertEqual(
                 table.item(0, page.HEADERS.index("نام و نام خانوادگی"))
@@ -1215,6 +1228,21 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertIn("1405111222333444", item.text())
             self.assertIn("1405/07/24", item.text())
             self.assertEqual(item.background().color().name(), "#fff0c2")
+
+    def test_file_list_selected_row_uses_readable_light_colors(self) -> None:
+        wizard = RecipientWizard()
+        stylesheet = wizard.styleSheet()
+        palette = wizard.files_page.file_list.palette()
+
+        self.assertIn("QListWidget::item:selected", stylesheet)
+        self.assertIn("background-color: #B9D7EE", stylesheet)
+        self.assertIn("color: #102F49", stylesheet)
+        self.assertEqual(
+            palette.color(QPalette.ColorRole.Highlight).name(), "#b9d7ee"
+        )
+        self.assertEqual(
+            palette.color(QPalette.ColorRole.HighlightedText).name(), "#102f49"
+        )
 
     def test_declaration_fields_survive_back_navigation_and_reentry(self) -> None:
         with (

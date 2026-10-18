@@ -196,8 +196,14 @@ def run_login_check(
         ) from exc
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(channel="chrome", headless=headless)
-        context = browser.new_context()
+        browser = playwright.chromium.launch(
+            channel="chrome",
+            headless=False,
+            # proxy={"server": "http://127.0.0.1:8080"},
+        )
+        context = browser.new_context(
+            ignore_https_errors=True,
+        )
         try:
             page = context.new_page()
             login_self_service(
@@ -228,8 +234,14 @@ def run_live_upload_batch(
         ) from exc
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(channel="chrome", headless=headless)
-        context = browser.new_context()
+        browser = playwright.chromium.launch(
+            channel="chrome",
+            headless=headless,
+            # proxy={"server": "http://127.0.0.1:8080"},
+        )
+        context = browser.new_context(
+            ignore_https_errors=True,
+        )
         try:
             page = context.new_page()
             try:
