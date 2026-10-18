@@ -2429,7 +2429,10 @@ class RecipientWizard(QWizard):
         self._api_request_queue: Queue | None = None
         self._api_drafts: list[DeclarationDraft] | None = None
         self._exit_requested = False
-        self.login_page.registration_callback = self._register_declarations
+        # مسیر قدیمی فرم‌پرکن مرورگر عمداً از رابط جدا شده است. کدهای
+        # run_live_upload_batch، _register_declarations و _finish_registration
+        # فعلاً برای حذف مرحله‌ای نگه داشته شده‌اند و نباید به UI متصل شوند.
+        # self.login_page.registration_callback = self._register_declarations
         self.login_page.stop_callback = self._request_registration_stop
         self.login_page.api_test_callback = self._start_api_test
         self.login_page.attach_existing_callback = self._start_attach_existing

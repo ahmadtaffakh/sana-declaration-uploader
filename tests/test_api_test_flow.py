@@ -163,13 +163,28 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
 
     def test_stores_final_attachment_count_from_verified_petition(self):
         page = Mock()
-        page.evaluate.return_value = {
-            "status": 200,
-            "text": json.dumps({
-                "No": "T-0001",
-                "JSSPetitionDocumentCount": 2,
-            }),
-        }
+        page.evaluate.side_effect = [
+            {
+                "status": 200,
+                "text": json.dumps({"No": "T-0001"}),
+            },
+            {
+                "status": 200,
+                "text": json.dumps({
+                    "TotalRecords": 2,
+                    "ObjectList": [{
+                        "theJSSPetitionDocument": [
+                            {"TheJSSPetitionDocumentFileList": [{"Id": "A"}]},
+                            {
+                                "TheJSSPetitionDocumentFileList": [
+                                    {"Id": "B"}, {"Id": "C"},
+                                ],
+                            },
+                        ],
+                    }],
+                }),
+            },
+        ]
         draft = DeclarationDraft(
             Path("."), {}, source_path=Path("sample.docx")
         )
@@ -182,25 +197,38 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                 statuses.append,
             )
 
-        self.assertEqual(count, 2)
-        save_count.assert_called_once_with(draft, "T-0001", 2)
+        self.assertEqual(count, 3)
+        save_count.assert_called_once_with(draft, "T-0001", 3)
         self.assertTrue(any(
-            "تعداد ضمیمه‌های ثبت‌شده در ثنا: 2" in item
+            "تعداد ضمیمه‌های ثبت‌شده در ثنا: 3" in item
             for item in progress
         ))
         self.assertEqual(statuses[0]["stage"], "attachment_count")
-        self.assertEqual(statuses[0]["attachment_count"], 2)
+        self.assertEqual(statuses[0]["attachment_count"], 3)
         self.assertTrue(statuses[0]["attachment_count_checked_at"])
+        self.assertIn(
+            api_test_flow.GET_PETITION_DOCUMENTS_URL,
+            str(page.evaluate.call_args_list[1]),
+        )
 
     def test_rejects_invalid_final_attachment_count(self):
         page = Mock()
-        page.evaluate.return_value = {
-            "status": 200,
-            "text": json.dumps({
-                "No": "T-0001",
-                "JSSPetitionDocumentCount": "2",
-            }),
-        }
+        page.evaluate.side_effect = [
+            {
+                "status": 200,
+                "text": json.dumps({"No": "T-0001"}),
+            },
+            {
+                "status": 200,
+                "text": json.dumps({
+                    "ObjectList": [{
+                        "theJSSPetitionDocument": [{
+                            "TheJSSPetitionDocumentFileList": "2",
+                        }],
+                    }],
+                }),
+            },
+        ]
 
         with self.assertRaisesRegex(
             api_test_flow.LiveBrowserError, "attachment_count_response_invalid"
@@ -213,6 +241,19 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                 1,
                 None,
             )
+
+    def test_uploaded_attachment_count_can_be_zero(self):
+        page = Mock()
+        page.evaluate.return_value = {
+            "status": 200,
+            "text": json.dumps({
+                "ObjectList": [{"theJSSPetitionDocument": []}],
+            }),
+        }
+
+        count = api_test_flow._get_uploaded_attachment_count(page, "T-0001")
+
+        self.assertEqual(count, 0)
 
     def test_matches_representation_document_default_to_live_title(self):
         live_type = AttachmentType(

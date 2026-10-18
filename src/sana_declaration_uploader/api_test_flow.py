@@ -50,6 +50,9 @@ from .results import (
 GET_PETITION_BY_TRACKING_CODE_URL = (
     "https://person.adliran.ir/Offices/GetPetitionWidthPetitionType"
 )
+GET_PETITION_DOCUMENTS_URL = (
+    "https://person.adliran.ir/Offices/GetJssPetitonDocument"
+)
 StatusCallback = Callable[[dict[str, object]], None]
 
 
@@ -790,6 +793,58 @@ def _get_petition_by_tracking_code(
     return value
 
 
+def _get_uploaded_attachment_count(page: object, petition_no: str) -> int:
+    """Return the number of uploaded files reported by the attachment table."""
+
+    if not petition_no.strip():
+        raise LiveBrowserError("attachment_count_petition_number_missing")
+    try:
+        response = page.evaluate(
+            """async ({ url, petitionNo }) => {
+            const response = await fetch(url, {
+                method: 'POST', credentials: 'include',
+                headers: {
+                    'accept': 'application/json, text/plain, */*',
+                    'content-type': 'application/json;charset=UTF-8',
+                    'x-requested-with': 'XMLHttpRequest',
+                },
+                body: JSON.stringify({
+                    petitionNo,
+                    pageNumber: 0,
+                    pageSize: 1000,
+                    stateDocument: '3',
+                }),
+            });
+            return { status: response.status, text: await response.text() };
+        }""",
+            {"url": GET_PETITION_DOCUMENTS_URL, "petitionNo": petition_no},
+        )
+    except Exception as exc:
+        raise LiveBrowserError("attachment_count_lookup_failed") from exc
+    if not isinstance(response, dict) or response.get("status") != 200:
+        raise LiveBrowserError("attachment_count_lookup_http_error")
+    try:
+        value = json.loads(str(response.get("text", "")))
+        wrappers = value["ObjectList"]
+        documents = wrappers[0]["theJSSPetitionDocument"]
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise LiveBrowserError("attachment_count_response_invalid") from exc
+    if not isinstance(documents, list):
+        raise LiveBrowserError("attachment_count_response_invalid")
+
+    count = 0
+    for document in documents:
+        if not isinstance(document, dict):
+            raise LiveBrowserError("attachment_count_response_invalid")
+        files = document.get("TheJSSPetitionDocumentFileList")
+        if not isinstance(files, list) or not all(
+            isinstance(item, dict) for item in files
+        ):
+            raise LiveBrowserError("attachment_count_response_invalid")
+        count += len(files)
+    return count
+
+
 def _store_final_attachment_count(
     page: object,
     draft: DeclarationDraft,
@@ -808,9 +863,7 @@ def _store_final_attachment_count(
     )
     if str(petition.get("No") or "").strip() != tracking_code.strip():
         raise LiveBrowserError("attachment_count_petition_mismatch")
-    count = petition.get("JSSPetitionDocumentCount")
-    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
-        raise LiveBrowserError("attachment_count_response_invalid")
+    count = _get_uploaded_attachment_count(page, tracking_code)
     try:
         save_attachment_count(draft, tracking_code, count)
     except ResultPersistenceError as exc:

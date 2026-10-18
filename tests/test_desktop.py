@@ -2044,6 +2044,7 @@ class RecipientWizardTests(unittest.TestCase):
             button.text() for button in wizard.findChildren(QPushButton)
             if not button.isHidden()
         ])
+        self.assertIsNone(page.registration_callback)
         self.assertFalse(page.api_test_button.isHidden())
         wizard.close()
 
