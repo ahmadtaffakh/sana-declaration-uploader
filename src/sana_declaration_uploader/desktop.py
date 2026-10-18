@@ -129,7 +129,7 @@ class _BackgroundWorker(QObject):
             self.succeeded.emit(result)
 _ORGANIZATIONAL_STYLE = """
 QWizard, QWizardPage {
-    background-color: #F4F7FB;
+    background-color: #F3F6FA;
     color: #1F2937;
     font-family: "Segoe UI", "Tahoma";
     font-size: 10pt;
@@ -142,6 +142,15 @@ QLabel#qt_wizard_title {
 QLabel#qt_wizard_subtitle {
     color: #526579;
     font-size: 10pt;
+}
+QLabel#FieldLabel, QLabel#MetricLabel {
+    color: #173B5E;
+    font-weight: 700;
+}
+QLabel#MetricLabel {
+    background-color: #E7EEF5;
+    border-radius: 5px;
+    padding: 6px 10px;
 }
 QLabel#Guidance, QLabel#ActionHint {
     background-color: #EAF2F8;
@@ -181,7 +190,7 @@ QGroupBox {
     background-color: #FFFFFF;
     border: 1px solid #CFDAE5;
     border-radius: 7px;
-    font-weight: 600;
+    font-weight: 700;
     margin-top: 10px;
     padding-top: 10px;
 }
@@ -198,7 +207,30 @@ QHeaderView::section {
     border-left: 1px solid #CFDAE5;
     border-bottom: 1px solid #BCCBDA;
     padding: 8px;
+    font-weight: 700;
+}
+QTabWidget::pane {
+    background-color: #FFFFFF;
+    border: 1px solid #CFDAE5;
+    border-radius: 6px;
+}
+QTabBar::tab {
+    background-color: #E7EEF5;
+    border: 1px solid #CFDAE5;
+    color: #36546F;
+    font-weight: 700;
+    min-width: 130px;
+    padding: 8px 14px;
+}
+QTabBar::tab:selected {
+    background-color: #FFFFFF;
+    color: #173B5E;
+    border-bottom-color: #FFFFFF;
+}
+QCheckBox {
+    color: #294861;
     font-weight: 600;
+    spacing: 7px;
 }
 QPushButton {
     min-height: 32px;
@@ -233,6 +265,41 @@ QPushButton#PrimaryButton {
     font-weight: 600;
 }
 QPushButton#PrimaryButton:hover { background-color: #125A92; }
+QPushButton#SuccessButton {
+    background-color: #247A3D;
+    border-color: #247A3D;
+    color: #FFFFFF;
+    font-weight: 600;
+}
+QPushButton#SuccessButton:hover { background-color: #1D6532; }
+QPushButton#SecondaryButton {
+    background-color: #E7EEF5;
+    border-color: #AFC0D0;
+    color: #173B5E;
+    font-weight: 600;
+}
+QPushButton#SecondaryButton:hover { background-color: #D8E4EF; }
+QPushButton#OutlineDangerButton {
+    background-color: #FFF7F7;
+    border-color: #D6A09C;
+    color: #9B241B;
+    font-weight: 600;
+}
+QPushButton#OutlineDangerButton:hover { background-color: #FDEBEC; }
+QPushButton#SessionButton {
+    background-color: #0F766E;
+    border-color: #0F766E;
+    color: #FFFFFF;
+    font-weight: 700;
+}
+QPushButton#SessionButton:hover { background-color: #0B615A; }
+QPushButton#ExitButton {
+    background-color: #B42318;
+    border-color: #B42318;
+    color: #FFFFFF;
+    font-weight: 700;
+}
+QPushButton#ExitButton:hover { background-color: #8F1D14; }
 QPushButton#DangerButton {
     background-color: #FFF4DD;
     border-color: #B42318;
@@ -620,8 +687,11 @@ class FileSelectionPage(QWizardPage):
         palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#102F49"))
         self.file_list.setPalette(palette)
         self.file_count_label = QLabel("تعداد فایل‌های بارگذاری‌شده: ۰")
+        self.file_count_label.setObjectName("MetricLabel")
         add_button = QPushButton("افزودن فایل‌ها")
         remove_button = QPushButton("حذف انتخاب‌شده")
+        add_button.setObjectName("SecondaryButton")
+        remove_button.setObjectName("OutlineDangerButton")
         add_button.clicked.connect(self._choose_files)
         remove_button.clicked.connect(self._remove_selected)
 
@@ -639,7 +709,11 @@ class FileSelectionPage(QWizardPage):
         guidance.setObjectName("Guidance")
         guidance.setWordWrap(True)
         layout.addWidget(guidance)
-        layout.addWidget(QLabel("فایل‌ها را اینجا رها کنید یا با دکمه زیر انتخاب کنید:"))
+        files_label = QLabel(
+            "فایل‌ها را اینجا رها کنید یا با دکمه زیر انتخاب کنید:"
+        )
+        files_label.setObjectName("FieldLabel")
+        layout.addWidget(files_label)
         layout.addWidget(self.file_list)
         layout.addWidget(self.file_count_label)
         layout.addLayout(buttons)
@@ -778,6 +852,8 @@ class RecipientReviewPage(QWizardPage):
 
         add_button = QPushButton("افزودن شخص")
         remove_button = QPushButton("حذف ردیف")
+        add_button.setObjectName("SecondaryButton")
+        remove_button.setObjectName("OutlineDangerButton")
         add_button.clicked.connect(lambda: self.add_candidate(None))
         remove_button.clicked.connect(self._remove_selected)
         buttons = QHBoxLayout()
@@ -1379,6 +1455,8 @@ class DeclarationContentPage(QWizardPage):
 
         add_button = QPushButton("افزودن پیوست‌ها")
         remove_button = QPushButton("حذف پیوست انتخاب‌شده")
+        add_button.setObjectName("SecondaryButton")
+        remove_button.setObjectName("OutlineDangerButton")
         add_button.clicked.connect(self._choose_attachments)
         remove_button.clicked.connect(self._remove_attachments)
         attachment_buttons = QHBoxLayout()
@@ -1395,11 +1473,17 @@ class DeclarationContentPage(QWizardPage):
         recipient_form.addRow("مخاطب فعال:", self.recipient_combo)
         recipient_form.addRow("", self.active_recipient_label)
         recipient_form.addRow("موضوع اظهارنامه:", self.subject)
+        for editor in (self.recipient_combo, self.subject):
+            label = recipient_form.labelForField(editor)
+            if label is not None:
+                label.setObjectName("FieldLabel")
 
         description_field = QWidget()
         description_layout = QVBoxLayout(description_field)
         description_layout.setContentsMargins(0, 0, 0, 0)
-        description_layout.addWidget(QLabel("شرح اظهارنامه:"))
+        description_label = QLabel("شرح اظهارنامه:")
+        description_label.setObjectName("FieldLabel")
+        description_layout.addWidget(description_label)
         description_layout.addWidget(self.description)
 
         content_row = QHBoxLayout()
@@ -1408,7 +1492,9 @@ class DeclarationContentPage(QWizardPage):
         content_row.addWidget(description_field, 3)
         group_layout.addLayout(content_row)
 
-        group_layout.addWidget(QLabel("فایل‌های پیوست:"))
+        attachments_label = QLabel("فایل‌های پیوست:")
+        attachments_label.setObjectName("FieldLabel")
+        group_layout.addWidget(attachments_label)
         group_layout.addWidget(self.attachment_list)
 
         attachment_fields = QWidget()
@@ -1418,6 +1504,15 @@ class DeclarationContentPage(QWizardPage):
         attachment_form.addRow("عنوان پیوست:", self.attachment_title)
         attachment_form.addRow("شماره پیوست‌ها:", self.attachment_number)
         attachment_form.addRow("تاریخ پیوست‌ها:", self.attachment_date)
+        for editor in (
+            self.attachment_kind,
+            self.attachment_title,
+            self.attachment_number,
+            self.attachment_date,
+        ):
+            label = attachment_form.labelForField(editor)
+            if label is not None:
+                label.setObjectName("FieldLabel")
 
         attachment_fields_row = QHBoxLayout()
         attachment_fields_row.setDirection(QBoxLayout.Direction.RightToLeft)
@@ -1815,6 +1910,7 @@ class LoginPage(QWizardPage):
         self.attach_existing_callback = None
         self.api_session_active_callback = None
         self.close_browser_callback = None
+        self.exit_callback = None
         self.stop_callback = None
         self._operation_rows: dict[tuple[str, int], int] = {}
         self.setTitle("<b>مرحله ۵ از ۵ — ورود امن به سامانه ثنا</b>")
@@ -1849,6 +1945,7 @@ class LoginPage(QWizardPage):
             field_layout.setContentsMargins(0, 0, 0, 0)
             field_layout.setSpacing(3)
             label = QLabel(label_text)
+            label.setObjectName("FieldLabel")
             label.setBuddy(editor)
             field_layout.addWidget(label)
             field_layout.addWidget(editor)
@@ -1880,6 +1977,7 @@ class LoginPage(QWizardPage):
         self.attach_existing_button = QPushButton(
             "فقط افزودن پیوست به اظهارنامه‌های دارای کد رهگیری"
         )
+        self.attach_existing_button.setObjectName("SuccessButton")
         self.attach_existing_button.setToolTip(
             "کد رهگیری‌های ذخیره‌شده را جستجو می‌کند و فایل‌های انتخاب‌شده را "
             "به همان اظهارنامه‌ها می‌افزاید؛ اظهارنامه دوباره ثبت نمی‌شود."
@@ -1889,6 +1987,7 @@ class LoginPage(QWizardPage):
         )
         self.attach_existing_button.clicked.connect(self._attach_existing)
         self.close_browser_button = QPushButton("بستن نشست ثنا")
+        self.close_browser_button.setObjectName("SessionButton")
         self.close_browser_button.setEnabled(False)
         self.close_browser_button.setVisible(False)
         self.close_browser_button.setToolTip(
@@ -1896,6 +1995,13 @@ class LoginPage(QWizardPage):
         )
         self.close_browser_button.setAccessibleName("بستن مرورگر ثنا")
         self.close_browser_button.clicked.connect(self._close_api_browser)
+        self.exit_button = QPushButton("خروج از برنامه")
+        self.exit_button.setObjectName("ExitButton")
+        self.exit_button.setToolTip(
+            "نشست مرورگر ثنا و برنامه را بدون نمایش پیام تأیید می‌بندد."
+        )
+        self.exit_button.setAccessibleName("بستن مرورگر ثنا و خروج از برنامه")
+        self.exit_button.clicked.connect(self._exit_application)
         self.stop_button = QPushButton("توقف پس از ردیف جاری")
         self.stop_button.setEnabled(False)
         self.stop_button.setVisible(False)
@@ -1948,6 +2054,7 @@ class LoginPage(QWizardPage):
 
         session_row = QHBoxLayout()
         session_row.addWidget(self.close_browser_button)
+        session_row.addWidget(self.exit_button)
         session_row.addWidget(self.stop_button)
         session_row.addStretch()
 
@@ -2201,6 +2308,10 @@ class LoginPage(QWizardPage):
         if self.close_browser_callback is not None:
             self.close_browser_callback()
 
+    def _exit_application(self) -> None:
+        if self.exit_callback is not None:
+            self.exit_callback()
+
     def _credentials(self) -> LoginCredentials:
         return LoginCredentials(
             national_code=self.national_code.text().strip(),
@@ -2295,12 +2406,14 @@ class RecipientWizard(QWizard):
         self._api_browser_ready = False
         self._api_request_queue: Queue | None = None
         self._api_drafts: list[DeclarationDraft] | None = None
+        self._exit_requested = False
         self.login_page.registration_callback = self._register_declarations
         self.login_page.stop_callback = self._request_registration_stop
         self.login_page.api_test_callback = self._start_api_test
         self.login_page.attach_existing_callback = self._start_attach_existing
         self.login_page.api_session_active_callback = self._api_session_active
         self.login_page.close_browser_callback = self._close_api_browser
+        self.login_page.exit_callback = self._request_application_exit
         self.files_page_id = self.addPage(self.files_page)
         self.review_page_id = self.addPage(self.review_page)
         self.preprocessing_page_id = self.addPage(self.preprocessing_page)
@@ -2472,6 +2585,10 @@ class RecipientWizard(QWizard):
         self._api_request_queue = None
         self._api_browser_close_event = None
         self._finish_background_ui()
+        if self._exit_requested:
+            self._api_drafts = None
+            self.close()
+            return
         if error is not None:
             if failed is not None:
                 failed(*error)
@@ -2551,6 +2668,19 @@ class RecipientWizard(QWizard):
             event.ignore()
             return
         super().closeEvent(event)
+
+    def _request_application_exit(self) -> None:
+        self._exit_requested = True
+        if self._api_browser_close_event is not None:
+            self._api_browser_close_event.set()
+        if self._registration_stop_event is not None:
+            self._registration_stop_event.set()
+        self.setEnabled(False)
+        if (
+            self._background_thread is None
+            and self._file_extraction_thread is None
+        ):
+            self.close()
 
     @Slot(object)
     def _show_otp_prompt(self, response: Queue) -> None:
@@ -3294,6 +3424,9 @@ class RecipientWizard(QWizard):
             self._file_extraction_dialog.close()
             self._file_extraction_dialog.deleteLater()
             self._file_extraction_dialog = None
+        if self._exit_requested:
+            self.close()
+            return
         if error is not None:
             if failed is not None:
                 failed(*error)

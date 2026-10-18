@@ -479,12 +479,21 @@ class RecipientWizardTests(unittest.TestCase):
             "اظهارنامه قبلاً ثبت شده است؟",
         )
         self.assertTrue(page.attach_existing_button.text().startswith("فقط افزودن"))
+        self.assertEqual(
+            page.attach_existing_button.objectName(),
+            "SuccessButton",
+        )
         self.assertEqual(page.advanced_group.title(), "تنظیمات پیشرفته")
         self.assertNotIn("API", page.api_template_button.text())
         self.assertTrue(page.api_template_button.toolTip())
         self.assertEqual(page.close_browser_button.text(), "بستن نشست ثنا")
+        self.assertEqual(page.close_browser_button.objectName(), "SessionButton")
         self.assertTrue(page.close_browser_button.toolTip())
         self.assertTrue(page.close_browser_button.isHidden())
+        self.assertEqual(page.exit_button.text(), "خروج از برنامه")
+        self.assertEqual(page.exit_button.objectName(), "ExitButton")
+        self.assertTrue(page.exit_button.toolTip())
+        self.assertFalse(page.exit_button.isHidden())
         self.assertTrue(page.stop_button.toolTip())
         self.assertTrue(page.stop_button.isHidden())
         self.assertIn("غیرقابل‌بازگشت", page.final_registration_warning.text())
@@ -1451,6 +1460,40 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertTrue(close_event.is_set())
         self.assertIs(wizard._api_browser_close_event, close_event)
         self.assertFalse(wizard.login_page.close_browser_button.isEnabled())
+
+    def test_exit_button_closes_browser_and_application_without_message(self) -> None:
+        wizard = RecipientWizard()
+        close_event = threading.Event()
+        wizard._api_browser_close_event = close_event
+
+        with (
+            patch.object(wizard, "close") as close,
+            patch.object(QMessageBox, "information") as information,
+            patch.object(QMessageBox, "question") as question,
+        ):
+            wizard.login_page.exit_button.click()
+
+        self.assertTrue(close_event.is_set())
+        self.assertTrue(wizard._exit_requested)
+        close.assert_called_once_with()
+        information.assert_not_called()
+        question.assert_not_called()
+
+    def test_exit_button_waits_for_active_operation_to_finish(self) -> None:
+        wizard = RecipientWizard()
+        close_event = threading.Event()
+        stop_event = threading.Event()
+        wizard._api_browser_close_event = close_event
+        wizard._registration_stop_event = stop_event
+        wizard._background_thread = object()
+
+        with patch.object(wizard, "close") as close:
+            wizard.login_page.exit_button.click()
+
+        self.assertTrue(close_event.is_set())
+        self.assertTrue(stop_event.is_set())
+        self.assertFalse(wizard.isEnabled())
+        close.assert_not_called()
 
     def test_open_api_session_allows_navigation_for_new_file_extraction(self) -> None:
         wizard = RecipientWizard()
