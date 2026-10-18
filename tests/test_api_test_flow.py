@@ -174,11 +174,20 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                     "TotalRecords": 2,
                     "ObjectList": [{
                         "theJSSPetitionDocument": [
-                            {"TheJSSPetitionDocumentFileList": [{"Id": "A"}]},
                             {
-                                "TheJSSPetitionDocumentFileList": [
-                                    {"Id": "B"}, {"Id": "C"},
-                                ],
+                                "OtherDataDefinition": json.dumps({
+                                    "TheInputFileList": [{}],
+                                }),
+                                "OtherData": json.dumps([
+                                    {"Type": "FileUpload"},
+                                    {"Type": "Count", "Value": "1"},
+                                ]),
+                            },
+                            {
+                                "OtherDataDefinition": json.dumps({
+                                    "TheInputFileList": [{}, {}, {}],
+                                }),
+                                "OtherData": "[]",
                             },
                         ],
                     }],
@@ -197,14 +206,14 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                 statuses.append,
             )
 
-        self.assertEqual(count, 3)
-        save_count.assert_called_once_with(draft, "T-0001", 3)
+        self.assertEqual(count, 4)
+        save_count.assert_called_once_with(draft, "T-0001", 4)
         self.assertTrue(any(
-            "تعداد ضمیمه‌های ثبت‌شده در ثنا: 3" in item
+            "تعداد ضمیمه‌های ثبت‌شده در ثنا: 4" in item
             for item in progress
         ))
         self.assertEqual(statuses[0]["stage"], "attachment_count")
-        self.assertEqual(statuses[0]["attachment_count"], 3)
+        self.assertEqual(statuses[0]["attachment_count"], 4)
         self.assertTrue(statuses[0]["attachment_count_checked_at"])
         self.assertIn(
             api_test_flow.GET_PETITION_DOCUMENTS_URL,
@@ -223,7 +232,8 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                 "text": json.dumps({
                     "ObjectList": [{
                         "theJSSPetitionDocument": [{
-                            "TheJSSPetitionDocumentFileList": "2",
+                            "OtherDataDefinition": "not-json",
+                            "OtherData": "[]",
                         }],
                     }],
                 }),

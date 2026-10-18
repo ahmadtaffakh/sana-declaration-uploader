@@ -794,7 +794,7 @@ def _get_petition_by_tracking_code(
 
 
 def _get_uploaded_attachment_count(page: object, petition_no: str) -> int:
-    """Return the number of uploaded files reported by the attachment table."""
+    """Return the attachment count displayed by the portal's attachment table."""
 
     if not petition_no.strip():
         raise LiveBrowserError("attachment_count_petition_number_missing")
@@ -832,17 +832,41 @@ def _get_uploaded_attachment_count(page: object, petition_no: str) -> int:
     if not isinstance(documents, list):
         raise LiveBrowserError("attachment_count_response_invalid")
 
-    count = 0
-    for document in documents:
-        if not isinstance(document, dict):
-            raise LiveBrowserError("attachment_count_response_invalid")
-        files = document.get("TheJSSPetitionDocumentFileList")
-        if not isinstance(files, list) or not all(
-            isinstance(item, dict) for item in files
-        ):
-            raise LiveBrowserError("attachment_count_response_invalid")
-        count += len(files)
-    return count
+    return sum(_portal_document_attachment_count(document) for document in documents)
+
+
+def _portal_document_attachment_count(document: object) -> int:
+    """Reproduce the CountFileList calculation used by the SANA UI."""
+
+    if not isinstance(document, dict):
+        raise LiveBrowserError("attachment_count_response_invalid")
+    try:
+        definition = document.get("OtherDataDefinition")
+        if isinstance(definition, str):
+            definition = json.loads(definition)
+        input_files = definition["TheInputFileList"]
+        if not isinstance(input_files, list):
+            raise TypeError
+        if len(input_files) > 1:
+            return len(input_files)
+
+        other_data = document.get("OtherData")
+        if isinstance(other_data, str):
+            other_data = json.loads(other_data)
+        if not isinstance(other_data, list):
+            raise TypeError
+        has_file_upload = any(
+            isinstance(item, dict) and item.get("Type") == "FileUpload"
+            for item in other_data
+        )
+        if not has_file_upload:
+            return 0
+        value = int(str(other_data[-1]["Value"]).strip())
+    except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise LiveBrowserError("attachment_count_response_invalid") from exc
+    if value < 0:
+        raise LiveBrowserError("attachment_count_response_invalid")
+    return value
 
 
 def _store_final_attachment_count(
