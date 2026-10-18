@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event
@@ -62,6 +63,8 @@ def _report_status(
     message: str = "",
     completed: int = 0,
     total: int = 0,
+    attachment_count: int | None = None,
+    attachment_count_checked_at: str = "",
 ) -> None:
     if callback is None:
         return
@@ -74,6 +77,8 @@ def _report_status(
         "message": message,
         "completed": completed,
         "total": total,
+        "attachment_count": attachment_count,
+        "attachment_count_checked_at": attachment_count_checked_at,
     })
 
 
@@ -453,6 +458,24 @@ def _reconcile_legacy_registrations(
                 complete = False
                 continue
             migrate_legacy_registration(draft, code)
+            attachment_count = petition.get("JSSPetitionDocumentCount")
+            if (
+                isinstance(attachment_count, int)
+                and not isinstance(attachment_count, bool)
+                and attachment_count >= 0
+            ):
+                save_attachment_count(draft, code, attachment_count)
+                _report_status(
+                    status,
+                    draft,
+                    "attachment_count",
+                    "success",
+                    tracking_code=code,
+                    attachment_count=attachment_count,
+                    attachment_count_checked_at=(
+                        datetime.now().astimezone().isoformat(timespec="seconds")
+                    ),
+                )
             unresolved.remove(draft)
             matched.append((draft, code))
             _report_status(
@@ -594,7 +617,8 @@ def _submit_petition_payloads(
             )
         ensure_authenticated()
         _store_final_attachment_count(
-            page, draft, result.tracking_code, index, len(drafts), progress
+            page, draft, result.tracking_code, index, len(drafts), progress,
+            status,
         )
     return tuple(results)
 
@@ -636,7 +660,8 @@ def _attach_existing_petitions(
             _report(progress, f"[ردیف {index} از {len(requests)}] پیوستی انتخاب نشده؛ رد شد.")
             ensure_authenticated()
             _store_final_attachment_count(
-                page, draft, tracking_code, index, len(requests), progress
+                page, draft, tracking_code, index, len(requests), progress,
+                status,
             )
             continue
         _report_status(
@@ -726,7 +751,8 @@ def _attach_existing_petitions(
         )
         ensure_authenticated()
         _store_final_attachment_count(
-            page, draft, tracking_code, index, len(requests), progress
+            page, draft, tracking_code, index, len(requests), progress,
+            status,
         )
 
 
@@ -771,6 +797,7 @@ def _store_final_attachment_count(
     row_index: int,
     row_count: int,
     progress: ProgressCallback | None,
+    status: StatusCallback | None = None,
 ) -> int:
     """Read and persist the portal's final attachment count for one row."""
 
@@ -788,6 +815,17 @@ def _store_final_attachment_count(
         save_attachment_count(draft, tracking_code, count)
     except ResultPersistenceError as exc:
         raise LiveBrowserError("attachment_count_persistence_failed") from exc
+    _report_status(
+        status,
+        draft,
+        "attachment_count",
+        "success",
+        tracking_code=tracking_code,
+        attachment_count=count,
+        attachment_count_checked_at=(
+            datetime.now().astimezone().isoformat(timespec="seconds")
+        ),
+    )
     _report(
         progress,
         f"[ردیف {row_index} از {row_count}] تعداد ضمیمه‌های ثبت‌شده در ثنا: "

@@ -94,7 +94,7 @@ def read_saved_result(
     *,
     source_recipient_ordinal: int = 1,
     source_recipient_count: int | None = None,
-) -> dict[str, str] | None:
+) -> dict[str, object] | None:
     """Return the latest saved registration for one source recipient."""
 
     declarations = _load_manifest(source_dir.resolve())["declarations"]
@@ -113,9 +113,20 @@ def read_saved_result(
     if not isinstance(latest, dict):
         raise ResultPersistenceError("existing_results_invalid")
     tracking_code = str(latest.get("tracking_code", ""))
+    attachment_count = latest.get("attachment_count")
+    if (
+        isinstance(attachment_count, bool)
+        or not isinstance(attachment_count, int)
+        or attachment_count < 0
+    ):
+        attachment_count = None
     return {
         "tracking_code": tracking_code or "رسید نامعتبر",
         "registered_at": str(latest.get("registered_at", "")),
+        "attachment_count": attachment_count,
+        "attachment_count_checked_at": str(
+            latest.get("attachment_count_checked_at", "")
+        ),
     }
 
 
@@ -248,7 +259,7 @@ def migrate_legacy_registration(
 
 def existing_results(
     drafts: tuple[DeclarationDraft, ...],
-) -> tuple[tuple[str, dict[str, str]], ...]:
+) -> tuple[tuple[str, dict[str, object]], ...]:
     """Return prior registrations matching the Word files in this batch."""
 
     source_counts: dict[Path, int] = {}

@@ -153,6 +153,12 @@ class ResultPersistenceTests(unittest.TestCase):
             ]["registrations"][-1]
             self.assertEqual(registration["attachment_count"], 3)
             self.assertTrue(registration["attachment_count_checked_at"])
+            saved = read_saved_result(source, source_path)
+            self.assertEqual(saved["attachment_count"], 3)
+            self.assertEqual(
+                saved["attachment_count_checked_at"],
+                registration["attachment_count_checked_at"],
+            )
 
     def test_attachment_count_does_not_create_unverified_registration(self):
         with TemporaryDirectory() as directory:

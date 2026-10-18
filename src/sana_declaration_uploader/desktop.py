@@ -110,6 +110,15 @@ _DECLARATION_DEFAULTS = {
 }
 
 
+def _saved_attachment_count(
+    saved: dict[str, object] | None,
+) -> tuple[int, str] | None:
+    count = (saved or {}).get("attachment_count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return None
+    return count, str((saved or {}).get("attachment_count_checked_at", ""))
+
+
 class _BackgroundWorker(QObject):
     progress = Signal(str)
     succeeded = Signal(object)
@@ -152,7 +161,7 @@ QLabel#MetricLabel {
     border-radius: 5px;
     padding: 6px 10px;
 }
-QLabel#Guidance, QLabel#ActionHint {
+QLabel#Guidance {
     background-color: #EAF2F8;
     border: 1px solid #C8D9E8;
     border-radius: 6px;
@@ -300,13 +309,6 @@ QPushButton#ExitButton {
     font-weight: 700;
 }
 QPushButton#ExitButton:hover { background-color: #8F1D14; }
-QPushButton#DangerButton {
-    background-color: #FFF4DD;
-    border-color: #B42318;
-    color: #8F1D14;
-    font-weight: 600;
-}
-QPushButton#DangerButton:hover { background-color: #FFE8BF; }
 """
 
 
@@ -1883,6 +1885,7 @@ class LoginPage(QWizardPage):
         "کد رهگیری",
         "وضعیت اظهارنامه",
         "وضعیت پیوست",
+        "تعداد ضمائم در ثنا",
         "توضیح",
     )
     STATUS_DISPLAY = {
@@ -2016,54 +2019,17 @@ class LoginPage(QWizardPage):
         )
         self.stop_button.clicked.connect(self._request_stop)
         self.api_template_button = QPushButton("انتخاب یا تغییر قالب فنی ثبت")
-        self.api_template_button.setToolTip(
-            "فایل قالب فنی ثبت را انتخاب می‌کند؛ این انتخاب برای اجراهای بعدی حفظ می‌شود."
-        )
         self.api_template_button.setAccessibleName("انتخاب فایل قالب فنی ثبت")
         self.api_template_button.clicked.connect(self._choose_api_template)
-        self.api_template_status = QLabel()
         self._refresh_api_template_status()
 
-        self.primary_action_group = QGroupBox("اقدام پیشنهادی")
-        primary_action_layout = QVBoxLayout(self.primary_action_group)
-        primary_action_layout.addWidget(self.api_test_button)
-        primary_action_hint = QLabel("اظهارنامه‌ها موقت ثبت می‌شوند؛ امضای نهایی انجام نمی‌شود.")
-        primary_action_hint.setObjectName("ActionHint")
-        primary_action_hint.setWordWrap(True)
-        primary_action_layout.addWidget(primary_action_hint)
-
-        self.existing_attachment_group = QGroupBox("اظهارنامه قبلاً ثبت شده است؟")
-        existing_attachment_layout = QVBoxLayout(self.existing_attachment_group)
-        existing_attachment_layout.addWidget(self.attach_existing_button)
-        existing_attachment_hint = QLabel(
-            "فقط پیوست‌ها به کدهای رهگیری ذخیره‌شده افزوده می‌شوند."
-        )
-        existing_attachment_hint.setObjectName("ActionHint")
-        existing_attachment_hint.setWordWrap(True)
-        existing_attachment_layout.addWidget(existing_attachment_hint)
-
-        action_groups = QHBoxLayout()
-        action_groups.addWidget(self.primary_action_group, 3)
-        action_groups.addWidget(self.existing_attachment_group, 2)
-
-        self.advanced_group = QGroupBox("تنظیمات پیشرفته")
-        advanced_layout = QHBoxLayout(self.advanced_group)
-        advanced_layout.addWidget(self.api_template_button)
-        advanced_layout.addWidget(self.api_template_status)
-        advanced_layout.addStretch()
-
-        session_row = QHBoxLayout()
-        session_row.addWidget(self.close_browser_button)
-        session_row.addWidget(self.exit_button)
-        session_row.addWidget(self.stop_button)
-        session_row.addStretch()
-
-        self.final_registration_warning = QLabel(
-            "توجه: دکمهٔ «ثبت نهایی در ثنا با روش مرورگر» در پایین صفحه، "
-            "عملیات نهایی و غیرقابل‌بازگشت را آغاز می‌کند."
-        )
-        self.final_registration_warning.setObjectName("ActionHint")
-        self.final_registration_warning.setWordWrap(True)
+        self.action_row = QHBoxLayout()
+        self.action_row.addWidget(self.api_test_button, 3)
+        self.action_row.addWidget(self.attach_existing_button, 3)
+        self.action_row.addWidget(self.api_template_button, 2)
+        self.action_row.addWidget(self.close_browser_button, 1)
+        self.action_row.addWidget(self.exit_button, 1)
+        self.action_row.addWidget(self.stop_button, 1)
 
         self.python_output = QTextEdit()
         self.python_output.setReadOnly(True)
@@ -2098,10 +2064,7 @@ class LoginPage(QWizardPage):
         layout = QVBoxLayout(self)
         layout.addWidget(guidance)
         layout.addWidget(self.credentials_group)
-        layout.addLayout(action_groups)
-        layout.addWidget(self.advanced_group)
-        layout.addLayout(session_row)
-        layout.addWidget(self.final_registration_warning)
+        layout.addLayout(self.action_row)
         layout.addWidget(self.output_tabs, 1)
 
         for field in (
@@ -2121,7 +2084,10 @@ class LoginPage(QWizardPage):
                 status = "قالب فنی ثبت نامعتبر است؛ آن را دوباره انتخاب کنید."
             else:
                 status = "قالب فنی ثبت آماده است."
-        self.api_template_status.setText(status)
+        self.api_template_button.setToolTip(
+            "فایل قالب فنی ثبت را انتخاب می‌کند؛ این انتخاب برای اجراهای بعدی "
+            f"حفظ می‌شود.\n{status}"
+        )
 
     def _request_stop(self) -> None:
         if self.stop_callback is not None:
@@ -2138,11 +2104,13 @@ class LoginPage(QWizardPage):
         *,
         reset: bool,
         tracking_codes: dict[tuple[str, int], str] | None = None,
+        attachment_counts: dict[tuple[str, int], tuple[int, str]] | None = None,
     ) -> None:
         if reset:
             self.status_table.setRowCount(0)
             self._operation_rows.clear()
         known_codes = tracking_codes or {}
+        known_attachment_counts = attachment_counts or {}
         for draft in drafts:
             key = self._draft_status_key(draft)
             row = self._operation_rows.get(key)
@@ -2164,11 +2132,19 @@ class LoginPage(QWizardPage):
                 "success" if code else "pending",
                 "pending" if draft.attachments else "skipped",
                 "",
+                "",
             )
             for column, value in enumerate(values):
                 item = self.status_table.item(row, column) or QTableWidgetItem()
                 self.status_table.setItem(row, column, item)
-                if column in (
+                if column == self.STATUS_HEADERS.index("تعداد ضمائم در ثنا"):
+                    count_data = known_attachment_counts.get(key)
+                    self._set_attachment_count_item(
+                        item,
+                        count_data[0] if count_data else None,
+                        count_data[1] if count_data else "",
+                    )
+                elif column in (
                     self.STATUS_HEADERS.index("وضعیت اظهارنامه"),
                     self.STATUS_HEADERS.index("وضعیت پیوست"),
                 ):
@@ -2187,6 +2163,29 @@ class LoginPage(QWizardPage):
         if row is None:
             return
         stage = str(event.get("stage", ""))
+        if stage == "attachment_count":
+            count = event.get("attachment_count")
+            if (
+                isinstance(count, int)
+                and not isinstance(count, bool)
+                and count >= 0
+            ):
+                item = self.status_table.item(
+                    row, self.STATUS_HEADERS.index("تعداد ضمائم در ثنا")
+                )
+                if item is None:
+                    item = QTableWidgetItem()
+                    self.status_table.setItem(
+                        row,
+                        self.STATUS_HEADERS.index("تعداد ضمائم در ثنا"),
+                        item,
+                    )
+                self._set_attachment_count_item(
+                    item,
+                    count,
+                    str(event.get("attachment_count_checked_at", "")),
+                )
+            return
         header = "وضعیت اظهارنامه" if stage == "petition" else "وضعیت پیوست"
         item = self.status_table.item(row, self.STATUS_HEADERS.index(header))
         if item is None:
@@ -2216,6 +2215,24 @@ class LoginPage(QWizardPage):
         item.setText(f"{text}{suffix}")
         item.setForeground(QColor(color))
         item.setData(Qt.ItemDataRole.UserRole, state)
+
+    @staticmethod
+    def _set_attachment_count_item(
+        item: QTableWidgetItem,
+        count: int | None,
+        checked_at: str,
+    ) -> None:
+        if count is None:
+            item.setText("—")
+            item.setForeground(QColor("#667085"))
+            item.setToolTip("هنوز تعداد واقعی ضمائم از ثنا دریافت نشده است.")
+            return
+        item.setText(str(count))
+        item.setForeground(QColor("#247A3D"))
+        item.setToolTip(
+            f"آخرین بررسی ثنا: {checked_at}"
+            if checked_at else "تعداد واقعی تأییدشده توسط ثنا"
+        )
 
     def _choose_api_template(self) -> None:
         source, _ = QFileDialog.getOpenFileName(
@@ -2452,16 +2469,11 @@ class RecipientWizard(QWizard):
         self.setButtonLayout([
             QWizard.WizardButton.BackButton,
             QWizard.WizardButton.NextButton,
-            QWizard.WizardButton.FinishButton,
             QWizard.WizardButton.CancelButton,
             QWizard.WizardButton.Stretch,
         ])
         self.setButtonText(QWizard.WizardButton.BackButton, "قبلی")
         self.setButtonText(QWizard.WizardButton.NextButton, "بعدی")
-        self.setButtonText(
-            QWizard.WizardButton.FinishButton,
-            "ثبت نهایی در ثنا با روش مرورگر",
-        )
         self.setButtonText(QWizard.WizardButton.CancelButton, "انصراف")
         self.button(QWizard.WizardButton.BackButton).setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward)
@@ -2471,11 +2483,7 @@ class RecipientWizard(QWizard):
         )
         self.button(QWizard.WizardButton.NextButton).setObjectName("PrimaryButton")
         finish_button = self.button(QWizard.WizardButton.FinishButton)
-        finish_button.setObjectName("DangerButton")
-        finish_button.setToolTip(
-            "عملیات نهایی و غیرقابل‌بازگشت را با روش مرورگر آغاز می‌کند."
-        )
-        finish_button.setAccessibleName("ثبت نهایی و غیرقابل‌بازگشت در ثنا")
+        finish_button.setVisible(False)
 
     def _start_background(
         self,
@@ -2780,7 +2788,9 @@ class RecipientWizard(QWizard):
                     ):
                         legacy_drafts.append(draft)
                     continue
-                tracking_code = (saved or {}).get("tracking_code", "").strip()
+                tracking_code = str(
+                    (saved or {}).get("tracking_code", "")
+                ).strip()
                 if tracking_code and tracking_code != "رسید نامعتبر":
                     continue
             eligible_drafts.append(draft)
@@ -2968,6 +2978,7 @@ class RecipientWizard(QWizard):
             return
         requests = []
         legacy_drafts = []
+        saved_attachment_counts: dict[tuple[str, int], tuple[int, str]] = {}
         skipped_without_tracking = 0
         for draft in drafts:
             if not draft.attachments or draft.source_path is None:
@@ -2989,9 +3000,16 @@ class RecipientWizard(QWizard):
                 else:
                     skipped_without_tracking += 1
                 continue
-            tracking_code = (saved or {}).get("tracking_code", "").strip()
+            tracking_code = str(
+                (saved or {}).get("tracking_code", "")
+            ).strip()
             if tracking_code and tracking_code != "رسید نامعتبر":
                 requests.append((draft, tracking_code))
+                saved_count = _saved_attachment_count(saved)
+                if saved_count is not None:
+                    saved_attachment_counts[
+                        self.login_page._draft_status_key(draft)
+                    ] = saved_count
             else:
                 skipped_without_tracking += 1
         if skipped_without_tracking:
@@ -3028,6 +3046,7 @@ class RecipientWizard(QWizard):
             tuple(draft for draft, _tracking_code in request_tuple) + legacy_tuple,
             reset=self._api_request_queue is None,
             tracking_codes=tracking_codes,
+            attachment_counts=saved_attachment_counts,
         )
         if self._api_request_queue is not None:
             if (
@@ -3321,6 +3340,7 @@ class RecipientWizard(QWizard):
                         source = draft.source_path.resolve()
                         source_counts[source] = source_counts.get(source, 0) + 1
                 tracking_codes = {}
+                attachment_counts = {}
                 for draft in drafts:
                     if draft.source_path is None:
                         continue
@@ -3335,15 +3355,20 @@ class RecipientWizard(QWizard):
                         )
                     except ResultPersistenceError:
                         continue
-                    tracking_code = (saved or {}).get("tracking_code", "").strip()
+                    tracking_code = str(
+                        (saved or {}).get("tracking_code", "")
+                    ).strip()
                     if tracking_code and tracking_code != "رسید نامعتبر":
-                        tracking_codes[
-                            self.login_page._draft_status_key(draft)
-                        ] = tracking_code
+                        key = self.login_page._draft_status_key(draft)
+                        tracking_codes[key] = tracking_code
+                        saved_count = _saved_attachment_count(saved)
+                        if saved_count is not None:
+                            attachment_counts[key] = saved_count
                 self.login_page.set_operation_drafts(
                     drafts,
                     reset=True,
                     tracking_codes=tracking_codes,
+                    attachment_counts=attachment_counts,
                 )
             return
         if page_id == self.preprocessing_page_id:

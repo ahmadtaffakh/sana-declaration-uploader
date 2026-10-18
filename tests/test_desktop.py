@@ -85,13 +85,8 @@ class RecipientWizardTests(unittest.TestCase):
             "انصراف", "قبلی", "بعدی",
         ])
         self.assertTrue(all(button.geometry().x() > wizard.width() / 2 for button in buttons))
-        self.assertEqual(
-            wizard.buttonText(QWizard.WizardButton.FinishButton),
-            "ثبت نهایی در ثنا با روش مرورگر",
-        )
         finish_button = wizard.button(QWizard.WizardButton.FinishButton)
-        self.assertEqual(finish_button.objectName(), "DangerButton")
-        self.assertIn("غیرقابل‌بازگشت", finish_button.toolTip())
+        self.assertTrue(finish_button.isHidden())
         self.assertFalse(wizard.button(QWizard.WizardButton.BackButton).icon().isNull())
         self.assertFalse(wizard.button(QWizard.WizardButton.NextButton).icon().isNull())
         self.assertGreater(buttons[1].geometry().x(), buttons[2].geometry().x())
@@ -183,6 +178,14 @@ class RecipientWizardTests(unittest.TestCase):
             "total": 2,
             "message": "نیازمند بررسی دستی",
         })
+        page.update_operation_status({
+            "source_path": str(source.resolve()),
+            "source_recipient_ordinal": 1,
+            "stage": "attachment_count",
+            "state": "success",
+            "attachment_count": 0,
+            "attachment_count_checked_at": "1405/07/27 10:30",
+        })
 
         self.assertEqual(page.output_tabs.tabText(0), "وضعیت اظهارنامه‌ها")
         self.assertEqual(page.output_tabs.tabText(1), "گزارش فنی")
@@ -191,11 +194,22 @@ class RecipientWizardTests(unittest.TestCase):
         tracking_column = page.STATUS_HEADERS.index("کد رهگیری")
         petition_column = page.STATUS_HEADERS.index("وضعیت اظهارنامه")
         attachment_column = page.STATUS_HEADERS.index("وضعیت پیوست")
+        count_column = page.STATUS_HEADERS.index("تعداد ضمائم در ثنا")
         self.assertEqual(page.status_table.item(0, tracking_column).text(), "T-FIRST")
         self.assertEqual(page.status_table.item(0, petition_column).text(), "✓ موفق")
         self.assertEqual(
             page.status_table.item(1, attachment_column).text(),
             "؟ نیازمند بررسی 1 از 2",
+        )
+        self.assertEqual(page.status_table.item(0, count_column).text(), "0")
+        self.assertEqual(page.status_table.item(1, count_column).text(), "—")
+        self.assertIn(
+            "1405/07/27 10:30",
+            page.status_table.item(0, count_column).toolTip(),
+        )
+        self.assertEqual(
+            page.status_table.item(0, count_column).foreground().color().name(),
+            "#247a3d",
         )
 
         page.append_output("خطای نمونه", level="error")
@@ -223,6 +237,8 @@ class RecipientWizardTests(unittest.TestCase):
                 return_value={
                     "tracking_code": "TRACK-SAVED",
                     "registered_at": "1405/07/26",
+                    "attachment_count": 3,
+                    "attachment_count_checked_at": "1405/07/27 11:00",
                 },
             ),
         ):
@@ -247,6 +263,12 @@ class RecipientWizardTests(unittest.TestCase):
                 0, page.STATUS_HEADERS.index("کد رهگیری")
             ).text(),
             "TRACK-SAVED",
+        )
+        self.assertEqual(
+            page.status_table.item(
+                0, page.STATUS_HEADERS.index("تعداد ضمائم در ثنا")
+            ).text(),
+            "3",
         )
         self.assertEqual(
             page.status_table.item(
@@ -463,10 +485,13 @@ class RecipientWizardTests(unittest.TestCase):
             )
 
     def test_last_page_keeps_essential_buttons_with_beginner_tooltips(self) -> None:
-        page = RecipientWizard().login_page
+        wizard = RecipientWizard()
+        wizard.setStartId(wizard.login_page_id)
+        wizard.show()
+        self.app.processEvents()
+        page = wizard.login_page
 
         self.assertFalse(hasattr(page, "test_login_button"))
-        self.assertEqual(page.primary_action_group.title(), "اقدام پیشنهادی")
         self.assertEqual(
             page.api_test_button.text(),
             "ثبت موقت اظهارنامه‌ها و افزودن پیوست‌ها",
@@ -474,16 +499,11 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertEqual(page.api_test_button.objectName(), "PrimaryButton")
         self.assertTrue(page.api_test_button.toolTip())
         self.assertFalse(page.api_test_button.isHidden())
-        self.assertEqual(
-            page.existing_attachment_group.title(),
-            "اظهارنامه قبلاً ثبت شده است؟",
-        )
         self.assertTrue(page.attach_existing_button.text().startswith("فقط افزودن"))
         self.assertEqual(
             page.attach_existing_button.objectName(),
             "SuccessButton",
         )
-        self.assertEqual(page.advanced_group.title(), "تنظیمات پیشرفته")
         self.assertNotIn("API", page.api_template_button.text())
         self.assertTrue(page.api_template_button.toolTip())
         self.assertEqual(page.close_browser_button.text(), "بستن نشست ثنا")
@@ -496,7 +516,34 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertFalse(page.exit_button.isHidden())
         self.assertTrue(page.stop_button.toolTip())
         self.assertTrue(page.stop_button.isHidden())
-        self.assertIn("غیرقابل‌بازگشت", page.final_registration_warning.text())
+        for button in (
+            page.api_test_button,
+            page.attach_existing_button,
+            page.api_template_button,
+            page.close_browser_button,
+            page.exit_button,
+            page.stop_button,
+        ):
+            self.assertGreaterEqual(page.action_row.indexOf(button), 0)
+        visible_buttons = (
+            page.api_test_button,
+            page.attach_existing_button,
+            page.api_template_button,
+            page.exit_button,
+        )
+        self.assertEqual(len({button.geometry().y() for button in visible_buttons}), 1)
+        self.assertFalse(hasattr(page, "primary_action_group"))
+        self.assertFalse(hasattr(page, "existing_attachment_group"))
+        self.assertFalse(hasattr(page, "advanced_group"))
+        self.assertFalse(hasattr(page, "final_registration_warning"))
+        self.assertEqual(
+            [
+                label for label in page.findChildren(QLabel)
+                if label.objectName() == "ActionHint"
+            ],
+            [],
+        )
+        wizard.close()
 
     def test_last_page_reports_invalid_template_instead_of_ready(self) -> None:
         page = RecipientWizard().login_page
@@ -507,8 +554,8 @@ class RecipientWizardTests(unittest.TestCase):
         ):
             page._refresh_api_template_status()
 
-        self.assertIn("نامعتبر", page.api_template_status.text())
-        self.assertNotIn("آماده است", page.api_template_status.text())
+        self.assertIn("نامعتبر", page.api_template_button.toolTip())
+        self.assertNotIn("آماده است", page.api_template_button.toolTip())
 
     def test_last_page_places_all_credential_fields_on_one_row(self) -> None:
         wizard = RecipientWizard()
@@ -1583,6 +1630,9 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertFalse(
             wizard.button(QWizard.WizardButton.FinishButton).isEnabled()
         )
+        self.assertTrue(
+            wizard.button(QWizard.WizardButton.FinishButton).isHidden()
+        )
         self.assertTrue(wizard.login_page.stop_button.isHidden())
 
     def test_new_file_extraction_uses_separate_worker_while_api_browser_is_open(self) -> None:
@@ -1980,25 +2030,22 @@ class RecipientWizardTests(unittest.TestCase):
                 attachment_paths=(),
             )
 
-    def test_finish_invokes_registration_instead_of_login_check(self) -> None:
+    def test_final_browser_registration_button_is_removed(self) -> None:
         wizard = RecipientWizard()
         page = wizard.login_page
-        page.national_code.setText("national")
-        page.password.setText("password")
-        page.legal_identity.setText("legal")
-        page.otp.setText("otp")
-        received = []
-        page.registration_callback = lambda credentials: received.append(credentials) or True
+        wizard.setStartId(wizard.login_page_id)
+        wizard.show()
+        self.app.processEvents()
 
-        with patch("sana_declaration_uploader.desktop._save_login_settings"):
-            self.assertTrue(page.validatePage())
-
-        self.assertEqual(len(received), 1)
-        self.assertEqual(received[0].otp, "otp")
-        self.assertFalse(hasattr(page, "test_login_button"))
-        self.assertIn("ثبت موقت اظهارنامه‌ها و افزودن پیوست‌ها", [
-            button.text() for button in page.findChildren(QPushButton)
+        self.assertTrue(
+            wizard.button(QWizard.WizardButton.FinishButton).isHidden()
+        )
+        self.assertNotIn("ثبت نهایی در ثنا با روش مرورگر", [
+            button.text() for button in wizard.findChildren(QPushButton)
+            if not button.isHidden()
         ])
+        self.assertFalse(page.api_test_button.isHidden())
+        wizard.close()
 
     def test_registration_saves_successes_and_reports_failed_rows(self) -> None:
         wizard = RecipientWizard()

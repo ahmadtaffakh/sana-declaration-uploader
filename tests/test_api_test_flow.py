@@ -6,7 +6,7 @@ from queue import Queue
 from tempfile import TemporaryDirectory
 from threading import Event
 from types import ModuleType, SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from sana_declaration_uploader import api_test_flow
 from sana_declaration_uploader.attachment_api import AttachmentApiError, AttachmentType
@@ -38,6 +38,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         petitions = {
             "T-FIRST": {
                 "No": "T-FIRST",
+                "JSSPetitionDocumentCount": 1,
                 "theJSSPetitionPerson": [{
                     "RoleType": 2, "NationalityCode": "۰۰۱",
                     "Name": "اول", "Family": "نمونه",
@@ -45,6 +46,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
             },
             "T-SECOND": {
                 "No": "T-SECOND",
+                "JSSPetitionDocumentCount": 2,
                 "theJSSPetitionPerson": [{
                     "RoleType": 2, "NationalityCode": "002",
                     "Name": "دوم", "Family": "نمونه",
@@ -64,6 +66,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
             patch.object(
                 api_test_flow, "migrate_legacy_registration"
             ) as migrate,
+            patch.object(api_test_flow, "save_attachment_count") as save_count,
         ):
             matched, safe = api_test_flow._reconcile_legacy_registrations(
                 Mock(), drafts, Mock(), None
@@ -75,6 +78,13 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         )
         self.assertEqual(safe, (drafts[2],))
         self.assertEqual(migrate.call_count, 2)
+        self.assertEqual(
+            save_count.call_args_list,
+            [
+                call(drafts[0], "T-FIRST", 1),
+                call(drafts[1], "T-SECOND", 2),
+            ],
+        )
 
     def test_blocks_unmatched_legacy_group_from_registration(self):
         drafts = (
@@ -164,10 +174,12 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
             Path("."), {}, source_path=Path("sample.docx")
         )
         progress = []
+        statuses = []
 
         with patch.object(api_test_flow, "save_attachment_count") as save_count:
             count = api_test_flow._store_final_attachment_count(
-                page, draft, "T-0001", 1, 1, progress.append
+                page, draft, "T-0001", 1, 1, progress.append,
+                statuses.append,
             )
 
         self.assertEqual(count, 2)
@@ -176,6 +188,9 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
             "تعداد ضمیمه‌های ثبت‌شده در ثنا: 2" in item
             for item in progress
         ))
+        self.assertEqual(statuses[0]["stage"], "attachment_count")
+        self.assertEqual(statuses[0]["attachment_count"], 2)
+        self.assertTrue(statuses[0]["attachment_count_checked_at"])
 
     def test_rejects_invalid_final_attachment_count(self):
         page = Mock()
