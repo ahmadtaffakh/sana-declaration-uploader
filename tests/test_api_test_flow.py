@@ -219,6 +219,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
             api_test_flow.GET_PETITION_DOCUMENTS_URL,
             str(page.evaluate.call_args_list[1]),
         )
+        self.assertIn("stateDocument: '1'", page.evaluate.call_args_list[1].args[0])
 
     def test_rejects_invalid_final_attachment_count(self):
         page = Mock()
@@ -264,6 +265,63 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         count = api_test_flow._get_uploaded_attachment_count(page, "T-0001")
 
         self.assertEqual(count, 0)
+
+    def test_rejects_count_below_uploaded_files(self):
+        draft = DeclarationDraft(
+            Path("."), {},
+            attachments=(Attachment(Path("one.pdf"), "پیوست", "سایر ضمائم"),),
+        )
+
+        with (
+            patch.object(
+                api_test_flow,
+                "_get_petition_by_tracking_code",
+                return_value={"No": "T-0001"},
+            ),
+            patch.object(api_test_flow, "_get_uploaded_attachment_count", return_value=0),
+            patch.object(api_test_flow, "save_attachment_count") as save_count,
+            self.assertRaisesRegex(
+                api_test_flow.LiveBrowserError, "attachment_count_inconsistent"
+            ),
+        ):
+            api_test_flow._store_final_attachment_count(
+                Mock(), draft, "T-0001", 1, 1, None
+            )
+
+        save_count.assert_not_called()
+
+    def test_refresh_counts_continues_after_one_read_failure(self):
+        drafts = (
+            DeclarationDraft(Path("."), {}, source_path=Path("one.docx")),
+            DeclarationDraft(Path("."), {}, source_path=Path("two.docx")),
+        )
+        ensure_authenticated = Mock()
+        statuses = []
+        progress = []
+
+        with patch.object(
+            api_test_flow,
+            "_store_final_attachment_count",
+            side_effect=[
+                api_test_flow.LiveBrowserError("attachment_count_response_invalid"),
+                2,
+            ],
+        ) as store_count:
+            refreshed = api_test_flow._refresh_attachment_counts(
+                Mock(),
+                ((drafts[0], "T-0001"), (drafts[1], "T-0002")),
+                ensure_authenticated,
+                progress.append,
+                statuses.append,
+            )
+
+        self.assertEqual(refreshed, 1)
+        self.assertEqual(ensure_authenticated.call_count, 2)
+        self.assertEqual(store_count.call_count, 2)
+        self.assertEqual(store_count.call_args_list[0].kwargs["expected_minimum"], 0)
+        self.assertEqual(statuses[0]["stage"], "attachment_count")
+        self.assertEqual(statuses[0]["state"], "failed")
+        self.assertTrue(any("موفق: 1 از 2" in item for item in progress))
 
     def test_matches_representation_document_default_to_live_title(self):
         live_type = AttachmentType(

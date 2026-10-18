@@ -504,6 +504,8 @@ class RecipientWizardTests(unittest.TestCase):
             page.attach_existing_button.objectName(),
             "SuccessButton",
         )
+        self.assertEqual(page.refresh_counts_button.objectName(), "SecondaryButton")
+        self.assertIn("هیچ ثبت یا آپلودی", page.refresh_counts_button.toolTip())
         self.assertNotIn("API", page.api_template_button.text())
         self.assertTrue(page.api_template_button.toolTip())
         self.assertEqual(page.close_browser_button.text(), "بستن نشست ثنا")
@@ -519,6 +521,7 @@ class RecipientWizardTests(unittest.TestCase):
         for button in (
             page.api_test_button,
             page.attach_existing_button,
+            page.refresh_counts_button,
             page.api_template_button,
             page.close_browser_button,
             page.exit_button,
@@ -528,6 +531,7 @@ class RecipientWizardTests(unittest.TestCase):
         visible_buttons = (
             page.api_test_button,
             page.attach_existing_button,
+            page.refresh_counts_button,
             page.api_template_button,
             page.exit_button,
         )
@@ -1336,6 +1340,60 @@ class RecipientWizardTests(unittest.TestCase):
             LoginCredentials("national", "password", "identity", "")
         )
         self.assertIn("دوباره ثبت", page.attach_existing_button.toolTip())
+
+    def test_refresh_counts_button_calls_read_only_callback(self) -> None:
+        page = RecipientWizard().login_page
+        callback = Mock()
+        page.refresh_counts_callback = callback
+        page.api_session_active_callback = lambda: True
+        page.national_code.setText("national")
+        page.password.setText("password")
+        page.legal_identity.setText("identity")
+        page.otp.clear()
+
+        with patch.object(page, "_save_credentials"):
+            page.refresh_counts_button.click()
+
+        callback.assert_called_once_with(
+            LoginCredentials("national", "password", "identity", "")
+        )
+
+    def test_refresh_counts_queues_only_rows_with_tracking_codes(self) -> None:
+        wizard = RecipientWizard()
+        candidates = (
+            RecipientCandidate(source_path=Path("registered.docx")),
+            RecipientCandidate(source_path=Path("unregistered.docx")),
+        )
+        registered = DeclarationDraft(
+            Path("."), {}, source_path=Path("registered.docx")
+        )
+        unregistered = DeclarationDraft(
+            Path("."), {}, source_path=Path("unregistered.docx")
+        )
+        wizard._api_request_queue = Queue()
+        wizard._api_browser_close_event = Event()
+
+        with (
+            patch.object(
+                wizard.preprocessing_page, "candidates", return_value=candidates
+            ),
+            patch.object(wizard.content_page, "payloads", return_value={}),
+            patch(
+                "sana_declaration_uploader.desktop._build_desktop_drafts",
+                return_value=(registered, unregistered),
+            ),
+            patch(
+                "sana_declaration_uploader.desktop.read_saved_result",
+                side_effect=[{"tracking_code": "1" * 16}, None],
+            ),
+        ):
+            wizard._start_attachment_count_refresh(
+                LoginCredentials("national", "password", "identity", "otp")
+            )
+
+        queued = wizard._api_request_queue.get_nowait()
+        self.assertEqual(queued["kind"], "refresh_counts")
+        self.assertEqual(queued["requests"], ((registered, "1" * 16),))
 
     def test_attachment_only_queues_ambiguous_legacy_for_reconciliation(self) -> None:
         wizard = RecipientWizard()

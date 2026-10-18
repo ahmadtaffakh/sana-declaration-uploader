@@ -1911,6 +1911,7 @@ class LoginPage(QWizardPage):
         self.registration_callback = None
         self.api_test_callback = None
         self.attach_existing_callback = None
+        self.refresh_counts_callback = None
         self.api_session_active_callback = None
         self.close_browser_callback = None
         self.exit_callback = None
@@ -1989,6 +1990,16 @@ class LoginPage(QWizardPage):
             "افزودن پیوست بدون ثبت دوباره اظهارنامه"
         )
         self.attach_existing_button.clicked.connect(self._attach_existing)
+        self.refresh_counts_button = QPushButton("بازخوانی تعداد ضمائم")
+        self.refresh_counts_button.setObjectName("SecondaryButton")
+        self.refresh_counts_button.setToolTip(
+            "فقط اظهارنامه‌های دارای کد رهگیری را از ثنا می‌خواند و تعداد "
+            "ضمائم را در جدول و فایل JSON به‌روز می‌کند؛ هیچ ثبت یا آپلودی ندارد."
+        )
+        self.refresh_counts_button.setAccessibleName(
+            "بازخوانی خواندنی تعداد ضمائم از ثنا"
+        )
+        self.refresh_counts_button.clicked.connect(self._refresh_counts)
         self.close_browser_button = QPushButton("بستن نشست ثنا")
         self.close_browser_button.setObjectName("SessionButton")
         self.close_browser_button.setEnabled(False)
@@ -2026,6 +2037,7 @@ class LoginPage(QWizardPage):
         self.action_row = QHBoxLayout()
         self.action_row.addWidget(self.api_test_button, 3)
         self.action_row.addWidget(self.attach_existing_button, 3)
+        self.action_row.addWidget(self.refresh_counts_button, 2)
         self.action_row.addWidget(self.api_template_button, 2)
         self.action_row.addWidget(self.close_browser_button, 1)
         self.action_row.addWidget(self.exit_button, 1)
@@ -2326,6 +2338,26 @@ class LoginPage(QWizardPage):
         self._save_credentials()
         self.attach_existing_callback(self._credentials())
 
+    def _refresh_counts(self) -> None:
+        if self.refresh_counts_callback is None:
+            return
+        active = bool(
+            self.api_session_active_callback
+            and self.api_session_active_callback()
+        )
+        if (
+            not active
+            and not all((self.national_code.text().strip(), self.password.text(),
+                         self.legal_identity.text().strip(), self.otp.text().strip()))
+        ):
+            QMessageBox.warning(
+                self, "اطلاعات ورود ناقص",
+                "برای ورود تازه، مشخصات ورود و OTP را کامل کنید.",
+            )
+            return
+        self._save_credentials()
+        self.refresh_counts_callback(self._credentials())
+
     def _close_api_browser(self) -> None:
         if self.close_browser_callback is not None:
             self.close_browser_callback()
@@ -2436,6 +2468,7 @@ class RecipientWizard(QWizard):
         self.login_page.stop_callback = self._request_registration_stop
         self.login_page.api_test_callback = self._start_api_test
         self.login_page.attach_existing_callback = self._start_attach_existing
+        self.login_page.refresh_counts_callback = self._start_attachment_count_refresh
         self.login_page.api_session_active_callback = self._api_session_active
         self.login_page.close_browser_callback = self._close_api_browser
         self.login_page.exit_callback = self._request_application_exit
@@ -2629,6 +2662,7 @@ class RecipientWizard(QWizard):
             self.button(role).setEnabled(enabled)
         self.login_page.api_test_button.setEnabled(enabled)
         self.login_page.attach_existing_button.setEnabled(enabled)
+        self.login_page.refresh_counts_button.setEnabled(enabled)
         close_enabled = enabled and self._api_browser_ready
         self.login_page.close_browser_button.setEnabled(close_enabled)
         self.login_page.close_browser_button.setVisible(close_enabled)
@@ -2650,6 +2684,7 @@ class RecipientWizard(QWizard):
         self.button(QWizard.WizardButton.CancelButton).setEnabled(False)
         self.login_page.api_test_button.setEnabled(allow_requests)
         self.login_page.attach_existing_button.setEnabled(allow_requests)
+        self.login_page.refresh_counts_button.setEnabled(allow_requests)
         self.login_page.close_browser_button.setEnabled(True)
         self.login_page.close_browser_button.setVisible(True)
         self.login_page.stop_button.setEnabled(False)
@@ -2949,9 +2984,157 @@ class RecipientWizard(QWizard):
         self.login_page.close_browser_button.setVisible(False)
         self.login_page.api_test_button.setEnabled(False)
         self.login_page.attach_existing_button.setEnabled(False)
+        self.login_page.refresh_counts_button.setEnabled(False)
         self.login_page.append_output(
             "درخواست بستن مرورگر ثبت شد؛ تا بسته‌شدن آن درخواست تازه پذیرفته نمی‌شود.",
             level="system",
+        )
+
+    def _start_attachment_count_refresh(
+        self, credentials: LoginCredentials
+    ) -> None:
+        candidates = self.preprocessing_page.candidates()
+        if not candidates:
+            QMessageBox.warning(self, "مخاطب وجود ندارد", "حداقل یک ردیف لازم است.")
+            return
+        try:
+            drafts = _build_desktop_drafts(
+                candidates, self.content_page.payloads(), shared=False,
+                lookup_dir=self._lookup_dir,
+            )
+        except (ValueError, LookupResolutionError) as exc:
+            QMessageBox.warning(self, "پیش‌نویس نامعتبر", str(exc))
+            return
+
+        source_counts: dict[Path, int] = {}
+        for draft in drafts:
+            if draft.source_path is not None:
+                source = draft.source_path.resolve()
+                source_counts[source] = source_counts.get(source, 0) + 1
+        requests = []
+        skipped = 0
+        for draft in drafts:
+            if draft.source_path is None:
+                skipped += 1
+                continue
+            try:
+                saved = read_saved_result(
+                    draft.source_dir,
+                    draft.source_path,
+                    source_recipient_ordinal=draft.source_recipient_ordinal,
+                    source_recipient_count=source_counts[
+                        draft.source_path.resolve()
+                    ],
+                )
+            except ResultPersistenceError:
+                skipped += 1
+                continue
+            tracking_code = str(
+                (saved or {}).get("tracking_code", "")
+            ).strip()
+            if not tracking_code or tracking_code == "رسید نامعتبر":
+                skipped += 1
+                continue
+            requests.append((draft, tracking_code))
+
+        if skipped:
+            self.login_page.append_output(
+                f"{skipped} ردیف بدون کد رهگیری قطعی از بازخوانی کنار گذاشته شد.",
+                level="system",
+            )
+        if not requests:
+            self.login_page.append_output(
+                "هیچ ردیف دارای کد رهگیری قطعی برای بازخوانی پیدا نشد.",
+                level="warning",
+            )
+            return
+
+        request_tuple = tuple(requests)
+        tracking_codes = {
+            self.login_page._draft_status_key(draft): tracking_code
+            for draft, tracking_code in request_tuple
+        }
+        self.login_page.set_operation_drafts(
+            tuple(draft for draft, _tracking_code in request_tuple),
+            reset=self._api_request_queue is None,
+            tracking_codes=tracking_codes,
+        )
+        if self._api_request_queue is not None:
+            if (
+                self._api_browser_close_event is None
+                or self._api_browser_close_event.is_set()
+            ):
+                self.login_page.append_output(
+                    "مرورگر در حال بسته‌شدن است؛ پس از بسته‌شدن بازخوانی را دوباره بزنید.",
+                    level="warning",
+                )
+                return
+            self._api_browser_ready = False
+            self._set_background_controls_enabled(False)
+            self._api_request_queue.put({
+                "kind": "refresh_counts",
+                "requests": request_tuple,
+                "credentials": credentials,
+            })
+            self.login_page.append_output(
+                f"بازخوانی خواندنی تعداد ضمائم {len(request_tuple)} اظهارنامه "
+                "به نشست فعلی صف شد.",
+                level="system",
+            )
+            return
+
+        self.login_page.start_log()
+        close_browser_event = Event()
+        request_queue: Queue = Queue()
+        self._api_drafts = [draft for draft, _code in request_tuple]
+        self._api_browser_close_event = close_browser_event
+        self._api_request_queue = request_queue
+        self._api_browser_ready = False
+        self.login_page.close_browser_button.setEnabled(False)
+        self.login_page.close_browser_button.setVisible(False)
+        report = self.login_page.append_output
+        report(
+            f"بازخوانی خواندنی تعداد ضمائم {len(request_tuple)} اظهارنامه آغاز شد؛ "
+            "هیچ ثبت یا آپلودی انجام نمی‌شود.",
+            level="system",
+        )
+
+        def task(progress: Callable[[str], None]) -> object:
+            def reauth_credentials_provider(
+                current: LoginCredentials,
+            ) -> LoginCredentials | None:
+                response: Queue = Queue(maxsize=1)
+                self.otp_requested.emit(response)
+                otp = response.get()
+                return replace(current, otp=otp) if otp else None
+
+            return run_live_setpetitiondata_batch(
+                (), credentials, lambda: True, {},
+                _setpetitiondata_request_text_path(),
+                lookup_dir=self._lookup_dir,
+                progress=progress,
+                status=lambda event: self.operation_status_changed.emit(event),
+                pending_requests=request_queue,
+                reauth_credentials_provider=reauth_credentials_provider,
+                close_browser_event=close_browser_event,
+                count_refresh=request_tuple,
+            )
+
+        def succeeded(_result: object) -> None:
+            report(
+                "بازخوانی تعداد ضمائم پایان یافت؛ نتیجه هر ردیف در جدول و JSON به‌روز شد.",
+                level="success",
+            )
+
+        def failed(exc: Exception, details: str) -> None:
+            report(f"بازخوانی تعداد ضمائم متوقف شد: {exc}", level="error")
+            report(details, level="debug")
+            QMessageBox.warning(self, "بازخوانی ناموفق", str(exc))
+
+        self._start_background(
+            "در حال بازخوانی تعداد ضمائم...",
+            task, succeeded, failed,
+            lambda message: report(message, level="progress"),
         )
 
     def _start_attach_existing(self, credentials: LoginCredentials) -> None:

@@ -106,6 +106,7 @@ def run_live_setpetitiondata_batch(
     attachment_only: tuple[tuple[DeclarationDraft, str], ...] = (),
     legacy_registration: tuple[DeclarationDraft, ...] = (),
     legacy_attachment_only: tuple[DeclarationDraft, ...] = (),
+    count_refresh: tuple[tuple[DeclarationDraft, str], ...] = (),
 ) -> tuple[SetPetitionDataResult, ...] | None:
     """Submit rows sequentially; advance only after a verified tracking code."""
 
@@ -118,7 +119,7 @@ def run_live_setpetitiondata_batch(
 
     if not (
         drafts or attachment_only or legacy_registration
-        or legacy_attachment_only
+        or legacy_attachment_only or count_refresh
     ):
         raise LiveBrowserError("set_petition_data_recipients_missing")
     with sync_playwright() as playwright:
@@ -188,6 +189,10 @@ def run_live_setpetitiondata_batch(
                     page, attachment_requests, ensure_authenticated, progress,
                     request_text_path, status,
                 )
+            if count_refresh:
+                _refresh_attachment_counts(
+                    page, count_refresh, ensure_authenticated, progress, status,
+                )
             all_results = list(results)
             while pending_requests is not None and not close_browser_event.is_set():
                 _report(progress, "__api_browser_ready_to_close__")
@@ -199,6 +204,13 @@ def run_live_setpetitiondata_batch(
                         continue
                 if queued is None:
                     break
+                if isinstance(queued, dict) and queued.get("kind") == "refresh_counts":
+                    current_credentials[0] = queued["credentials"]
+                    _refresh_attachment_counts(
+                        page, queued["requests"], ensure_authenticated,
+                        progress, status,
+                    )
+                    continue
                 if isinstance(queued, dict) and queued.get("kind") == "attach_existing":
                     current_credentials[0] = queued["credentials"]
                     reconciled, _safe_unused = _reconcile_legacy_registrations(
@@ -812,7 +824,7 @@ def _get_uploaded_attachment_count(page: object, petition_no: str) -> int:
                     petitionNo,
                     pageNumber: 0,
                     pageSize: 1000,
-                    stateDocument: '3',
+                    stateDocument: '1',
                 }),
             });
             return { status: response.status, text: await response.text() };
@@ -877,6 +889,8 @@ def _store_final_attachment_count(
     row_count: int,
     progress: ProgressCallback | None,
     status: StatusCallback | None = None,
+    *,
+    expected_minimum: int | None = None,
 ) -> int:
     """Read and persist the portal's final attachment count for one row."""
 
@@ -888,6 +902,9 @@ def _store_final_attachment_count(
     if str(petition.get("No") or "").strip() != tracking_code.strip():
         raise LiveBrowserError("attachment_count_petition_mismatch")
     count = _get_uploaded_attachment_count(page, tracking_code)
+    minimum = len(draft.attachments) if expected_minimum is None else expected_minimum
+    if count < minimum:
+        raise LiveBrowserError("attachment_count_inconsistent")
     try:
         save_attachment_count(draft, tracking_code, count)
     except ResultPersistenceError as exc:
@@ -909,6 +926,43 @@ def _store_final_attachment_count(
         f"{count}؛ مقدار در {RESULTS_FILENAME} ذخیره شد.",
     )
     return count
+
+
+def _refresh_attachment_counts(
+    page: object,
+    requests: tuple[tuple[DeclarationDraft, str], ...],
+    ensure_authenticated: Callable[[], None],
+    progress: ProgressCallback | None,
+    status: StatusCallback | None = None,
+) -> int:
+    """Refresh stored counts without registering or uploading anything."""
+
+    refreshed = 0
+    for index, (draft, tracking_code) in enumerate(requests, start=1):
+        ensure_authenticated()
+        try:
+            _store_final_attachment_count(
+                page, draft, tracking_code, index, len(requests), progress,
+                status, expected_minimum=0,
+            )
+        except LiveBrowserError as exc:
+            _report_status(
+                status, draft, "attachment_count", "failed",
+                tracking_code=tracking_code, message=str(exc),
+            )
+            _report(
+                progress,
+                f"[ردیف {index} از {len(requests)}] بازخوانی تعداد ضمیمه "
+                f"ناموفق بود: {exc}",
+            )
+            continue
+        refreshed += 1
+    _report(
+        progress,
+        f"بازخوانی تعداد ضمیمه‌ها پایان یافت؛ موفق: {refreshed} از "
+        f"{len(requests)} ردیف.",
+    )
+    return refreshed
 
 
 def _request_path_for_row(path: Path, index: int, total: int) -> Path:
