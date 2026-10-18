@@ -77,7 +77,8 @@ class RecipientExtractionTests(unittest.TestCase):
 
         self.assertEqual(
             actual,
-            "خوزستان - امیدیه - امیدیه - خیابان آزادی، پلاک 12",
+            "استان خوزستان - شهرستان امیدیه - شهر امیدیه - "
+            "خیابان آزادی، پلاک 12 - کد پستی 1234567890",
         )
         self.assertEqual(actual.count("خوزستان"), 1)
         self.assertEqual(actual.count("امیدیه"), 2)
@@ -90,7 +91,17 @@ class RecipientExtractionTests(unittest.TestCase):
                 "شهرستان تهران",
                 "تهران",
             ),
-            "تهران - تهران - تهران",
+            "استان تهران - شهرستان تهران - شهر تهران",
+        )
+
+    def test_address_removes_tehran_region_but_keeps_postal_code(self) -> None:
+        self.assertEqual(
+            format_recipient_address(
+                "منطقه تهران - خیابان آزادی - کد پستی ۱۲۳۴۵۶۷۸۹۰",
+                "استان تهران", "شهرستان تهران", "تهران",
+            ),
+            "استان تهران - شهرستان تهران - شهر تهران - خیابان آزادی - "
+            "کد پستی 1234567890",
         )
 
     def test_cleans_organization_prefix_and_keeps_multiword_given_name(self) -> None:

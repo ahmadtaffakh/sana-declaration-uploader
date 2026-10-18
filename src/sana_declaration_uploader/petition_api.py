@@ -9,7 +9,7 @@ import json
 import re
 from pathlib import Path
 
-from .models import DeclarationDraft
+from .models import DeclarationDraft, MAIN_STREET_MAX_LENGTH
 
 
 SET_PETITION_DATA_URL = (
@@ -22,16 +22,22 @@ _PETITION_ID = re.compile(r"^(?:[0-9a-fA-F]{32}|"
                           r"[0-9a-fA-F]{12})$")
 
 
-def _sanitize_address(text: str, max_length: int = 10) -> str:
+def _sanitize_address(
+    text: str,
+    max_length: int = 10,
+    *,
+    remove_postal_code: bool = True,
+) -> str:
     """Remove contact details and trailing punctuation, then limit the address."""
 
     cleaned = re.sub(
         r"(?:تلفن\s*تماس|tel)\s*[:：]?\s*[^\r\n]*", "", text,
         flags=re.IGNORECASE,
     )
-    cleaned = re.sub(
-        r"کد\s*پستی\s*[:：]?\s*[^\r\n]*", "", cleaned
-    )
+    if remove_postal_code:
+        cleaned = re.sub(
+            r"کد\s*پستی\s*[:：]?\s*[^\r\n]*", "", cleaned
+        )
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned[:max(0, max_length)].rstrip(" .،؛,:;-/\\")
 
@@ -269,17 +275,22 @@ def build_setpetitiondata_payload(
         "Name": fields.get("recipient_first_name", ""),
         "Family": fields.get("recipient_last_name", ""),
         "FatherName": fields.get("recipient_father_name", ""),
+        "NationalityCode": fields.get("recipient_national_id", ""),
         "IdentityNo": fields.get("recipient_identity_no", ""),
         "MobileNumber4SMS": fields.get("recipient_mobile", "") or "",
         "JobId": fields.get("job_id", ""),
         "JobTitle": "آزاد",
         "BasicAvenue": _sanitize_address(
-            fields.get("recipient_main_street", "") or fields["city"]
+            fields.get("recipient_main_street", "") or fields["city"],
+            max_length=MAIN_STREET_MAX_LENGTH,
         ),
         "HomeAddress": _sanitize_address(
-            fields.get("recipient_address", ""), max_length=500
+            fields.get("recipient_address", ""),
+            max_length=500,
+            remove_postal_code=False,
         ),
         "PostallCode": fields.get("recipient_postal_code", ""),
+        "ManucipalityRegion": "",
         # In SetPetitionData these legacy *Id fields carry the short address
         # codes; sending the lookup GUIDs here conflicts with the portal contract.
         # Portal payload uses State for province and Province for county.
@@ -303,7 +314,8 @@ def build_setpetitiondata_payload(
         ),
     }
     required_fields = (
-        "Name", "Family", "BasicAvenue", "HomeAddress",
+        "Name", "Family", "NationalityCode", "BasicAvenue", "HomeAddress",
+        "ManucipalityRegion",
         "ProvinceId", "ProvinceTitle", "StateId", "StateTitle",
         "CityId", "CityTitle", "NotifyOwnerOrganizationId",
         "NotifyOwnerOrganizationCode", "NotifyOwnerOrganizationTitle",

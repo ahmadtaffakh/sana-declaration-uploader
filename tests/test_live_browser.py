@@ -618,7 +618,7 @@ class RecipientPageTests(unittest.TestCase):
     def test_blank_main_street_is_filled_with_truncated_address(self):
         page = _Page()
         address = "نشانی بسیار طولانی برای کنترل محدودیت خیابان اصلی"
-        expected = address[:30].strip()
+        expected = address[:29].strip()
 
         PlaywrightRecipientPage(page).fill_natural_person(
             self._draft(recipient_main_street="", recipient_address=address)

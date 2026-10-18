@@ -133,8 +133,10 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
                     "RoleType": 2,
                     "Name": "old",
                     "Family": "old",
+                    "NationalityCode": "old",
                     "BasicAvenue": "old",
                     "HomeAddress": "old",
+                    "ManucipalityRegion": "تهران",
                     "ProvinceId": "old",
                     "ProvinceTitle": "old",
                     "StateId": "old",
@@ -206,7 +208,9 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
             template["theJSSPetitionPerson"][0],
         )
         recipient = result["theJSSPetitionPerson"][1]
+        self.assertEqual(recipient["NationalityCode"], "0012345678")
         self.assertEqual(recipient["IdentityNo"], "98765")
+        self.assertEqual(recipient["ManucipalityRegion"], "")
         self.assertEqual(recipient["MobileNumber4SMS"], "")
         self.assertEqual(
             recipient["JobId"], "d2e420be1bf14c2088a14f04e7c71bb9"
@@ -244,6 +248,10 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
         self.assertEqual(
             payload["theJSSPetitionPerson"][1]["IdentityNo"], ""
         )
+        self.assertEqual(
+            payload["theJSSPetitionPerson"][1]["NationalityCode"],
+            "0012345678",
+        )
 
     def test_sanitizes_both_address_fields(self):
         draft = self._draft()
@@ -262,12 +270,25 @@ class SetPetitionDataPayloadTests(unittest.TestCase):
         self.assertEqual(recipient["BasicAvenue"], "خيابان الف")
         self.assertEqual(
             recipient["HomeAddress"],
-            "استان تهران - شهرستان تهران - تهران - کوچه ب",
+            "استان تهران - شهرستان تهران - تهران - "
+            "کوچه ب کد پستی: 1234567890",
         )
-        self.assertLessEqual(len(recipient["BasicAvenue"]), 10)
+        self.assertLessEqual(len(recipient["BasicAvenue"]), 29)
         self.assertGreater(len(recipient["HomeAddress"]), 10)
         self.assertNotIn("Tel", recipient["BasicAvenue"])
-        self.assertNotIn("پستی", recipient["HomeAddress"])
+        self.assertIn("کد پستی: 1234567890", recipient["HomeAddress"])
+
+    def test_main_street_is_limited_to_twenty_nine_characters(self):
+        draft = self._draft()
+        main_street = "الف" * 35
+        draft.fields["recipient_main_street"] = main_street
+
+        recipient = build_setpetitiondata_payload(
+            self._template(), draft
+        )["theJSSPetitionPerson"][1]
+
+        self.assertEqual(recipient["BasicAvenue"], main_street[:29])
+        self.assertEqual(len(recipient["BasicAvenue"]), 29)
 
     def test_sanitizer_removes_phone_postal_code_and_trailing_period(self):
         self.assertEqual(

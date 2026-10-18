@@ -888,7 +888,7 @@ class RecipientWizardTests(unittest.TestCase):
         address_item.setText("نشانی اصلاح‌شده")
         self.assertEqual(
             page.candidates()[0].address,
-            "خوزستان - امیدیه - امیدیه - اصلاح‌شده",
+            "استان خوزستان - شهرستان امیدیه - شهر امیدیه - اصلاح‌شده",
         )
 
         with patch(
@@ -904,6 +904,23 @@ class RecipientWizardTests(unittest.TestCase):
         ).setCheckState(Qt.CheckState.Checked)
         page._remove_selected()
         self.assertEqual(page.table.rowCount(), 0)
+
+    def test_preprocessing_limits_main_street_to_twenty_nine_characters(self) -> None:
+        page = RecipientWizard().preprocessing_page
+        page.set_candidates((RecipientCandidate(
+            source_path=Path(__file__),
+            main_street="الف" * 35,
+        ),))
+        street_item = page.table.item(
+            0, page.HEADERS.index("خیابان اصلی")
+        )
+
+        self.assertEqual(len(street_item.text()), 29)
+
+        street_item.setText("ب" * 35)
+
+        self.assertEqual(street_item.text(), "ب" * 29)
+        self.assertEqual(page.candidates()[0].main_street, "ب" * 29)
 
     def test_clicking_a_cell_selects_its_whole_row(self) -> None:
         wizard = RecipientWizard()

@@ -70,7 +70,7 @@ from .lookups import (
     resolve_captured_jurisdiction_fields,
     resolve_lookup_fields,
 )
-from .models import DeclarationDraft, RecipientCandidate
+from .models import DeclarationDraft, MAIN_STREET_MAX_LENGTH, RecipientCandidate
 from .preprocessing import preprocess_candidate, preprocess_candidates
 from .results import (
     ResultPersistenceError,
@@ -1065,7 +1065,9 @@ class PreprocessingPage(QWizardPage):
                     "county": candidate.county,
                     "city": candidate.city,
                 }),
-                candidate.main_street or main_street,
+                (candidate.main_street or main_street)[
+                    :MAIN_STREET_MAX_LENGTH
+                ].strip(),
                 candidate.postal_code or postal_code,
                 formatted_address,
                 self._status(candidate),
@@ -1172,7 +1174,9 @@ class PreprocessingPage(QWizardPage):
                 county_code=value("کد شهرستان"),
                 city=city,
                 city_code=value("کد شهر"),
-                main_street=value("خیابان اصلی"),
+                main_street=value("خیابان اصلی")[
+                    :MAIN_STREET_MAX_LENGTH
+                ].strip(),
                 postal_code=value("کد پستی"),
                 address=format_recipient_address(
                     value("آدرس"), province, county, city
@@ -1187,7 +1191,15 @@ class PreprocessingPage(QWizardPage):
         return tuple(result)
 
     def _location_changed(self, item: QTableWidgetItem) -> None:
-        if self.HEADERS[item.column()] not in ("استان", "شهرستان", "شهر"):
+        header = self.HEADERS[item.column()]
+        if header == "خیابان اصلی":
+            limited = item.text()[:MAIN_STREET_MAX_LENGTH].strip()
+            if item.text() != limited:
+                self.table.blockSignals(True)
+                item.setText(limited)
+                self.table.blockSignals(False)
+            return
+        if header not in ("استان", "شهرستان", "شهر"):
             return
         row = item.row()
         labels = {

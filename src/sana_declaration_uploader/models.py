@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Mapping
 
 
+MAIN_STREET_MAX_LENGTH = 29
+
+
 @dataclass(frozen=True)
 class Attachment:
     path: Path

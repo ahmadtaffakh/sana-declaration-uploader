@@ -9,7 +9,12 @@ from threading import Event
 from typing import TypeVar
 
 from .browser import run_attachment_workflow, validate_attachments_for_upload
-from .models import Attachment, DeclarationDraft, UploadResult
+from .models import (
+    Attachment,
+    DeclarationDraft,
+    MAIN_STREET_MAX_LENGTH,
+    UploadResult,
+)
 from .validator import validate_draft
 
 
@@ -509,7 +514,7 @@ class PlaywrightRecipientPage:
             fields.get("recipient_main_street", "").strip()
             or fields.get("recipient_address", "").strip()
             or "نامشخص"
-        )[:30].strip()
+        )[:MAIN_STREET_MAX_LENGTH].strip()
         main_street_input = page.locator("#txtBasicAvenue")
         main_street_input.click()
         main_street_input.press("Control+A")

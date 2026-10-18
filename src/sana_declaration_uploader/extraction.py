@@ -498,16 +498,16 @@ def extract_address_details(
 def format_recipient_address(
     address: str, province: str = "", county: str = "", city: str = ""
 ) -> str:
-    """Build province - county - city - remainder without repeated locations."""
+    """Build titled province - county - city - remainder without repetition."""
 
+    normalized_address = re.sub(
+        r"(?<!\w)منطقه\s+تهران(?!\w)", "", _normalize_text(address)
+    )
     remainder = _without_address_locations(
-        _normalize_text(address), province, county, city
+        normalized_address, province, county, city
     )
     remainder = re.sub(r"^\s*(?:نشانی|آدرس)\s*[:：\-]?\s*", "", remainder)
     remainder = re.sub(r"خیابان\s*اصلی\s*[:：\-]?\s*", "", remainder, count=1)
-    remainder = re.sub(
-        r"(?:کد\s*پستی|کدپستی)\s*[:：\-]?\s*[0-9]{10}", "", remainder
-    )
     remainder = re.sub(
         r"(?:تلفن|موبایل|همراه|شماره\s*تماس)\s*[:：\-]?.*$", "", remainder
     )
@@ -519,19 +519,24 @@ def format_recipient_address(
     remainder = re.sub(r"\s+", " ", remainder)
     remainder = remainder.strip(" \t\r\n-‐‑‒–—،,؛.:")
 
-    normalized_province = (
-        _normalize_text(province).strip().removeprefix("استان ").strip()
-    )
-    normalized_county = (
-        _normalize_text(county).strip().removeprefix("شهرستان ").strip()
-    )
-    normalized_city = _normalize_text(city).strip().removeprefix("شهر ").strip()
+    normalized_province = _address_location_title(province, "استان")
+    normalized_county = _address_location_title(county, "شهرستان")
+    normalized_city = _address_location_title(city, "شهر")
     parts = [
         value
         for value in (normalized_province, normalized_county, normalized_city, remainder)
         if value
     ]
     return " - ".join(parts)
+
+
+def _address_location_title(value: str, title: str) -> str:
+    normalized = _normalize_text(value).strip()
+    return (
+        normalized
+        if not normalized or normalized.startswith(f"{title} ")
+        else f"{title} {normalized}"
+    )
 
 
 def _without_address_locations(
