@@ -235,7 +235,72 @@ def save_verified_result(
         registration["attachment_context"] = dict(attachment_context)
     registrations.append(registration)
 
+    _write_manifest(target, manifest)
+    return target
+
+
+def save_attachment_count(
+    draft: DeclarationDraft,
+    tracking_code: str,
+    attachment_count: int,
+    *,
+    filename: str = RESULTS_FILENAME,
+) -> Path:
+    """Update the matching verified registration with the observed count."""
+
+    code = tracking_code.strip()
+    if not code:
+        raise ResultPersistenceError("tracking_code_missing")
+    if (
+        isinstance(attachment_count, bool)
+        or not isinstance(attachment_count, int)
+        or attachment_count < 0
+    ):
+        raise ResultPersistenceError("attachment_count_invalid")
+
+    source_dir = draft.source_dir.resolve()
+    if not source_dir.is_dir():
+        raise ResultPersistenceError("source_dir_missing")
+    target = source_dir / filename
+    manifest = _load_manifest(source_dir)
+    declarations = manifest["declarations"]
+    if not isinstance(declarations, dict):
+        raise ResultPersistenceError("existing_results_invalid")
+
+    keys = [_source_key(draft)]
+    if draft.source_path is not None and draft.source_path.name not in keys:
+        keys.append(draft.source_path.name)
+    registration = None
+    for key in keys:
+        record = declarations.get(key)
+        if record is None:
+            continue
+        if not isinstance(record, dict):
+            raise ResultPersistenceError("existing_results_invalid")
+        registrations = record.get("registrations")
+        if not isinstance(registrations, list):
+            raise ResultPersistenceError("existing_results_invalid")
+        registration = next((
+            item for item in reversed(registrations)
+            if isinstance(item, dict)
+            and str(item.get("tracking_code", "")).strip() == code
+        ), None)
+        if registration is not None:
+            break
+    if registration is None:
+        raise ResultPersistenceError("verified_registration_not_found")
+
+    registration["attachment_count"] = attachment_count
+    registration["attachment_count_checked_at"] = (
+        datetime.now().astimezone().isoformat(timespec="seconds")
+    )
+    _write_manifest(target, manifest)
+    return target
+
+
+def _write_manifest(target: Path, manifest: Mapping[str, object]) -> None:
     temporary = target.with_suffix(target.suffix + ".tmp")
+
     try:
         temporary.write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -244,4 +309,3 @@ def save_verified_result(
         temporary.replace(target)
     except OSError as exc:
         raise ResultPersistenceError("result_write_failed") from exc
-    return target

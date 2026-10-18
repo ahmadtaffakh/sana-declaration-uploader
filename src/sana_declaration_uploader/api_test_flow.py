@@ -39,6 +39,7 @@ from .results import (
     RESULTS_FILENAME,
     ResultPersistenceError,
     read_saved_attachment_context,
+    save_attachment_count,
     save_verified_result,
 )
 
@@ -423,6 +424,10 @@ def _submit_petition_payloads(
                 f"[ردیف {index} از {len(drafts)}] پیوستی انتخاب نشده؛ "
                 "مرحله پیوست رد شد.",
             )
+        ensure_authenticated()
+        _store_final_attachment_count(
+            page, draft, result.tracking_code, index, len(drafts), progress
+        )
     return tuple(results)
 
 
@@ -461,6 +466,10 @@ def _attach_existing_petitions(
         if not draft.attachments:
             _report_status(status, draft, "attachment", "skipped")
             _report(progress, f"[ردیف {index} از {len(requests)}] پیوستی انتخاب نشده؛ رد شد.")
+            ensure_authenticated()
+            _store_final_attachment_count(
+                page, draft, tracking_code, index, len(requests), progress
+            )
             continue
         _report_status(
             status,
@@ -547,6 +556,10 @@ def _attach_existing_petitions(
             page, petition_data, result, draft, index, len(requests), progress,
             request_text_path, status,
         )
+        ensure_authenticated()
+        _store_final_attachment_count(
+            page, draft, tracking_code, index, len(requests), progress
+        )
 
 
 def _get_petition_by_tracking_code(
@@ -581,6 +594,38 @@ def _get_petition_by_tracking_code(
     if not isinstance(value, dict):
         raise LiveBrowserError("tracked_petition_lookup_response_invalid")
     return value
+
+
+def _store_final_attachment_count(
+    page: object,
+    draft: DeclarationDraft,
+    tracking_code: str,
+    row_index: int,
+    row_count: int,
+    progress: ProgressCallback | None,
+) -> int:
+    """Read and persist the portal's final attachment count for one row."""
+
+    petition = _run_logged_stage(
+        progress,
+        f"بررسی نهایی تعداد ضمیمه‌های ردیف {row_index} از {row_count}",
+        lambda: _get_petition_by_tracking_code(page, tracking_code),
+    )
+    if str(petition.get("No") or "").strip() != tracking_code.strip():
+        raise LiveBrowserError("attachment_count_petition_mismatch")
+    count = petition.get("JSSPetitionDocumentCount")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise LiveBrowserError("attachment_count_response_invalid")
+    try:
+        save_attachment_count(draft, tracking_code, count)
+    except ResultPersistenceError as exc:
+        raise LiveBrowserError("attachment_count_persistence_failed") from exc
+    _report(
+        progress,
+        f"[ردیف {row_index} از {row_count}] تعداد ضمیمه‌های ثبت‌شده در ثنا: "
+        f"{count}؛ مقدار در {RESULTS_FILENAME} ذخیره شد.",
+    )
+    return count
 
 
 def _request_path_for_row(path: Path, index: int, total: int) -> Path:

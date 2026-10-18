@@ -16,6 +16,54 @@ from sana_declaration_uploader.petition_api import SetPetitionDataResult
 
 
 class DirectSetPetitionDataFlowTests(unittest.TestCase):
+    def test_stores_final_attachment_count_from_verified_petition(self):
+        page = Mock()
+        page.evaluate.return_value = {
+            "status": 200,
+            "text": json.dumps({
+                "No": "T-0001",
+                "JSSPetitionDocumentCount": 2,
+            }),
+        }
+        draft = DeclarationDraft(
+            Path("."), {}, source_path=Path("sample.docx")
+        )
+        progress = []
+
+        with patch.object(api_test_flow, "save_attachment_count") as save_count:
+            count = api_test_flow._store_final_attachment_count(
+                page, draft, "T-0001", 1, 1, progress.append
+            )
+
+        self.assertEqual(count, 2)
+        save_count.assert_called_once_with(draft, "T-0001", 2)
+        self.assertTrue(any(
+            "تعداد ضمیمه‌های ثبت‌شده در ثنا: 2" in item
+            for item in progress
+        ))
+
+    def test_rejects_invalid_final_attachment_count(self):
+        page = Mock()
+        page.evaluate.return_value = {
+            "status": 200,
+            "text": json.dumps({
+                "No": "T-0001",
+                "JSSPetitionDocumentCount": "2",
+            }),
+        }
+
+        with self.assertRaisesRegex(
+            api_test_flow.LiveBrowserError, "attachment_count_response_invalid"
+        ):
+            api_test_flow._store_final_attachment_count(
+                page,
+                DeclarationDraft(Path("."), {}),
+                "T-0001",
+                1,
+                1,
+                None,
+            )
+
     def test_matches_representation_document_default_to_live_title(self):
         live_type = AttachmentType(
             "021", "005", "تصوير مدرک نمايندگي", "شرح", {}, 1
@@ -111,6 +159,9 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                     return_value=petition,
                 ) as lookup,
                 patch.object(api_test_flow, "_attach_draft_files") as attach,
+                patch.object(
+                    api_test_flow, "_store_final_attachment_count", return_value=1
+                ) as store_count,
             ):
                 api_test_flow._attach_existing_petitions(
                     Mock(),
@@ -122,6 +173,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
 
             lookup.assert_called_once()
             attach.assert_called_once()
+            store_count.assert_called_once()
 
     def test_attaches_to_tracking_code_without_registering_petition(self):
         events = []
@@ -174,6 +226,9 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                     side_effect=[lookup_client, register_client],
                 ),
                 patch.object(api_test_flow, "save_attachment_console_text"),
+                patch.object(
+                    api_test_flow, "_store_final_attachment_count", return_value=1
+                ) as store_count,
             ):
                 lookup_client.get_valid_attachment_types.return_value = [attachment_type]
                 actual = api_test_flow.run_live_setpetitiondata_batch(
@@ -189,6 +244,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         self.assertIn("1405000000000001", str(page.evaluate.call_args))
         self.assertTrue(any("ثبت اظهارنامه اجرا نمی‌شود" in event for event in events))
         register_client.register_attachment.assert_called_once()
+        store_count.assert_called_once()
         self.assertEqual(
             [
                 (event["state"], event["completed"], event["total"])
@@ -264,6 +320,9 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                 patch.object(
                     api_test_flow, "save_verified_result"
                 ) as save_result,
+                patch.object(
+                    api_test_flow, "_store_final_attachment_count", return_value=0
+                ) as store_count,
             ):
                 def submit_side_effect(_page, petition_data):
                     if petition_data["Description"] == "شرح دوم":
@@ -317,6 +376,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         self.assertEqual(build_payload.call_count, 2)
         self.assertEqual(submit.call_count, 2)
         self.assertEqual(save_result.call_count, 2)
+        self.assertEqual(store_count.call_count, 2)
         self.assertEqual(save_result.call_args_list[0].args[0], drafts[0])
         self.assertEqual(
             save_result.call_args_list[0].args[1].tracking_code,
@@ -345,7 +405,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
             [1, 1],
         )
         page.goto.assert_not_called()
-        self.assertEqual(page.locator.call_count, 2)
+        self.assertEqual(page.locator.call_count, 4)
         self.assertIn("__api_browser_ready_to_close__", events)
         self.assertEqual(context.close.call_count, 1)
         browser.close.assert_called_once()
@@ -438,6 +498,9 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                 patch.object(
                     api_test_flow, "save_attachment_console_text"
                 ) as save_console,
+                patch.object(
+                    api_test_flow, "_store_final_attachment_count", return_value=1
+                ) as store_count,
             ):
                 actual = api_test_flow.run_live_setpetitiondata_batch(
                     (draft,),
@@ -475,6 +538,7 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
             show_original=True,
             document_title="attachment",
         )
+        store_count.assert_called_once()
         tracking_event = next(
             i for i, message in enumerate(events)
             if "کد رهگیری: " + result.tracking_code in message

@@ -9,6 +9,7 @@ from sana_declaration_uploader.results import (
     existing_results,
     read_saved_attachment_context,
     read_saved_result,
+    save_attachment_count,
     save_verified_result,
 )
 
@@ -81,6 +82,36 @@ class ResultPersistenceTests(unittest.TestCase):
             self.assertEqual(
                 read_saved_result(source, source_path)["tracking_code"], "T-NEW"
             )
+
+    def test_saves_attachment_count_on_matching_registration(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "sample.docx"
+            draft = DeclarationDraft(source, {}, source_path=source_path)
+            save_verified_result(draft, UploadResult("success", "T-0001"))
+
+            save_attachment_count(draft, "T-0001", 3)
+
+            manifest = json.loads(
+                (source / "results.json").read_text(encoding="utf-8")
+            )
+            registration = manifest["declarations"][
+                "sample.docx::recipient-001"
+            ]["registrations"][-1]
+            self.assertEqual(registration["attachment_count"], 3)
+            self.assertTrue(registration["attachment_count_checked_at"])
+
+    def test_attachment_count_does_not_create_unverified_registration(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            draft = DeclarationDraft(
+                source, {}, source_path=source / "sample.docx"
+            )
+
+            with self.assertRaisesRegex(
+                ResultPersistenceError, "verified_registration_not_found"
+            ):
+                save_attachment_count(draft, "T-UNKNOWN", 1)
 
     def test_rejects_unverified_result_without_writing(self):
         with TemporaryDirectory() as directory:
