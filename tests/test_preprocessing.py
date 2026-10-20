@@ -155,6 +155,27 @@ class RecipientPreprocessingTests(unittest.TestCase):
         self.assertEqual(result.city_code, "1703021515")
         self.assertNotIn("location_lookup_unresolved", result.issues)
 
+    def test_rey_county_resolves_its_tehran_province(self) -> None:
+        lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
+        candidate = RecipientCandidate(
+            source_path=lookup_dir / "source.docx",
+            full_name="شخص نمونه",
+            address="شهرستان ری - شهر ری - خیابان نمونه",
+            province="شهرستان ری",
+            county="شهرستان ری",
+            city="ری",
+        )
+
+        result = preprocess_candidate(candidate, lookup_dir)
+
+        self.assertEqual(result.province, "استان تهران")
+        self.assertEqual(result.province_code, "23")
+        self.assertEqual(result.county, "شهرستان ری")
+        self.assertEqual(result.county_code, "2303")
+        self.assertEqual(result.city, "ری")
+        self.assertEqual(result.city_code, "2303042115")
+        self.assertNotIn("location_lookup_unresolved", result.issues)
+
     def test_invalid_city_uses_resolved_county_name_as_city(self) -> None:
         lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
         for county, invalid_city, expected_city in (
@@ -177,6 +198,23 @@ class RecipientPreprocessingTests(unittest.TestCase):
                 self.assertEqual(result.city, expected_city)
                 self.assertTrue(result.city_code)
                 self.assertNotIn("location_lookup_unresolved", result.issues)
+
+    def test_gachsaran_county_always_uses_dogonbadan_city(self) -> None:
+        lookup_dir = Path(__file__).resolve().parents[1] / "lookups"
+        candidate = RecipientCandidate(
+            source_path=lookup_dir / "source.docx",
+            full_name="شخص نمونه",
+            address="نشانی کامل",
+            province="استان کهگیلویه و بویر احمد",
+            county="شهرستان گچساران",
+            city="گچساران",
+        )
+
+        result = preprocess_candidate(candidate, lookup_dir)
+
+        self.assertEqual(result.city, "دوگنبدان")
+        self.assertEqual(result.city_code, "1703021515")
+        self.assertNotIn("location_lookup_unresolved", result.issues)
 
     def test_city_name_resolves_its_county_and_known_spelling_variants(self) -> None:
         lookup_dir = Path(__file__).resolve().parents[1] / "lookups"

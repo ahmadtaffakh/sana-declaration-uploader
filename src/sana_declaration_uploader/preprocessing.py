@@ -9,6 +9,7 @@ import unicodedata
 
 from .lookups import (
     LookupResolutionError,
+    normalize_label,
     resolve_city_hierarchy,
     resolve_lookup_fields,
     resolve_province_from_county,
@@ -29,6 +30,15 @@ _DEFAULT_LOCATION = {
 }
 
 
+def city_for_location(province: str, county: str, city: str) -> str:
+    if (
+        normalize_label(province) == "استان کهکیلویه وبویراحمد"
+        and normalize_label(county) == "شهرستان گچساران"
+    ):
+        return "دوگنبدان"
+    return city
+
+
 def preprocess_candidates(
     candidates: tuple[RecipientCandidate, ...], lookup_dir: Path
 ) -> tuple[RecipientCandidate, ...]:
@@ -42,6 +52,7 @@ def preprocess_candidate(
     province = _clean_location_label(candidate.province or labels.get("province", ""))
     county = _clean_location_label(candidate.county or labels.get("county", ""))
     city = _clean_location_label(candidate.city or labels.get("city", ""))
+    city = city_for_location(province, county, city)
     ignored_issues = {
         "address_location_review_required",
         "job_lookup_unresolved",

@@ -444,7 +444,9 @@ def _address_locations(address: str) -> dict[str, str]:
         for segment in re.split(rf"\s*{_ADDRESS_SEPARATOR}\s*", normalized)
         if segment.strip(" .")
     ]
-    if not result.get("province") and segments:
+    if not result.get("province") and result.get("county"):
+        result["province"] = result["county"]
+    elif not result.get("province") and segments:
         if segments[0] == "تهران":
             result.update(_DEFAULT_LOCATION)
         elif len(segments) >= 2 and not segments[1].startswith(

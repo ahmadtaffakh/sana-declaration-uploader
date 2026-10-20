@@ -71,7 +71,11 @@ from .lookups import (
     resolve_lookup_fields,
 )
 from .models import DeclarationDraft, MAIN_STREET_MAX_LENGTH, RecipientCandidate
-from .preprocessing import preprocess_candidate, preprocess_candidates
+from .preprocessing import (
+    city_for_location,
+    preprocess_candidate,
+    preprocess_candidates,
+)
 from .results import (
     ResultPersistenceError,
     RESULTS_FILENAME,
@@ -1290,8 +1294,12 @@ class PreprocessingPage(QWizardPage):
             ),
             "city": self.table.item(row, self.HEADERS.index("شهر")).text().strip(),
         }
+        labels["city"] = city_for_location(
+            labels["province"], labels["county"], labels["city"]
+        )
         self.table.blockSignals(True)
         try:
+            self.table.item(row, self.HEADERS.index("شهر")).setText(labels["city"])
             for header in ("کد استان", "کد شهرستان", "کد شهر"):
                 self.table.item(row, self.HEADERS.index(header)).setText("")
             self.table.item(

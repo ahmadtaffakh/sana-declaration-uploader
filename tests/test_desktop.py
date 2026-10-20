@@ -994,6 +994,26 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertEqual(street_item.text(), "ب" * 29)
         self.assertEqual(page.candidates()[0].main_street, "ب" * 29)
 
+    def test_selecting_gachsaran_county_sets_dogonbadan_city(self) -> None:
+        page = RecipientWizard().preprocessing_page
+        page.set_candidates((RecipientCandidate(
+            source_path=Path(__file__),
+            province="استان کهگیلویه و بویر احمد",
+        ),))
+
+        page.table.item(
+            0, page.HEADERS.index("شهرستان")
+        ).setText("گچساران")
+
+        self.assertEqual(
+            page.table.item(0, page.HEADERS.index("شهر")).text(),
+            "دوگنبدان",
+        )
+        self.assertEqual(
+            page.table.item(0, page.HEADERS.index("کد شهر")).text(),
+            "1703021515",
+        )
+
     def test_clicking_a_cell_selects_its_whole_row(self) -> None:
         wizard = RecipientWizard()
 

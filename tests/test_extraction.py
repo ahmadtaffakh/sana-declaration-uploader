@@ -7,6 +7,7 @@ from docx import Document
 
 from sana_declaration_uploader.extraction import (
     DocumentExtractionError,
+    _address_locations,
     _split_natural_name,
     extract_address_details,
     extract_recipient,
@@ -17,6 +18,16 @@ from sana_declaration_uploader.extraction import (
 
 
 class RecipientExtractionTests(unittest.TestCase):
+    def test_address_starting_with_county_preserves_it_for_parent_lookup(self) -> None:
+        self.assertEqual(
+            _address_locations("شهرستان ری - شهر ری - خیابان نمونه"),
+            {
+                "province": "شهرستان ری",
+                "county": "شهرستان ری",
+                "city": "ری",
+            },
+        )
+
     def test_splits_four_word_name_as_given_name_and_compound_family_name(self) -> None:
         self.assertEqual(
             _split_natural_name("مریم شمسیان جهان بخش", "natural"),
