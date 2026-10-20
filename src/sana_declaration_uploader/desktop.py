@@ -2275,8 +2275,10 @@ class LoginPage(QWizardPage):
                 "",
             )
             for column, value in enumerate(values):
-                item = self.status_table.item(row, column) or QTableWidgetItem()
-                self.status_table.setItem(row, column, item)
+                item = self.status_table.item(row, column)
+                if item is None:
+                    item = QTableWidgetItem()
+                    self.status_table.setItem(row, column, item)
                 if column == self.STATUS_HEADERS.index("تعداد ضمائم در ثنا"):
                     count_data = known_attachment_counts.get(key)
                     self._set_attachment_count_item(

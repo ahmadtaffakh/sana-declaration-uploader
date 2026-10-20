@@ -280,6 +280,39 @@ class RecipientWizardTests(unittest.TestCase):
         page.append_output("خطای نمونه", level="error")
         self.assertEqual(page.output_tabs.tabText(1), "گزارش فنی — دارای خطا")
 
+    def test_refreshing_existing_status_row_does_not_reinsert_items(self) -> None:
+        page = RecipientWizard().login_page
+        draft = DeclarationDraft(
+            Path("."),
+            {
+                "recipient_first_name": "علی",
+                "recipient_last_name": "احمدی",
+                "declaration_subject": "موضوع اول",
+            },
+            source_path=Path("shared.docx"),
+        )
+        page.set_operation_drafts((draft,), reset=True)
+
+        with patch.object(
+            page.status_table,
+            "setItem",
+            wraps=page.status_table.setItem,
+        ) as set_item:
+            page.set_operation_drafts(
+                (draft,),
+                reset=False,
+                tracking_codes={page._draft_status_key(draft): "T-UPDATED"},
+            )
+
+        set_item.assert_not_called()
+        self.assertEqual(page.status_table.rowCount(), 1)
+        self.assertEqual(
+            page.status_table.item(
+                0, page.STATUS_HEADERS.index("کد رهگیری")
+            ).text(),
+            "T-UPDATED",
+        )
+
     def test_entering_last_page_prepares_status_rows_before_execution(self) -> None:
         wizard = RecipientWizard()
         draft = DeclarationDraft(
