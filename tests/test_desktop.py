@@ -1979,6 +1979,40 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertEqual(page.subject.text(), "موضوع اظهارنامه")
             self.assertEqual(page.description.toPlainText(), "شرح اظهارنامه")
 
+    def test_closing_wizard_persists_login_and_attachment_inputs(self) -> None:
+        wizard = RecipientWizard()
+        wizard.content_page.set_candidates((RecipientCandidate(
+            source_path=Path("input.docx"), full_name="شخص اول"
+        ),))
+        wizard.content_page.attachment_kind.setCurrentText("سایر ضمائم")
+        wizard.content_page.attachment_title.setText("عنوان نمونه")
+        wizard.content_page.attachment_number.setText("۴۲")
+        wizard.content_page.attachment_date.setText("۱۴۰۵/۰۷/۲۲")
+
+        with (
+            patch.object(wizard.content_page, "persist_settings") as persist,
+            patch.object(wizard.login_page, "_save_credentials") as save_login,
+        ):
+            wizard.close()
+            self.app.processEvents()
+
+        persist.assert_called_once_with()
+        save_login.assert_called_once_with()
+
+    def test_exit_button_persists_login_and_attachment_inputs(self) -> None:
+        wizard = RecipientWizard()
+
+        with (
+            patch.object(wizard.content_page, "persist_settings") as persist,
+            patch.object(wizard.login_page, "_save_credentials") as save_login,
+            patch.object(wizard, "close") as close,
+        ):
+            wizard._request_application_exit()
+
+        persist.assert_called_once_with()
+        save_login.assert_called_once_with()
+        close.assert_called_once_with()
+
     def test_login_json_contains_all_fields_when_requested(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "login.json"
@@ -2016,6 +2050,36 @@ class RecipientWizardTests(unittest.TestCase):
 
         save.assert_called_once_with(
             "national", "password", "legal", "new-otp", remember=True
+        )
+
+    def test_finishing_each_login_field_persists_all_four_inputs(self) -> None:
+        with (
+            patch(
+                "sana_declaration_uploader.desktop._load_login_settings",
+                return_value={},
+            ),
+            patch(
+                "sana_declaration_uploader.desktop._save_login_settings"
+            ) as save,
+        ):
+            page = RecipientWizard().login_page
+            page.national_code.setText("national")
+            page.password.setText("password")
+            page.legal_identity.setText("legal")
+            page.otp.setText("otp")
+            save.reset_mock()
+
+            for field in (
+                page.national_code,
+                page.password,
+                page.legal_identity,
+                page.otp,
+            ):
+                field.editingFinished.emit()
+
+        self.assertEqual(save.call_count, 4)
+        save.assert_called_with(
+            "national", "password", "legal", "otp", remember=True
         )
 
     def test_attachment_defaults_are_persisted_for_the_next_run(self) -> None:

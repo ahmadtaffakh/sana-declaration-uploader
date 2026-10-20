@@ -2098,6 +2098,9 @@ class DeclarationContentPage(QWizardPage):
         return True
 
     def cleanupPage(self) -> None:
+        self.persist_settings()
+
+    def persist_settings(self) -> None:
         self._save_active()
         self._save_declaration_defaults()
         self._save_attachment_defaults()
@@ -2365,7 +2368,7 @@ class LoginPage(QWizardPage):
             self.national_code, self.password, self.legal_identity, self.otp
         ):
             field.textChanged.connect(lambda: self.completeChanged.emit())
-        self.otp.editingFinished.connect(self._save_credentials)
+            field.editingFinished.connect(self._save_credentials)
 
     def _refresh_api_template_status(self) -> None:
         path = _setpetitiondata_template_path()
@@ -3030,9 +3033,13 @@ class RecipientWizard(QWizard):
             )
             event.ignore()
             return
+        self.content_page.persist_settings()
+        self.login_page._save_credentials()
         super().closeEvent(event)
 
     def _request_application_exit(self) -> None:
+        self.content_page.persist_settings()
+        self.login_page._save_credentials()
         self._exit_requested = True
         if self._api_browser_close_event is not None:
             self._api_browser_close_event.set()
