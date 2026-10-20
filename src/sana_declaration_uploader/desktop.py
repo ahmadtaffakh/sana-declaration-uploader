@@ -18,6 +18,7 @@ from PySide6.QtCore import QObject, QEventLoop, QSize, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
+    QCursor,
     QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
@@ -2826,6 +2827,21 @@ class RecipientWizard(QWizard):
         finish_button = self.button(QWizard.WizardButton.FinishButton)
         finish_button.setVisible(False)
 
+    def _with_navigation_feedback(
+        self, action: Callable[[], object]
+    ) -> object:
+        next_button = self.button(QWizard.WizardButton.NextButton)
+        previous_text = next_button.text()
+        next_button.setText("در حال پردازش...")
+        QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+        next_button.repaint()
+        try:
+            return action()
+        finally:
+            QApplication.restoreOverrideCursor()
+            next_button.setText(previous_text)
+            next_button.repaint()
+
     def _start_background(
         self,
         label: str,
@@ -3999,11 +4015,13 @@ class RecipientWizard(QWizard):
             if self._api_session_active() or self._api_browser_ready:
                 return
             try:
-                drafts = _build_desktop_drafts(
-                    self.preprocessing_page.candidates(),
-                    self.content_page.payloads(),
-                    shared=False,
-                    lookup_dir=self._lookup_dir,
+                drafts = self._with_navigation_feedback(
+                    lambda: _build_desktop_drafts(
+                        self.preprocessing_page.candidates(),
+                        self.content_page.payloads(),
+                        shared=False,
+                        lookup_dir=self._lookup_dir,
+                    )
                 )
             except (ValueError, LookupResolutionError):
                 self.login_page.set_operation_drafts((), reset=True)
@@ -4049,12 +4067,18 @@ class RecipientWizard(QWizard):
             source = self.review_page.candidates()
             self.preprocessing_page.refresh_registration_results()
             if source != self._preprocess_source:
-                candidates = preprocess_candidates(source, self._lookup_dir)
+                candidates = self._with_navigation_feedback(
+                    lambda: preprocess_candidates(source, self._lookup_dir)
+                )
                 self.preprocessing_page.set_candidates(candidates)
                 self._preprocess_source = source
             return
         if page_id == self.content_page_id:
-            self.content_page.set_candidates(self.preprocessing_page.candidates())
+            self._with_navigation_feedback(
+                lambda: self.content_page.set_candidates(
+                    self.preprocessing_page.candidates()
+                )
+            )
             return
         if page_id != self.review_page_id:
             return

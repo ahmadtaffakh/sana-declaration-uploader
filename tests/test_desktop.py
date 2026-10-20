@@ -157,6 +157,87 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertGreater(buttons[1].geometry().x(), buttons[2].geometry().x())
         wizard.close()
 
+    def test_preprocessing_shows_navigation_processing_feedback(self) -> None:
+        wizard = RecipientWizard()
+        candidate = RecipientCandidate(source_path=Path("sample.docx"))
+        wizard.review_page.set_candidates((candidate,))
+        next_button = wizard.button(QWizard.WizardButton.NextButton)
+
+        def preprocess(source, lookup_dir):
+            self.assertEqual(source, (candidate,))
+            self.assertEqual(lookup_dir, wizard._lookup_dir)
+            self.assertEqual(next_button.text(), "در حال پردازش...")
+            self.assertEqual(
+                QApplication.overrideCursor().shape(),
+                Qt.CursorShape.WaitCursor,
+            )
+            return source
+
+        with patch(
+            "sana_declaration_uploader.desktop.preprocess_candidates",
+            side_effect=preprocess,
+        ):
+            wizard._page_changed(wizard.preprocessing_page_id)
+
+        self.assertEqual(next_button.text(), "بعدی")
+        self.assertIsNone(QApplication.overrideCursor())
+        self.assertEqual(
+            wizard.preprocessing_page.candidates()[0].source_path,
+            candidate.source_path,
+        )
+        self.assertEqual(wizard._preprocess_source, (candidate,))
+
+    def test_preprocessing_restores_navigation_feedback_after_error(self) -> None:
+        wizard = RecipientWizard()
+        wizard.review_page.set_candidates(
+            (RecipientCandidate(source_path=Path("sample.docx")),)
+        )
+        next_button = wizard.button(QWizard.WizardButton.NextButton)
+
+        with (
+            patch(
+                "sana_declaration_uploader.desktop.preprocess_candidates",
+                side_effect=RuntimeError("test error"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "test error"),
+        ):
+            wizard._page_changed(wizard.preprocessing_page_id)
+
+        self.assertEqual(next_button.text(), "بعدی")
+        self.assertIsNone(QApplication.overrideCursor())
+
+    def test_other_synchronous_page_preparation_shows_feedback(self) -> None:
+        wizard = RecipientWizard()
+        next_button = wizard.button(QWizard.WizardButton.NextButton)
+        observed = []
+
+        def record_feedback(*_args, **_kwargs):
+            observed.append((
+                next_button.text(),
+                QApplication.overrideCursor().shape(),
+            ))
+            return ()
+
+        with patch.object(
+            wizard.content_page,
+            "set_candidates",
+            side_effect=record_feedback,
+        ):
+            wizard._page_changed(wizard.content_page_id)
+
+        with patch(
+            "sana_declaration_uploader.desktop._build_desktop_drafts",
+            side_effect=record_feedback,
+        ):
+            wizard._page_changed(wizard.login_page_id)
+
+        self.assertEqual(observed, [
+            ("در حال پردازش...", Qt.CursorShape.WaitCursor),
+            ("در حال پردازش...", Qt.CursorShape.WaitCursor),
+        ])
+        self.assertEqual(next_button.text(), "بعدی")
+        self.assertIsNone(QApplication.overrideCursor())
+
     def test_back_button_keeps_its_position_on_the_last_page(self) -> None:
         positions = []
         for page_name in ("content_page_id", "login_page_id"):
