@@ -318,6 +318,35 @@ class RecipientExtractionTests(unittest.TestCase):
             self.assertEqual(candidate.city, "خارک")
             self.assertEqual(candidate.related_declaration_date, "10/06/1405")
 
+    def test_extracts_national_id_from_labeled_addressee_cell(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "natural.docx"
+            document = Document()
+            table = document.add_table(rows=2, cols=3)
+            for index, value in enumerate((
+                "مشخصات و اقامتگاه اظهارکننده",
+                "موضوع اظهارنامه",
+                "مشخصات و اقامتگاه مخاطب",
+            )):
+                table.cell(0, index).text = value
+            table.cell(1, 0).text = "اظهارکننده نمونه"
+            table.cell(1, 1).text = (
+                "اظهارنامه شماره 1405220012345678 مورخ 31/01/1405"
+            )
+            table.cell(1, 2).text = (
+                "آقای علی رضایی فرزند حسن به شماره ملی ۱۲۳۴۵۶۷۸۹۱ "
+                "به آدرس: تهران، خیابان نمونه"
+            )
+            document.save(path)
+
+            candidate = extract_recipient_candidates(path)[0]
+
+            self.assertEqual(candidate.full_name, "علی رضایی")
+            self.assertEqual(candidate.father_name, "حسن")
+            self.assertEqual(candidate.national_id, "1234567891")
+            self.assertEqual(candidate.identity_no, "")
+            self.assertNotIn("national_id_missing", candidate.issues)
+
     def test_extracts_labeled_recipient_fields_from_word(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "person.docx"

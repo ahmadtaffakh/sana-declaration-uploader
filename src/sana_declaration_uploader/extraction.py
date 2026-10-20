@@ -316,10 +316,11 @@ def _labeled_addressee(
         if not recipient or not re.search(_DOCUMENT_NUMBER_LENGTH, reference):
             return ()
         name, address = _split_labeled_recipient(recipient)
+        national_id = _find_digits(recipient, r"(?:کد|شماره)\s*ملی", 10)
         return (_table_candidate(
             source,
             name=name,
-            national_id="",
+            national_id=national_id,
             address=address,
             reference=reference,
         ),)
