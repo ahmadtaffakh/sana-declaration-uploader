@@ -81,6 +81,7 @@ from .results import (
     RESULTS_FILENAME,
     existing_results,
     read_saved_result,
+    registration_history,
     save_verified_result,
 )
 
@@ -674,6 +675,115 @@ def _candidate_source_counts(
     return counts
 
 
+_SEARCH_TRANSLATION = str.maketrans(
+    "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩يىك",
+    "01234567890123456789ییک",
+)
+
+
+def _normalized_report_search(value: object) -> str:
+    return " ".join(str(value or "").translate(_SEARCH_TRANSLATION).casefold().split())
+
+
+class RegistrationHistoryWidget(QWidget):
+    """Read-only searchable view over the central registration database."""
+
+    HEADERS = (
+        "تاریخ ثبت",
+        "شماره اظهارنامه مرتبط",
+        "کد ملی",
+        "نام",
+        "نام خانوادگی",
+        "کد رهگیری",
+        "فایل Word",
+    )
+    FIELDS = (
+        "registered_at",
+        "related_declaration_number",
+        "national_id",
+        "first_name",
+        "last_name",
+        "tracking_code",
+        "source_file",
+    )
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(
+            "جستجو در شماره اظهارنامه مرتبط، کد ملی، نام، نام خانوادگی، "
+            "کد رهگیری یا تاریخ"
+        )
+        self.search.setAccessibleName("جستجو در گزارش اظهارنامه‌های ثبت‌شده")
+        self.table = QTableWidget(0, len(self.HEADERS))
+        self.table.setHorizontalHeaderLabels(self.HEADERS)
+        _configure_table(self.table)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.table.setMinimumHeight(210)
+        self.message = QLabel()
+        self.message.setObjectName("Guidance")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.search)
+        layout.addWidget(self.table)
+        layout.addWidget(self.message)
+        self.search.textChanged.connect(self._apply_filter)
+        self.refresh()
+
+    def refresh(self) -> None:
+        try:
+            rows = registration_history()
+        except ResultPersistenceError as exc:
+            self.table.setRowCount(0)
+            self.message.setText(f"خواندن گزارش ممکن نشد: {exc}")
+            return
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+        for record in rows:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            raw_values = tuple(record.get(field, "") for field in self.FIELDS)
+            display_values = (
+                _registration_date_display(str(raw_values[0])),
+                *raw_values[1:],
+            )
+            for column, value in enumerate(display_values):
+                item = QTableWidgetItem(str(value or ""))
+                item.setData(Qt.ItemDataRole.UserRole, str(raw_values[column] or ""))
+                self.table.setItem(row, column, item)
+        self.table.setSortingEnabled(True)
+        self.message.setText(f"تعداد سوابق ثبت‌شده: {len(rows)}")
+        self._apply_filter(self.search.text())
+
+    def _apply_filter(self, text: str) -> None:
+        query = _normalized_report_search(text)
+        visible = 0
+        for row in range(self.table.rowCount()):
+            values = (
+                (
+                    self.table.item(row, column).text(),
+                    self.table.item(row, column).data(Qt.ItemDataRole.UserRole),
+                )
+                for column in range(self.table.columnCount())
+            )
+            matches = not query or any(
+                query in _normalized_report_search(display)
+                or query in _normalized_report_search(raw)
+                for display, raw in values
+            )
+            self.table.setRowHidden(row, not matches)
+            visible += int(matches)
+        if query:
+            self.message.setText(f"نتیجهٔ جستجو: {visible} مورد")
+
+
 class FileSelectionPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
@@ -684,6 +794,7 @@ class FileSelectionPage(QWizardPage):
         )
         self.setAcceptDrops(True)
         self._last_source_directory = _load_last_source_directory()
+        self.registration_report = RegistrationHistoryWidget()
 
         self.file_list = QListWidget()
         palette = self.file_list.palette()
@@ -707,6 +818,9 @@ class FileSelectionPage(QWizardPage):
         buttons.addStretch()
 
         layout = QVBoxLayout(self)
+        history_label = QLabel("<b>گزارش اظهارنامه‌های ثبت‌شده</b>")
+        layout.addWidget(history_label)
+        layout.addWidget(self.registration_report)
         guidance = QLabel(
             "راهنما: فایل یا فایل‌های مربوط به یک پرونده را هم‌زمان اضافه کنید. "
             "برنامه مشخصات اشخاص، نقش آنها و شماره‌های مرتبط را استخراج می‌کند. "
@@ -2075,6 +2189,8 @@ class LoginPage(QWizardPage):
 
         self.output_tabs = QTabWidget()
         self.output_tabs.addTab(self.status_table, "وضعیت اظهارنامه‌ها")
+        self.registration_report = RegistrationHistoryWidget()
+        self.output_tabs.addTab(self.registration_report, "گزارش ثبت‌ها")
         self.output_tabs.addTab(self.python_output, "گزارش فنی")
         self.output_tabs.setCurrentIndex(0)
         self.output_tabs.setMinimumHeight(220)
@@ -2112,6 +2228,10 @@ class LoginPage(QWizardPage):
     def _request_stop(self) -> None:
         if self.stop_callback is not None:
             self.stop_callback()
+
+    def show_registration_history(self) -> None:
+        self.registration_report.refresh()
+        self.output_tabs.setCurrentWidget(self.registration_report)
 
     @staticmethod
     def _draft_status_key(draft: DeclarationDraft) -> tuple[str, int]:
@@ -2590,6 +2710,7 @@ class RecipientWizard(QWizard):
             self.preprocessing_page.refresh_registration_results()
             self.review_page.refresh_registration_results()
             self.files_page.refresh_registration_results()
+            self._show_registration_history()
             self.login_page.append_output(
                 "درخواست ثبت موقت ناموفق شد؛ مرورگر برای بررسی باز می‌ماند. "
                 "درخواست تازه تا بستن مرورگر پذیرفته نمی‌شود.",
@@ -2603,6 +2724,7 @@ class RecipientWizard(QWizard):
             self.preprocessing_page.refresh_registration_results()
             self.review_page.refresh_registration_results()
             self.files_page.refresh_registration_results()
+            self._show_registration_history()
             self.login_page.append_output(
                 "درخواست فعلی پایان یافت؛ نشست مرورگر باز و آمادهٔ درخواست بعدی است. "
                 "برای بستن نشست «خروج از مرورگر» را بزنید.",
@@ -2659,6 +2781,10 @@ class RecipientWizard(QWizard):
             self._background_dialog.deleteLater()
             self._background_dialog = None
         self._set_background_controls_enabled(True)
+
+    def _show_registration_history(self) -> None:
+        self.files_page.registration_report.refresh()
+        self.login_page.show_registration_history()
 
     def _set_background_controls_enabled(self, enabled: bool) -> None:
         for role in (
@@ -3481,6 +3607,7 @@ class RecipientWizard(QWizard):
             self.preprocessing_page.refresh_registration_results()
             self.review_page.refresh_registration_results()
             self.files_page.refresh_registration_results()
+            self._show_registration_history()
             QMessageBox.warning(
                 self,
                 (
@@ -3501,6 +3628,7 @@ class RecipientWizard(QWizard):
         self.preprocessing_page.refresh_registration_results()
         self.review_page.refresh_registration_results()
         self.files_page.refresh_registration_results()
+        self._show_registration_history()
         QMessageBox.information(
             self,
             "ثبت کامل شد",
@@ -3514,6 +3642,7 @@ class RecipientWizard(QWizard):
             self._loaded_paths = ()
             self._preprocess_source = ()
             self.files_page.refresh_registration_results()
+            self.files_page.registration_report.refresh()
             return
         if page_id == self.login_page_id:
             if self._api_session_active() or self._api_browser_ready:

@@ -2,6 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
 import unittest
+from unittest.mock import patch
 
 from sana_declaration_uploader.models import DeclarationDraft, UploadResult
 from sana_declaration_uploader.results import (
@@ -11,12 +12,26 @@ from sana_declaration_uploader.results import (
     read_legacy_tracking_codes,
     read_saved_attachment_context,
     read_saved_result,
+    registration_history,
     save_attachment_count,
     save_verified_result,
 )
 
 
 class ResultPersistenceTests(unittest.TestCase):
+    def setUp(self):
+        self.database_dir = TemporaryDirectory()
+        self.database_path = Path(self.database_dir.name) / "sana-history.sqlite3"
+        self.database_patch = patch(
+            "sana_declaration_uploader.results.history_database_path",
+            return_value=self.database_path,
+        )
+        self.database_patch.start()
+
+    def tearDown(self):
+        self.database_patch.stop()
+        self.database_dir.cleanup()
+
     def test_migrates_legacy_codes_to_each_recipient_key(self):
         with TemporaryDirectory() as directory:
             source = Path(directory)
@@ -46,20 +61,7 @@ class ResultPersistenceTests(unittest.TestCase):
             migrate_legacy_registration(second, "T-SECOND")
             migrate_legacy_registration(first, "T-FIRST")
 
-            manifest = json.loads(
-                (source / "results.json").read_text(encoding="utf-8")
-            )
-            declarations = manifest["declarations"]
-            self.assertNotIn("shared.docx", declarations)
-            self.assertEqual(
-                declarations["shared.docx::recipient-001"]["registrations"][0]
-                ["tracking_code"],
-                "T-FIRST",
-            )
-            self.assertEqual(
-                declarations["shared.docx::recipient-002"]["source_file"],
-                "shared.docx",
-            )
+            self.assertEqual(read_legacy_tracking_codes(source, source_path), ())
             self.assertEqual(
                 read_saved_result(
                     source, source_path, source_recipient_ordinal=2,
@@ -91,7 +93,7 @@ class ResultPersistenceTests(unittest.TestCase):
             self.assertEqual(prior[0][0], "first.docx")
             self.assertEqual(prior[0][1]["tracking_code"], "T-0001")
 
-    def test_saves_only_verified_result_beside_its_input(self):
+    def test_saves_only_verified_result_in_central_database(self):
         with TemporaryDirectory() as directory:
             source = Path(directory)
             source_path = source / "sample.docx"
@@ -106,8 +108,7 @@ class ResultPersistenceTests(unittest.TestCase):
                 UploadResult(status="success", tracking_code="T-0001"),
             )
 
-            self.assertEqual(path.parent, source)
-            self.assertEqual(path.name, "results.json")
+            self.assertEqual(path, self.database_path)
             saved = read_saved_result(source, source_path)
             self.assertEqual(saved["tracking_code"], "T-0001")
             self.assertTrue(saved["registered_at"])
@@ -124,14 +125,7 @@ class ResultPersistenceTests(unittest.TestCase):
                 draft, UploadResult(status="success", tracking_code="T-NEW")
             )
 
-            manifest = json.loads((source / "results.json").read_text(encoding="utf-8"))
-            self.assertEqual(
-                len(
-                    manifest["declarations"]
-                    ["sample.docx::recipient-001"]["registrations"]
-                ),
-                2,
-            )
+            self.assertEqual(len(registration_history()), 2)
             self.assertEqual(
                 read_saved_result(source, source_path)["tracking_code"], "T-NEW"
             )
@@ -145,20 +139,9 @@ class ResultPersistenceTests(unittest.TestCase):
 
             save_attachment_count(draft, "T-0001", 3)
 
-            manifest = json.loads(
-                (source / "results.json").read_text(encoding="utf-8")
-            )
-            registration = manifest["declarations"][
-                "sample.docx::recipient-001"
-            ]["registrations"][-1]
-            self.assertEqual(registration["attachment_count"], 3)
-            self.assertTrue(registration["attachment_count_checked_at"])
             saved = read_saved_result(source, source_path)
             self.assertEqual(saved["attachment_count"], 3)
-            self.assertEqual(
-                saved["attachment_count_checked_at"],
-                registration["attachment_count_checked_at"],
-            )
+            self.assertTrue(saved["attachment_count_checked_at"])
 
     def test_attachment_count_does_not_create_unverified_registration(self):
         with TemporaryDirectory() as directory:
@@ -182,7 +165,34 @@ class ResultPersistenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ResultPersistenceError, "unverified_result"):
                 save_verified_result(draft, UploadResult(status="failed"))
 
-            self.assertFalse((source / "results.json").exists())
+            self.assertFalse(self.database_path.exists())
+
+    def test_history_contains_search_fields_and_is_newest_first(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            first = DeclarationDraft(
+                source,
+                {
+                    "related_declaration_number": "R-1",
+                    "recipient_national_id": "001",
+                    "recipient_first_name": "علی",
+                    "recipient_last_name": "نمونه",
+                },
+                source_path=source / "first.docx",
+            )
+            second = DeclarationDraft(
+                source, {}, source_path=source / "second.docx"
+            )
+            save_verified_result(first, UploadResult("success", "T-FIRST"))
+            save_verified_result(second, UploadResult("success", "T-SECOND"))
+
+            history = registration_history()
+
+            self.assertEqual(history[0]["tracking_code"], "T-SECOND")
+            self.assertEqual(history[1]["related_declaration_number"], "R-1")
+            self.assertEqual(history[1]["national_id"], "001")
+            self.assertEqual(history[1]["first_name"], "علی")
+            self.assertEqual(history[1]["last_name"], "نمونه")
 
     def test_reads_attachment_context_for_saved_tracking_code(self):
         with TemporaryDirectory() as directory:

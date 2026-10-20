@@ -57,6 +57,19 @@ class RecipientWizardTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
 
+    def setUp(self) -> None:
+        self.history_directory = TemporaryDirectory()
+        self.history_path = Path(self.history_directory.name) / "sana-history.sqlite3"
+        self.history_patch = patch(
+            "sana_declaration_uploader.results.history_database_path",
+            return_value=self.history_path,
+        )
+        self.history_patch.start()
+
+    def tearDown(self) -> None:
+        self.history_patch.stop()
+        self.history_directory.cleanup()
+
     def _wait_for_background(
         self,
         wizard: RecipientWizard,
@@ -70,6 +83,58 @@ class RecipientWizardTests(unittest.TestCase):
                 thread.wait(10)
         self.app.processEvents()
         self.assertIsNone(wizard._background_thread)
+
+    def test_first_page_history_is_newest_first_and_searchable(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            first = DeclarationDraft(
+                source,
+                {
+                    "related_declaration_number": "R-1",
+                    "recipient_national_id": "001",
+                    "recipient_first_name": "علی",
+                    "recipient_last_name": "نمونه",
+                },
+                source_path=source / "first.docx",
+            )
+            second = DeclarationDraft(
+                source,
+                {"recipient_first_name": "رضا"},
+                source_path=source / "second.docx",
+            )
+            save_verified_result(first, UploadResult("success", "T-FIRST"))
+            save_verified_result(second, UploadResult("success", "T-SECOND"))
+
+            wizard = RecipientWizard()
+            report = wizard.files_page.registration_report
+
+            self.assertEqual(report.table.rowCount(), 2)
+            self.assertEqual(report.table.item(0, 5).text(), "T-SECOND")
+            report.search.setText("۰۰۱")
+            self.assertFalse(report.table.isRowHidden(1))
+            self.assertTrue(report.table.isRowHidden(0))
+
+    def test_completed_operation_can_show_refreshed_history(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            wizard = RecipientWizard()
+            save_verified_result(
+                DeclarationDraft(
+                    source, {}, source_path=source / "sample.docx"
+                ),
+                UploadResult("success", "T-NEW"),
+            )
+
+            wizard._show_registration_history()
+
+            self.assertEqual(
+                wizard.login_page.output_tabs.currentWidget(),
+                wizard.login_page.registration_report,
+            )
+            self.assertEqual(
+                wizard.files_page.registration_report.table.item(0, 5).text(),
+                "T-NEW",
+            )
 
     def test_navigation_is_persian_and_aligned_to_the_right(self) -> None:
         wizard = RecipientWizard()
