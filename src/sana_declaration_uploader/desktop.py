@@ -77,11 +77,13 @@ from .preprocessing import (
     preprocess_candidates,
 )
 from .results import (
+    backfill_registration_report_fields,
     ResultPersistenceError,
     RESULTS_FILENAME,
     existing_results,
     read_saved_result,
     registration_history,
+    registrations_missing_report_fields,
     save_verified_result,
 )
 
@@ -685,6 +687,119 @@ def _normalized_report_search(value: object) -> str:
     return " ".join(str(value or "").translate(_SEARCH_TRANSLATION).casefold().split())
 
 
+def _petition_recipient_for_record(
+    petition: dict[str, object], record: dict[str, object]
+) -> dict[str, object] | None:
+    people = petition.get("theJSSPetitionPerson")
+    if not isinstance(people, list):
+        return None
+    recipients = [
+        person for person in people
+        if isinstance(person, dict) and str(person.get("RoleType")) == "2"
+    ]
+    national_id = _normalized_report_search(record.get("national_id"))
+    if national_id:
+        matches = [
+            person for person in recipients
+            if _normalized_report_search(person.get("NationalityCode")) == national_id
+        ]
+        return matches[0] if len(matches) == 1 else None
+    first_name = _normalized_report_search(record.get("first_name"))
+    last_name = _normalized_report_search(record.get("last_name"))
+    if first_name and last_name:
+        matches = [
+            person for person in recipients
+            if _normalized_report_search(person.get("Name")) == first_name
+            and _normalized_report_search(person.get("Family")) == last_name
+        ]
+        return matches[0] if len(matches) == 1 else None
+    return recipients[0] if len(recipients) == 1 else None
+
+
+def _petition_review_fields(
+    petition: dict[str, object], record: dict[str, object]
+) -> dict[str, str]:
+    recipient = _petition_recipient_for_record(petition, record)
+    return {
+        "related_declaration_number": str(petition.get("RelatedNo") or "").strip(),
+        "recipient_national_id": str(
+            (recipient or {}).get("NationalityCode") or ""
+        ).strip(),
+        "recipient_first_name": str((recipient or {}).get("Name") or "").strip(),
+        "recipient_last_name": str((recipient or {}).get("Family") or "").strip(),
+    }
+
+
+def _petition_review_summary(petition: dict[str, object]) -> str:
+    people = petition.get("theJSSPetitionPerson")
+    recipients = [
+        person for person in people
+        if isinstance(person, dict) and str(person.get("RoleType")) == "2"
+    ] if isinstance(people, list) else []
+    reliefs = petition.get("theJSSPetitionRelief")
+    relief_titles = [
+        str(relief.get("Title") or relief.get("FullActionSubjectTitle") or "").strip()
+        for relief in reliefs
+        if isinstance(relief, dict)
+    ] if isinstance(reliefs, list) else []
+    recipient_names = [
+        " ".join(filter(None, (
+            str(person.get("Name") or "").strip(),
+            str(person.get("Family") or "").strip(),
+        )))
+        for person in recipients
+    ]
+    rows = (
+        ("کد رهگیری", petition.get("No")),
+        ("شماره اظهارنامه", petition.get("DeclarationNo")),
+        ("شماره اظهارنامه مرتبط", petition.get("RelatedNo")),
+        ("نوع اظهارنامه", petition.get("PetitionTypeTitle")),
+        ("وضعیت", petition.get("StateName")),
+        ("تاریخ ایجاد", petition.get("CreateDateTime")),
+        ("مخاطب", "، ".join(filter(None, recipient_names))),
+        ("موضوع/خواسته", "، ".join(filter(None, relief_titles))),
+        ("تعداد ضمائم", petition.get("JSSPetitionDocumentCount")),
+        ("شرح", petition.get("Description")),
+    )
+    return "\n".join(
+        f"{label}: {value}" for label, value in rows
+        if value is not None and str(value).strip()
+    )
+
+
+def _backfill_missing_registration_history() -> None:
+    for source_path, ordinal in registrations_missing_report_fields():
+        if not source_path.is_file():
+            continue
+        try:
+            candidates = extract_recipients([source_path])
+        except Exception:
+            continue
+        candidate = next((
+            item for item in candidates
+            if item.source_path.resolve() == source_path.resolve()
+            and item.source_recipient_ordinal == ordinal
+        ), None)
+        if candidate is None:
+            continue
+        first_name = candidate.first_name
+        last_name = candidate.last_name
+        if not first_name or not last_name:
+            suggested_first, suggested_last = _split_full_name(candidate.full_name)
+            first_name = first_name or suggested_first
+            last_name = last_name or suggested_last
+        backfill_registration_report_fields(
+            source_path,
+            ordinal,
+            {
+                "related_declaration_number": candidate.related_declaration_number,
+                "recipient_national_id": candidate.national_id,
+                "recipient_first_name": first_name,
+                "recipient_last_name": last_name,
+            },
+        )
+
+
 class RegistrationHistoryWidget(QWidget):
     """Read-only searchable view over the central registration database."""
 
@@ -709,6 +824,7 @@ class RegistrationHistoryWidget(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self.review_callback: Callable[[dict[str, object]], None] | None = None
         self.search = QLineEdit()
         self.search.setPlaceholderText(
             "جستجو در شماره اظهارنامه مرتبط، کد ملی، نام، نام خانوادگی، "
@@ -727,18 +843,32 @@ class RegistrationHistoryWidget(QWidget):
             QHeaderView.ResizeMode.ResizeToContents
         )
         self.table.setMinimumHeight(210)
+        self.review_button = QPushButton("بررسی از ثنا")
+        self.review_button.setObjectName("SecondaryButton")
+        self.review_button.setToolTip(
+            "اطلاعات ردیف انتخاب‌شده را فقط برای بازبینی از ثنا می‌خواند و "
+            "فیلدهای خالی گزارش را تکمیل می‌کند."
+        )
+        self.review_button.setAccessibleName(
+            "بررسی خواندنی اظهارنامه انتخاب‌شده از ثنا"
+        )
         self.message = QLabel()
         self.message.setObjectName("Guidance")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.search)
+        search_row = QHBoxLayout()
+        search_row.addWidget(self.search, 1)
+        search_row.addWidget(self.review_button)
+        layout.addLayout(search_row)
         layout.addWidget(self.table)
         layout.addWidget(self.message)
         self.search.textChanged.connect(self._apply_filter)
+        self.review_button.clicked.connect(self._review_selected)
         self.refresh()
 
     def refresh(self) -> None:
         try:
+            _backfill_missing_registration_history()
             rows = registration_history()
         except ResultPersistenceError as exc:
             self.table.setRowCount(0)
@@ -757,6 +887,11 @@ class RegistrationHistoryWidget(QWidget):
             for column, value in enumerate(display_values):
                 item = QTableWidgetItem(str(value or ""))
                 item.setData(Qt.ItemDataRole.UserRole, str(raw_values[column] or ""))
+                if column == 0:
+                    item.setData(
+                        int(Qt.ItemDataRole.UserRole) + 1,
+                        json.dumps(dict(record), ensure_ascii=False, default=str),
+                    )
                 self.table.setItem(row, column, item)
         self.table.setSortingEnabled(True)
         self.message.setText(f"تعداد سوابق ثبت‌شده: {len(rows)}")
@@ -782,6 +917,29 @@ class RegistrationHistoryWidget(QWidget):
             visible += int(matches)
         if query:
             self.message.setText(f"نتیجهٔ جستجو: {visible} مورد")
+
+    def _review_selected(self) -> None:
+        selected = self.table.selectedRanges()
+        row = selected[0].topRow() if selected else self.table.currentRow()
+        if row < 0:
+            visible_rows = [
+                index for index in range(self.table.rowCount())
+                if not self.table.isRowHidden(index)
+            ]
+            row = visible_rows[0] if len(visible_rows) == 1 else -1
+        item = self.table.item(row, 0) if row >= 0 else None
+        stored = item.data(int(Qt.ItemDataRole.UserRole) + 1) if item else None
+        try:
+            record = json.loads(stored) if isinstance(stored, str) else None
+        except (TypeError, ValueError):
+            record = None
+        if not isinstance(record, dict):
+            QMessageBox.information(
+                self, "انتخاب ردیف", "ابتدا یک ردیف از گزارش را انتخاب کنید."
+            )
+            return
+        if self.review_callback is not None:
+            self.review_callback(record)
 
 
 class FileSelectionPage(QWizardPage):
@@ -2190,7 +2348,7 @@ class LoginPage(QWizardPage):
         self.output_tabs = QTabWidget()
         self.output_tabs.addTab(self.status_table, "وضعیت اظهارنامه‌ها")
         self.registration_report = RegistrationHistoryWidget()
-        self.output_tabs.addTab(self.registration_report, "گزارش ثبت‌ها")
+        self.output_tabs.addTab(self.registration_report, "گزارش ثبت")
         self.output_tabs.addTab(self.python_output, "گزارش فنی")
         self.output_tabs.setCurrentIndex(0)
         self.output_tabs.setMinimumHeight(220)
@@ -2520,7 +2678,9 @@ class LoginPage(QWizardPage):
         )
         self._log_sequence = 0
         self.python_output.clear()
-        self.output_tabs.setTabText(1, "گزارش فنی")
+        self.output_tabs.setTabText(
+            self.output_tabs.indexOf(self.python_output), "گزارش فنی"
+        )
         self.append_output("اجرای جدید آغاز شد.", level="system")
 
     def append_output(self, message: str, *, level: str = "system") -> None:
@@ -2533,7 +2693,10 @@ class LoginPage(QWizardPage):
             level, self.LOG_COLORS["system"]
         )
         if level == "error":
-            self.output_tabs.setTabText(1, "گزارش فنی — دارای خطا")
+            self.output_tabs.setTabText(
+                self.output_tabs.indexOf(self.python_output),
+                "گزارش فنی — دارای خطا",
+            )
         technical = level == "debug"
         direction = "ltr" if technical else "rtl"
         alignment = "left" if technical else "right"
@@ -2573,6 +2736,7 @@ class RecipientWizard(QWizard):
     otp_requested = Signal(object)
     final_confirmation_requested = Signal(object, object)
     operation_status_changed = Signal(object)
+    petition_reviewed = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -2586,10 +2750,17 @@ class RecipientWizard(QWizard):
         self.preprocessing_page = PreprocessingPage()
         self.content_page = DeclarationContentPage()
         self.login_page = LoginPage()
+        self.files_page.registration_report.review_callback = (
+            self._start_petition_review
+        )
+        self.login_page.registration_report.review_callback = (
+            self._start_petition_review
+        )
         self._api_browser_close_event: Event | None = None
         self._api_browser_ready = False
         self._api_request_queue: Queue | None = None
         self._api_drafts: list[DeclarationDraft] | None = None
+        self._petition_review_records: dict[str, dict[str, object]] = {}
         self._exit_requested = False
         # مسیر قدیمی فرم‌پرکن مرورگر عمداً از رابط جدا شده است. کدهای
         # run_live_upload_batch، _register_declarations و _finish_registration
@@ -2632,6 +2803,7 @@ class RecipientWizard(QWizard):
         self.operation_status_changed.connect(
             self.login_page.update_operation_status
         )
+        self.petition_reviewed.connect(self._petition_review_received)
         self.setButtonLayout([
             QWizard.WizardButton.BackButton,
             QWizard.WizardButton.NextButton,
@@ -2799,6 +2971,8 @@ class RecipientWizard(QWizard):
         self.login_page.api_test_button.setEnabled(enabled)
         self.login_page.attach_existing_button.setEnabled(enabled)
         self.login_page.refresh_counts_button.setEnabled(enabled)
+        self.files_page.registration_report.review_button.setEnabled(enabled)
+        self.login_page.registration_report.review_button.setEnabled(enabled)
         close_enabled = enabled and self._api_browser_ready
         self.login_page.close_browser_button.setEnabled(close_enabled)
         self.login_page.close_browser_button.setVisible(close_enabled)
@@ -2821,6 +2995,8 @@ class RecipientWizard(QWizard):
         self.login_page.api_test_button.setEnabled(allow_requests)
         self.login_page.attach_existing_button.setEnabled(allow_requests)
         self.login_page.refresh_counts_button.setEnabled(allow_requests)
+        self.files_page.registration_report.review_button.setEnabled(allow_requests)
+        self.login_page.registration_report.review_button.setEnabled(allow_requests)
         self.login_page.close_browser_button.setEnabled(True)
         self.login_page.close_browser_button.setVisible(True)
         self.login_page.stop_button.setEnabled(False)
@@ -3121,10 +3297,176 @@ class RecipientWizard(QWizard):
         self.login_page.api_test_button.setEnabled(False)
         self.login_page.attach_existing_button.setEnabled(False)
         self.login_page.refresh_counts_button.setEnabled(False)
+        self.files_page.registration_report.review_button.setEnabled(False)
+        self.login_page.registration_report.review_button.setEnabled(False)
         self.login_page.append_output(
             "درخواست بستن مرورگر ثبت شد؛ تا بسته‌شدن آن درخواست تازه پذیرفته نمی‌شود.",
             level="system",
         )
+
+    def _start_petition_review(self, record: dict[str, object]) -> None:
+        tracking_code = str(record.get("tracking_code") or "").strip()
+        if not tracking_code or tracking_code == "رسید نامعتبر":
+            QMessageBox.warning(
+                self, "کد رهگیری نامعتبر",
+                "این سابقه کد رهگیری قطعی برای بررسی در ثنا ندارد.",
+            )
+            return
+        credentials = self.login_page._credentials()
+        if not self._api_session_active() and not all((
+            credentials.national_code, credentials.password,
+            credentials.legal_identity, credentials.otp,
+        )):
+            QMessageBox.warning(
+                self, "اطلاعات ورود ناقص",
+                "برای نشست تازه، مشخصات ورود و OTP را در صفحهٔ آخر کامل کنید؛ "
+                "سپس همین ردیف را دوباره بررسی کنید.",
+            )
+            return
+        self.login_page._save_credentials()
+        self._petition_review_records[tracking_code] = dict(record)
+        if self._api_request_queue is not None:
+            if (
+                self._api_browser_close_event is None
+                or self._api_browser_close_event.is_set()
+            ):
+                QMessageBox.information(
+                    self, "نشست در حال بسته‌شدن",
+                    "پس از بسته‌شدن مرورگر، بررسی را دوباره انجام دهید.",
+                )
+                return
+            self._api_browser_ready = False
+            self._set_background_controls_enabled(False)
+            self._api_request_queue.put({
+                "kind": "review_petition",
+                "tracking_codes": (tracking_code,),
+                "credentials": credentials,
+                "on_petition_review": self._emit_petition_review,
+            })
+            self.login_page.append_output(
+                "بررسی خواندنی اظهارنامه به نشست فعلی صف شد.", level="system"
+            )
+            return
+
+        self.login_page.start_log()
+        close_browser_event = Event()
+        request_queue: Queue = Queue()
+        self._api_browser_close_event = close_browser_event
+        self._api_request_queue = request_queue
+        self._api_browser_ready = False
+        report = self.login_page.append_output
+        report(
+            "بررسی خواندنی اظهارنامه از ثنا آغاز شد؛ هیچ ثبت یا آپلودی انجام نمی‌شود.",
+            level="system",
+        )
+
+        def task(progress: Callable[[str], None]) -> object:
+            def reauth_credentials_provider(
+                current: LoginCredentials,
+            ) -> LoginCredentials | None:
+                response: Queue = Queue(maxsize=1)
+                self.otp_requested.emit(response)
+                otp = response.get()
+                return replace(current, otp=otp) if otp else None
+
+            return run_live_setpetitiondata_batch(
+                (), credentials, lambda: True, {},
+                _setpetitiondata_request_text_path(),
+                lookup_dir=self._lookup_dir,
+                progress=progress,
+                pending_requests=request_queue,
+                reauth_credentials_provider=reauth_credentials_provider,
+                close_browser_event=close_browser_event,
+                petition_reviews=(tracking_code,),
+                on_petition_review=self._emit_petition_review,
+            )
+
+        def succeeded(_result: object) -> None:
+            report("بررسی خواندنی اظهارنامه پایان یافت.", level="success")
+
+        def failed(exc: Exception, details: str) -> None:
+            self._petition_review_records.pop(tracking_code, None)
+            report(f"بررسی اظهارنامه متوقف شد: {exc}", level="error")
+            report(details, level="debug")
+            QMessageBox.warning(self, "بررسی از ثنا ناموفق", str(exc))
+
+        self._start_background(
+            "در حال خواندن اظهارنامه از ثنا...",
+            task, succeeded, failed,
+            lambda message: report(message, level="progress"),
+        )
+
+    def _emit_petition_review(
+        self, code: str, petition: dict[str, object]
+    ) -> None:
+        selected = self._petition_review_records.pop(code, None)
+        if selected is not None:
+            self.petition_reviewed.emit({
+                "record": selected,
+                "petition": dict(petition),
+            })
+
+    @Slot(object)
+    def _petition_review_received(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        record = payload.get("record")
+        petition = payload.get("petition")
+        if not isinstance(record, dict) or not isinstance(petition, dict):
+            return
+        tracking_code = str(record.get("tracking_code") or "").strip()
+        if str(petition.get("No") or "").strip() != tracking_code:
+            QMessageBox.warning(
+                self, "پاسخ نامعتبر",
+                "کد رهگیری پاسخ ثنا با ردیف انتخاب‌شده یکسان نیست.",
+            )
+            return
+        fields = _petition_review_fields(petition, record)
+        filled = [
+            label for key, label in (
+                ("related_declaration_number", "شماره اظهارنامه مرتبط"),
+                ("recipient_national_id", "کد ملی"),
+                ("recipient_first_name", "نام"),
+                ("recipient_last_name", "نام خانوادگی"),
+            )
+            if not str(record.get({
+                "related_declaration_number": "related_declaration_number",
+                "recipient_national_id": "national_id",
+                "recipient_first_name": "first_name",
+                "recipient_last_name": "last_name",
+            }[key]) or "").strip() and fields[key]
+        ]
+        try:
+            updated = backfill_registration_report_fields(
+                Path(str(record["source_path"])),
+                int(record["source_recipient_ordinal"]),
+                fields,
+                tracking_code=tracking_code,
+            )
+            if updated != 1:
+                raise ResultPersistenceError("verified_registration_not_found")
+        except (KeyError, TypeError, ValueError, ResultPersistenceError) as exc:
+            QMessageBox.warning(
+                self, "تکمیل گزارش ناموفق",
+                f"اطلاعات ثنا دریافت شد اما ذخیره در گزارش ممکن نشد: {exc}",
+            )
+        else:
+            self.files_page.registration_report.refresh()
+            self.login_page.registration_report.refresh()
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("اطلاعات ثبت‌شده در ثنا")
+        box.setText(
+            "اطلاعات اظهارنامه از ثنا دریافت شد."
+            + (f"\nفیلدهای تکمیل‌شده: {', '.join(filled)}" if filled else
+               "\nفیلد خالیِ قابل‌تکمیلی پیدا نشد یا تطبیق مخاطب یکتا نبود.")
+        )
+        box.setInformativeText(_petition_review_summary(petition))
+        box.setDetailedText(
+            json.dumps(petition, ensure_ascii=False, indent=2, default=str)
+        )
+        box.exec()
 
     def _start_attachment_count_refresh(
         self, credentials: LoginCredentials

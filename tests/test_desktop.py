@@ -253,7 +253,8 @@ class RecipientWizardTests(unittest.TestCase):
         })
 
         self.assertEqual(page.output_tabs.tabText(0), "وضعیت اظهارنامه‌ها")
-        self.assertEqual(page.output_tabs.tabText(1), "گزارش فنی")
+        self.assertEqual(page.output_tabs.tabText(1), "گزارش ثبت")
+        self.assertEqual(page.output_tabs.tabText(2), "گزارش فنی")
         self.assertEqual(page.output_tabs.currentIndex(), 0)
         self.assertEqual(page.status_table.rowCount(), 2)
         tracking_column = page.STATUS_HEADERS.index("کد رهگیری")
@@ -278,7 +279,10 @@ class RecipientWizardTests(unittest.TestCase):
         )
 
         page.append_output("خطای نمونه", level="error")
-        self.assertEqual(page.output_tabs.tabText(1), "گزارش فنی — دارای خطا")
+        self.assertEqual(page.output_tabs.tabText(1), "گزارش ثبت")
+        self.assertEqual(
+            page.output_tabs.tabText(2), "گزارش فنی — دارای خطا"
+        )
 
     def test_refreshing_existing_status_row_does_not_reinsert_items(self) -> None:
         page = RecipientWizard().login_page

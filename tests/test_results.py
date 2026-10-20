@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from sana_declaration_uploader.models import DeclarationDraft, UploadResult
 from sana_declaration_uploader.results import (
+    backfill_registration_report_fields,
     ResultPersistenceError,
     existing_results,
     migrate_legacy_registration,
@@ -193,6 +194,52 @@ class ResultPersistenceTests(unittest.TestCase):
             self.assertEqual(history[1]["national_id"], "001")
             self.assertEqual(history[1]["first_name"], "علی")
             self.assertEqual(history[1]["last_name"], "نمونه")
+
+    def test_backfill_only_fills_missing_report_fields(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "sample.docx"
+            draft = DeclarationDraft(
+                source,
+                {"recipient_first_name": "نام بازبینی‌شده"},
+                source_path=source_path,
+            )
+            save_verified_result(draft, UploadResult("success", "T-1"))
+
+            backfill_registration_report_fields(
+                source_path,
+                1,
+                {
+                    "recipient_first_name": "نام استخراجی",
+                    "recipient_last_name": "خانوادگی استخراجی",
+                    "recipient_national_id": "001",
+                },
+            )
+            row = registration_history()[0]
+
+            self.assertEqual(row["first_name"], "نام بازبینی‌شده")
+            self.assertEqual(row["last_name"], "خانوادگی استخراجی")
+            self.assertEqual(row["national_id"], "001")
+
+    def test_backfill_can_target_one_exact_tracking_code(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "sample.docx"
+            draft = DeclarationDraft(source, {}, source_path=source_path)
+            save_verified_result(draft, UploadResult("success", "T-OLD"))
+            save_verified_result(draft, UploadResult("success", "T-NEW"))
+
+            updated = backfill_registration_report_fields(
+                source_path,
+                1,
+                {"recipient_first_name": "نام ثنا"},
+                tracking_code="T-OLD",
+            )
+
+            rows = {row["tracking_code"]: row for row in registration_history()}
+            self.assertEqual(updated, 1)
+            self.assertEqual(rows["T-OLD"]["first_name"], "نام ثنا")
+            self.assertEqual(rows["T-NEW"]["first_name"], "")
 
     def test_reads_attachment_context_for_saved_tracking_code(self):
         with TemporaryDirectory() as directory:

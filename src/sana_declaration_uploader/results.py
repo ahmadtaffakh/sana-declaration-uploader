@@ -480,3 +480,63 @@ def registration_history() -> tuple[dict[str, object], ...]:
                ORDER BY registered_at DESC, id DESC"""
         ).fetchall()
     return tuple({key: row[key] for key in row.keys()} for row in rows)
+
+
+def registrations_missing_report_fields() -> tuple[tuple[Path, int], ...]:
+    """Return source recipients whose searchable identity is incomplete."""
+
+    with _connect() as connection:
+        rows = connection.execute(
+            """SELECT source_path, source_recipient_ordinal
+               FROM registrations
+               WHERE trim(first_name) = '' OR trim(last_name) = ''
+               GROUP BY source_path, source_recipient_ordinal"""
+        ).fetchall()
+    return tuple((Path(row[0]), int(row[1])) for row in rows)
+
+
+def backfill_registration_report_fields(
+    source_path: Path,
+    source_recipient_ordinal: int,
+    fields: Mapping[str, str],
+    *,
+    tracking_code: str | None = None,
+) -> int:
+    """Fill only missing report fields from the matching reviewed source row."""
+
+    if source_recipient_ordinal < 1:
+        raise ResultPersistenceError("source_recipient_ordinal_invalid")
+    values = (
+        str(fields.get("related_declaration_number", "")).strip(),
+        str(fields.get("recipient_national_id", "")).strip(),
+        str(fields.get("recipient_first_name", "")).strip(),
+        str(fields.get("recipient_last_name", "")).strip(),
+    )
+    tracking = str(tracking_code or "").strip()
+    where = "source_path = ? AND source_recipient_ordinal = ?"
+    parameters: tuple[object, ...] = (
+        *values,
+        str(source_path.resolve()),
+        source_recipient_ordinal,
+    )
+    if tracking_code is not None:
+        if not tracking:
+            raise ResultPersistenceError("tracking_code_missing")
+        where += " AND tracking_code = ?"
+        parameters += (tracking,)
+    with _connect() as connection:
+        cursor = connection.execute(
+            f"""UPDATE registrations SET
+                   related_declaration_number = CASE
+                       WHEN trim(related_declaration_number) = '' THEN ?
+                       ELSE related_declaration_number END,
+                   national_id = CASE WHEN trim(national_id) = '' THEN ?
+                       ELSE national_id END,
+                   first_name = CASE WHEN trim(first_name) = '' THEN ?
+                       ELSE first_name END,
+                   last_name = CASE WHEN trim(last_name) = '' THEN ?
+                       ELSE last_name END
+               WHERE {where}""",
+            parameters,
+        )
+        return cursor.rowcount

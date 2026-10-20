@@ -16,6 +16,33 @@ from sana_declaration_uploader.petition_api import SetPetitionDataResult
 
 
 class DirectSetPetitionDataFlowTests(unittest.TestCase):
+    def test_review_petition_returns_only_exact_tracking_code_response(self):
+        callback = Mock()
+        petition = {"No": "T-1", "Description": "شرح"}
+        with patch.object(
+            api_test_flow, "_get_petition_by_tracking_code", return_value=petition
+        ):
+            api_test_flow._review_petitions(
+                Mock(), ("T-1",), Mock(), None, callback
+            )
+
+        callback.assert_called_once_with("T-1", petition)
+
+    def test_review_petition_rejects_mismatched_tracking_code(self):
+        with (
+            patch.object(
+                api_test_flow, "_get_petition_by_tracking_code",
+                return_value={"No": "OTHER"},
+            ),
+            self.assertRaisesRegex(
+                api_test_flow.LiveBrowserError,
+                "tracked_petition_number_mismatch",
+            ),
+        ):
+            api_test_flow._review_petitions(
+                Mock(), ("T-1",), Mock(), None, Mock()
+            )
+
     def test_reconciles_each_legacy_code_to_one_recipient(self):
         source = Path("shared.docx")
         drafts = tuple(

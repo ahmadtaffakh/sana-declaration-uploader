@@ -107,6 +107,10 @@ def run_live_setpetitiondata_batch(
     legacy_registration: tuple[DeclarationDraft, ...] = (),
     legacy_attachment_only: tuple[DeclarationDraft, ...] = (),
     count_refresh: tuple[tuple[DeclarationDraft, str], ...] = (),
+    petition_reviews: tuple[str, ...] = (),
+    on_petition_review: Callable[
+        [str, Mapping[str, object]], None
+    ] | None = None,
 ) -> tuple[SetPetitionDataResult, ...] | None:
     """Submit rows sequentially; advance only after a verified tracking code."""
 
@@ -119,7 +123,7 @@ def run_live_setpetitiondata_batch(
 
     if not (
         drafts or attachment_only or legacy_registration
-        or legacy_attachment_only or count_refresh
+        or legacy_attachment_only or count_refresh or petition_reviews
     ):
         raise LiveBrowserError("set_petition_data_recipients_missing")
     with sync_playwright() as playwright:
@@ -193,6 +197,11 @@ def run_live_setpetitiondata_batch(
                 _refresh_attachment_counts(
                     page, count_refresh, ensure_authenticated, progress, status,
                 )
+            if petition_reviews:
+                _review_petitions(
+                    page, petition_reviews, ensure_authenticated, progress,
+                    on_petition_review,
+                )
             all_results = list(results)
             while pending_requests is not None and not close_browser_event.is_set():
                 _report(progress, "__api_browser_ready_to_close__")
@@ -209,6 +218,14 @@ def run_live_setpetitiondata_batch(
                     _refresh_attachment_counts(
                         page, queued["requests"], ensure_authenticated,
                         progress, status,
+                    )
+                    continue
+                if isinstance(queued, dict) and queued.get("kind") == "review_petition":
+                    current_credentials[0] = queued["credentials"]
+                    _review_petitions(
+                        page, queued["tracking_codes"], ensure_authenticated,
+                        progress,
+                        queued.get("on_petition_review", on_petition_review),
                     )
                     continue
                 if isinstance(queued, dict) and queued.get("kind") == "attach_existing":
@@ -803,6 +820,31 @@ def _get_petition_by_tracking_code(
     if not isinstance(value, dict):
         raise LiveBrowserError("tracked_petition_lookup_response_invalid")
     return value
+
+
+def _review_petitions(
+    page: object,
+    tracking_codes: tuple[str, ...],
+    ensure_authenticated: Callable[[], None],
+    progress: ProgressCallback | None,
+    on_petition_review: Callable[
+        [str, Mapping[str, object]], None
+    ] | None,
+) -> None:
+    """Read petitions once and return only responses matching their tracking code."""
+
+    for tracking_code in tracking_codes:
+        code = str(tracking_code).strip()
+        ensure_authenticated()
+        petition = _run_logged_stage(
+            progress,
+            f"بررسی خواندنی اظهارنامه با کد رهگیری {code}",
+            lambda code=code: _get_petition_by_tracking_code(page, code),
+        )
+        if str(petition.get("No") or "").strip() != code:
+            raise LiveBrowserError("tracked_petition_number_mismatch")
+        if on_petition_review is not None:
+            on_petition_review(code, petition)
 
 
 def _get_uploaded_attachment_count(page: object, petition_no: str) -> int:
