@@ -803,6 +803,7 @@ class RecipientReviewPage(QWizardPage):
     HEADERS = (
         "حذف",
         "بازکردن",
+        "نام فایل مرتبط",
         "تاریخ اظهارنامه مرتبط",
         "تعداد روز گذشته از آن تاریخ",
         "کد رهگیری",
@@ -813,7 +814,6 @@ class RecipientReviewPage(QWizardPage):
         "شماره اظهارنامه",
         "نام",
         "نام خانوادگی",
-        "نام فایل مرتبط",
         "آدرس",
         "شاهد استخراج",
     )
@@ -905,6 +905,7 @@ class RecipientReviewPage(QWizardPage):
         values = (
             "",
             "",
+            candidate.source_path.name if candidate else "دستی",
             date_value,
             days_since,
             "",
@@ -915,7 +916,6 @@ class RecipientReviewPage(QWizardPage):
             candidate.related_declaration_number if candidate else "",
             (candidate.first_name or suggested_first) if candidate else "",
             (candidate.last_name or suggested_last) if candidate else "",
-            candidate.source_path.name if candidate else "دستی",
             candidate.address if candidate else "",
             candidate.evidence if candidate else "",
         )

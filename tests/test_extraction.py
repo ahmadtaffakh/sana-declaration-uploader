@@ -8,6 +8,7 @@ from docx import Document
 from sana_declaration_uploader.extraction import (
     DocumentExtractionError,
     _address_locations,
+    _split_father_name,
     _split_natural_name,
     extract_address_details,
     extract_recipient,
@@ -18,6 +19,18 @@ from sana_declaration_uploader.extraction import (
 
 
 class RecipientExtractionTests(unittest.TestCase):
+    def test_father_name_stops_before_identity_and_address_details(self) -> None:
+        self.assertEqual(
+            _split_father_name(
+                "علی رضایی فرزند حسن به شماره ملی 0000000000 به آدرس: تهران"
+            ),
+            ("علی رضایی", "حسن"),
+        )
+        self.assertEqual(
+            _split_father_name("علی رضایی فرزند محمد رضا کد ملی 0000000000"),
+            ("علی رضایی", "محمد رضا"),
+        )
+
     def test_address_starting_with_county_preserves_it_for_parent_lookup(self) -> None:
         self.assertEqual(
             _address_locations("شهرستان ری - شهر ری - خیابان نمونه"),

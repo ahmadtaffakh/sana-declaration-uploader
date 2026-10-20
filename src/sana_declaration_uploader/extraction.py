@@ -381,7 +381,14 @@ def _split_father_name(value: str) -> tuple[str, str]:
     match = re.search(r"\s+فرزند\s+(.+)$", value)
     if not match:
         return value.strip(), ""
-    return value[:match.start()].strip(), match.group(1).strip()
+    father_name = match.group(1).strip()
+    detail = re.search(
+        r"\s+(?:(?:به|با)\s+)?(?:کد\s*ملی|شماره\s*ملی|نشانی|آدرس)\b",
+        father_name,
+    )
+    if detail:
+        father_name = father_name[:detail.start()].strip()
+    return value[:match.start()].strip(), father_name
 
 
 def _split_natural_name(value: str, person_type: str) -> tuple[str, str]:

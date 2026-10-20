@@ -763,10 +763,10 @@ class RecipientWizardTests(unittest.TestCase):
             [f"مرحله {number} از ۵" for number in "۱۲۳۴۵"],
         )
         self.assertEqual(wizard.review_page.HEADERS, (
-            "حذف", "بازکردن", "تاریخ اظهارنامه مرتبط",
+            "حذف", "بازکردن", "نام فایل مرتبط", "تاریخ اظهارنامه مرتبط",
             "تعداد روز گذشته از آن تاریخ", "کد رهگیری", "تاریخ ثبت",
             "نام و نام خانوادگی", "نام پدر", "کد ملی", "شماره اظهارنامه",
-            "نام", "نام خانوادگی", "نام فایل مرتبط", "آدرس", "شاهد استخراج",
+            "نام", "نام خانوادگی", "آدرس", "شاهد استخراج",
         ))
         self.assertTrue(wizard.review_page.table.isSortingEnabled())
         self.assertFalse(wizard.review_page.table.wordWrap())
