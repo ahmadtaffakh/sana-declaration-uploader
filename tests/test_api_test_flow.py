@@ -16,6 +16,62 @@ from sana_declaration_uploader.petition_api import SetPetitionDataResult
 
 
 class DirectSetPetitionDataFlowTests(unittest.TestCase):
+    def test_recent_registration_refresh_uses_server_month_and_tracking_codes(self):
+        callback = Mock()
+        with (
+            patch.object(
+                api_test_flow, "_portal_json_request",
+                return_value={
+                    "OneMonthLaterDate": "1405/06/30",
+                    "TodayDate": "1405/07/30",
+                },
+            ) as request,
+            patch.object(
+                api_test_flow, "_get_petition_by_tracking_code",
+                side_effect=[
+                    {"No": "T-1", "CreateDateTime": "1405/07/01"},
+                    {"No": "T-OLD", "CreateDateTime": "1405/06/01"},
+                ],
+            ),
+        ):
+            api_test_flow._refresh_recent_registrations(
+                Mock(), ("T-1", "T-OLD"), Mock(), None, callback
+            )
+
+        request.assert_called_once()
+        self.assertEqual(
+            request.call_args.args[1], api_test_flow.GET_PORTAL_DATETIME_URL
+        )
+        summary = callback.call_args.args[0]
+        self.assertEqual(summary["received"], 1)
+        self.assertEqual(summary["checked"], 2)
+        self.assertEqual(summary["matched"], 1)
+        self.assertEqual(summary["unmatched"], 1)
+        self.assertEqual(summary["petitions"]["T-1"]["No"], "T-1")
+
+    def test_recent_registration_refresh_stops_on_missing_portal_date(self):
+        with (
+            patch.object(
+                api_test_flow,
+                "_portal_json_request",
+                return_value={
+                    "OneMonthLaterDate": "1405/06/30",
+                    "TodayDate": "1405/07/30",
+                },
+            ),
+            patch.object(
+                api_test_flow, "_get_petition_by_tracking_code",
+                return_value={"No": "T-1"},
+            ),
+            self.assertRaisesRegex(
+                api_test_flow.LiveBrowserError,
+                "recent_registration_date_invalid",
+            ),
+        ):
+            api_test_flow._refresh_recent_registrations(
+                Mock(), ("T-1",), Mock(), None, Mock()
+            )
+
     def test_review_petition_returns_only_exact_tracking_code_response(self):
         callback = Mock()
         petition = {"No": "T-1", "Description": "شرح"}

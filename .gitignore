@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 dist/
+dist-test/
 build/
 *.egg-info/
 
@@ -15,5 +16,7 @@ results/
 logs/
 screenshots/
 browser-profile/
+*.har
 test-run.tmp
+sana-history.sqlite3
 ثنا 1/

@@ -36,11 +36,13 @@ from sana_declaration_uploader.desktop import (
     _load_last_source_directory,
     _load_login_settings,
     _load_saved_attachment_paths,
+    _petition_review_fields,
     _save_attachment_settings,
     _save_declaration_settings,
     _save_last_source_directory,
     _save_login_settings,
 )
+from sana_declaration_uploader.config import lookup_directory
 from sana_declaration_uploader.live_browser import LiveBrowserError, LoginCredentials
 from sana_declaration_uploader.lookups import LookupResolutionError
 from sana_declaration_uploader.models import (
@@ -49,7 +51,13 @@ from sana_declaration_uploader.models import (
     RecipientCandidate,
     UploadResult,
 )
-from sana_declaration_uploader.results import ResultPersistenceError, save_verified_result
+from sana_declaration_uploader.results import (
+    RESULTS_FILENAME,
+    ResultPersistenceError,
+    registration_history,
+    save_attachment_count,
+    save_verified_result,
+)
 
 
 class RecipientWizardTests(unittest.TestCase):
@@ -134,6 +142,188 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertEqual(
                 wizard.files_page.registration_report.table.item(0, 5).text(),
                 "T-NEW",
+            )
+
+    def test_history_review_button_passes_selected_record(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            save_verified_result(
+                DeclarationDraft(source, {}, source_path=source / "sample.docx"),
+                UploadResult("success", "T-REVIEW"),
+            )
+            wizard = RecipientWizard()
+            report = wizard.files_page.registration_report
+            callback = Mock()
+            report.review_callback = callback
+            report.table.setCurrentCell(0, 0)
+            report.table.selectRow(0)
+
+            with patch(
+                "sana_declaration_uploader.desktop.QMessageBox.information"
+            ) as information:
+                report.review_button.click()
+
+            information.assert_not_called()
+            callback.assert_called_once()
+            self.assertEqual(
+                callback.call_args.args[0]["tracking_code"], "T-REVIEW"
+            )
+
+    def test_history_recent_refresh_button_calls_read_only_callback(self) -> None:
+        report = RecipientWizard().files_page.registration_report
+        callback = Mock()
+        report.recent_refresh_callback = callback
+
+        report.recent_refresh_button.click()
+
+        callback.assert_called_once_with()
+        self.assertIn("فیلدهای خالی", report.recent_refresh_button.toolTip())
+
+    def test_recent_refresh_fills_only_missing_report_fields(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "sample.docx"
+            save_verified_result(
+                DeclarationDraft(
+                    source,
+                    {"recipient_first_name": "نام موجود"},
+                    source_path=source_path,
+                ),
+                UploadResult("success", "T-MONTH"),
+            )
+            wizard = RecipientWizard()
+            payload = {
+                "received": 1,
+                "matched": 1,
+                "unmatched": 0,
+                "petitions": {
+                    "T-MONTH": {
+                        "No": "T-MONTH",
+                        "RelatedNo": "R-1",
+                        "theJSSPetitionPerson": [{
+                            "RoleType": 2,
+                            "NationalityCode": "001",
+                            "Name": "نام ثنا",
+                            "Family": "خانوادگی",
+                        }],
+                    }
+                },
+            }
+
+            with patch.object(QMessageBox, "information"):
+                wizard._recent_registration_refresh_received(payload)
+
+            record = registration_history()[0]
+            self.assertEqual(record["first_name"], "نام موجود")
+            self.assertEqual(record["last_name"], "خانوادگی")
+            self.assertEqual(record["national_id"], "001")
+            self.assertEqual(record["related_declaration_number"], "R-1")
+
+    def test_petition_review_fields_use_unique_matching_recipient(self) -> None:
+        petition = {
+            "RelatedNo": "R-1",
+            "theJSSPetitionPerson": [
+                {
+                    "RoleType": 2,
+                    "NationalityCode": "001",
+                    "Name": "علی",
+                    "Family": "نمونه",
+                },
+                {
+                    "RoleType": 2,
+                    "NationalityCode": "002",
+                    "Name": "رضا",
+                    "Family": "نمونه",
+                },
+            ],
+        }
+
+        fields = _petition_review_fields(petition, {"national_id": "۰۰۲"})
+
+        self.assertEqual(fields["related_declaration_number"], "R-1")
+        self.assertEqual(fields["recipient_national_id"], "002")
+        self.assertEqual(fields["recipient_first_name"], "رضا")
+        self.assertEqual(fields["recipient_last_name"], "نمونه")
+
+    def test_petition_review_fills_only_missing_history_fields(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "sample.docx"
+            save_verified_result(
+                DeclarationDraft(source, {}, source_path=source_path),
+                UploadResult("success", "T-REVIEW"),
+            )
+            wizard = RecipientWizard()
+            record = registration_history()[0]
+            petition = {
+                "No": "T-REVIEW",
+                "RelatedNo": "R-1",
+                "theJSSPetitionPerson": [{
+                    "RoleType": 2,
+                    "NationalityCode": "001",
+                    "Name": "علی",
+                    "Family": "نمونه",
+                }],
+            }
+
+            with patch.object(QMessageBox, "exec", return_value=0):
+                wizard._petition_review_received({
+                    "record": record,
+                    "petition": petition,
+                })
+
+            updated = registration_history()[0]
+            self.assertEqual(updated["related_declaration_number"], "R-1")
+            self.assertEqual(updated["national_id"], "001")
+            self.assertEqual(updated["first_name"], "علی")
+            self.assertEqual(updated["last_name"], "نمونه")
+
+    def test_history_backfills_missing_name_from_matching_source_recipient(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "sample.docx"
+            source_path.write_text("placeholder", encoding="utf-8")
+            save_verified_result(
+                DeclarationDraft(source, {}, source_path=source_path),
+                UploadResult("success", "T-OLD"),
+            )
+            candidate = RecipientCandidate(
+                source_path=source_path,
+                first_name="علی",
+                last_name="نمونه",
+                national_id="001",
+                source_recipient_ordinal=1,
+            )
+
+            with patch(
+                "sana_declaration_uploader.desktop.extract_recipients",
+                return_value=(candidate,),
+            ):
+                wizard = RecipientWizard()
+
+            report = wizard.files_page.registration_report.table
+            self.assertEqual(report.item(0, 3).text(), "علی")
+            self.assertEqual(report.item(0, 4).text(), "نمونه")
+
+    def test_lookup_directory_uses_project_root_during_source_run(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            project_dir = Path(temp_dir)
+            module_file = (
+                project_dir / "src" / "sana_declaration_uploader" / "config.py"
+            )
+
+            self.assertEqual(
+                lookup_directory(module_file=module_file),
+                project_dir / "lookups",
+            )
+
+    def test_lookup_directory_uses_bundle_root_during_frozen_run(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            bundle_dir = Path(temp_dir) / "bundle"
+
+            self.assertEqual(
+                lookup_directory(bundle_dir=bundle_dir),
+                bundle_dir / "lookups",
             )
 
     def test_navigation_is_persian_and_aligned_to_the_right(self) -> None:
@@ -261,7 +451,7 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertTrue(wizard.content_page.title().startswith("<b>"))
         self.assertTrue(wizard.login_page.title().startswith("<b>"))
         guidance = wizard.findChildren(QLabel, "Guidance")
-        self.assertEqual(len(guidance), 5)
+        self.assertEqual(len(guidance), 7)
         self.assertTrue(all(label.wordWrap() for label in guidance))
         self.assertIn("#1769AA", wizard.styleSheet())
         self.assertIn("alternate-background-color: #E9EFF5", wizard.styleSheet())
@@ -397,6 +587,52 @@ class RecipientWizardTests(unittest.TestCase):
             ).text(),
             "T-UPDATED",
         )
+
+    def test_first_status_tab_refreshes_from_saved_registration_result(self) -> None:
+        with TemporaryDirectory() as directory:
+            source_dir = Path(directory)
+            source_path = source_dir / "sample.docx"
+            draft = DeclarationDraft(
+                source_dir,
+                {},
+                attachments=(Attachment(
+                    source_dir / "attachment.pdf", "عنوان", "سایر ضمائم"
+                ),),
+                source_path=source_path,
+            )
+            save_verified_result(draft, UploadResult("success", "T-SAVED"))
+            save_attachment_count(draft, "T-SAVED", 1)
+            wizard = RecipientWizard()
+            wizard._api_drafts = [draft]
+            wizard.login_page.set_operation_drafts((draft,), reset=True)
+
+            wizard._refresh_operation_status_from_saved_results()
+
+            table = wizard.login_page.status_table
+            self.assertEqual(
+                table.item(
+                    0, wizard.login_page.STATUS_HEADERS.index("کد رهگیری")
+                ).text(),
+                "T-SAVED",
+            )
+            self.assertEqual(
+                table.item(
+                    0, wizard.login_page.STATUS_HEADERS.index("وضعیت اظهارنامه")
+                ).data(Qt.ItemDataRole.UserRole),
+                "success",
+            )
+            self.assertEqual(
+                table.item(
+                    0, wizard.login_page.STATUS_HEADERS.index("وضعیت پیوست")
+                ).data(Qt.ItemDataRole.UserRole),
+                "success",
+            )
+            self.assertEqual(
+                table.item(
+                    0, wizard.login_page.STATUS_HEADERS.index("تعداد ضمائم در ثنا")
+                ).text(),
+                "1",
+            )
 
     def test_entering_last_page_prepares_status_rows_before_execution(self) -> None:
         wizard = RecipientWizard()
@@ -2119,15 +2355,21 @@ class RecipientWizardTests(unittest.TestCase):
             _save_login_settings("", "", "", "", remember=False, path=path)
             self.assertFalse(path.exists())
 
-    def test_editing_otp_preserves_it_in_login_settings(self) -> None:
-        page = RecipientWizard().login_page
-        page.national_code.setText("national")
-        page.password.setText("password")
-        page.legal_identity.setText("legal")
-        page.otp.setText("new-otp")
-
-        with patch("sana_declaration_uploader.desktop._save_login_settings") as save:
-            page.otp.editingFinished.emit()
+    def test_changing_otp_immediately_preserves_it_in_login_settings(self) -> None:
+        with (
+            patch(
+                "sana_declaration_uploader.desktop._load_login_settings",
+                return_value={},
+            ),
+            patch(
+                "sana_declaration_uploader.desktop._save_login_settings"
+            ) as save,
+        ):
+            page = RecipientWizard().login_page
+            page.national_code.setText("national")
+            page.password.setText("password")
+            page.legal_identity.setText("legal")
+            page.otp.setText("new-otp")
 
         save.assert_called_once_with(
             "national", "password", "legal", "new-otp", remember=True
@@ -2417,7 +2659,7 @@ class RecipientWizardTests(unittest.TestCase):
 
         self.assertFalse(completed)
         save.assert_called_once_with(
-            drafts[0], results[0], filename="results.json"
+            drafts[0], results[0], filename=RESULTS_FILENAME
         )
         self.assertIn("ناموفق: 1", warning.call_args.args[2])
         self.assertIn("recipient_person_type_not_supported", warning.call_args.args[2])
@@ -2471,9 +2713,7 @@ class RecipientWizardTests(unittest.TestCase):
                     LoginCredentials("national", "password", "identity", "otp")
                 )
                 self._wait_for_background(wizard)
-            manifest = json.loads(
-                (source_dir / "results.json").read_text(encoding="utf-8")
-            )
+            history = registration_history()
 
         self.assertFalse(completed)
         warning.assert_called_once()
@@ -2489,12 +2729,8 @@ class RecipientWizardTests(unittest.TestCase):
             "T-NEW",
         )
         self.assertEqual(
-            [
-                item["tracking_code"]
-                for item in manifest["declarations"]
-                ["one.docx::recipient-001"]["registrations"]
-            ],
-            ["T-OLD", "T-NEW"],
+            [item["tracking_code"] for item in history],
+            ["T-NEW", "T-OLD"],
         )
 
     def test_registration_writes_chained_traceback_to_python_output(self) -> None:

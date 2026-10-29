@@ -12,6 +12,7 @@ from threading import Event
 from typing import Mapping
 import unicodedata
 import json
+import re
 
 from .attachment_api import (
     AttachmentApiError,
@@ -53,6 +54,7 @@ GET_PETITION_BY_TRACKING_CODE_URL = (
 GET_PETITION_DOCUMENTS_URL = (
     "https://person.adliran.ir/Offices/GetJssPetitonDocument"
 )
+GET_PORTAL_DATETIME_URL = "https://person.adliran.ir/Offices/GetDateTime"
 StatusCallback = Callable[[dict[str, object]], None]
 
 
@@ -111,6 +113,10 @@ def run_live_setpetitiondata_batch(
     on_petition_review: Callable[
         [str, Mapping[str, object]], None
     ] | None = None,
+    recent_registration_codes: tuple[str, ...] = (),
+    on_recent_registration_refresh: Callable[
+        [Mapping[str, object]], None
+    ] | None = None,
 ) -> tuple[SetPetitionDataResult, ...] | None:
     """Submit rows sequentially; advance only after a verified tracking code."""
 
@@ -124,6 +130,7 @@ def run_live_setpetitiondata_batch(
     if not (
         drafts or attachment_only or legacy_registration
         or legacy_attachment_only or count_refresh or petition_reviews
+        or recent_registration_codes
     ):
         raise LiveBrowserError("set_petition_data_recipients_missing")
     with sync_playwright() as playwright:
@@ -202,6 +209,11 @@ def run_live_setpetitiondata_batch(
                     page, petition_reviews, ensure_authenticated, progress,
                     on_petition_review,
                 )
+            if recent_registration_codes:
+                _refresh_recent_registrations(
+                    page, recent_registration_codes, ensure_authenticated,
+                    progress, on_recent_registration_refresh,
+                )
             all_results = list(results)
             while pending_requests is not None and not close_browser_event.is_set():
                 _report(progress, "__api_browser_ready_to_close__")
@@ -226,6 +238,20 @@ def run_live_setpetitiondata_batch(
                         page, queued["tracking_codes"], ensure_authenticated,
                         progress,
                         queued.get("on_petition_review", on_petition_review),
+                    )
+                    continue
+                if (
+                    isinstance(queued, dict)
+                    and queued.get("kind") == "refresh_recent_registrations"
+                ):
+                    current_credentials[0] = queued["credentials"]
+                    _refresh_recent_registrations(
+                        page, queued["tracking_codes"], ensure_authenticated,
+                        progress,
+                        queued.get(
+                            "on_recent_registration_refresh",
+                            on_recent_registration_refresh,
+                        ),
                     )
                     continue
                 if isinstance(queued, dict) and queued.get("kind") == "attach_existing":
@@ -845,6 +871,109 @@ def _review_petitions(
             raise LiveBrowserError("tracked_petition_number_mismatch")
         if on_petition_review is not None:
             on_petition_review(code, petition)
+
+
+def _portal_json_request(
+    page: object,
+    url: str,
+    *,
+    payload: Mapping[str, object] | None = None,
+) -> object:
+    try:
+        response = page.evaluate(
+            """async ({ url, payload }) => {
+            const options = {
+                method: payload === null ? 'GET' : 'POST',
+                credentials: 'include',
+                headers: {
+                    'accept': 'application/json, text/plain, */*',
+                    'x-requested-with': 'XMLHttpRequest',
+                },
+            };
+            if (payload !== null) {
+                options.headers['content-type'] = 'application/json;charset=UTF-8';
+                options.body = JSON.stringify(payload);
+            }
+            const response = await fetch(url, options);
+            return { status: response.status, text: await response.text() };
+        }""",
+            {"url": url, "payload": dict(payload) if payload is not None else None},
+        )
+    except Exception as exc:
+        raise LiveBrowserError("recent_registrations_lookup_failed") from exc
+    if not isinstance(response, dict) or response.get("status") != 200:
+        raise LiveBrowserError("recent_registrations_lookup_http_error")
+    try:
+        value = json.loads(str(response.get("text", "")))
+        if isinstance(value, str):
+            value = json.loads(value)
+    except (TypeError, ValueError) as exc:
+        raise LiveBrowserError("recent_registrations_response_invalid") from exc
+    return value
+
+
+def _refresh_recent_registrations(
+    page: object,
+    tracking_codes: tuple[str, ...],
+    ensure_authenticated: Callable[[], None],
+    progress: ProgressCallback | None,
+    callback: Callable[[Mapping[str, object]], None] | None,
+) -> None:
+    """Read the portal's last-month workflow and return matching declarations."""
+
+    targets = {str(code).strip() for code in tracking_codes if str(code).strip()}
+    if not targets:
+        raise LiveBrowserError("recent_registrations_tracking_codes_missing")
+    ensure_authenticated()
+    date_info = _portal_json_request(page, GET_PORTAL_DATETIME_URL)
+    if not isinstance(date_info, Mapping):
+        raise LiveBrowserError("recent_registrations_response_invalid")
+    from_date = str(date_info.get("OneMonthLaterDate") or "").strip()
+    to_date = str(date_info.get("TodayDate") or "").strip()
+    if not from_date or not to_date:
+        raise LiveBrowserError("recent_registrations_response_invalid")
+    from_key = _portal_date_key(from_date)
+    to_key = _portal_date_key(to_date)
+    if from_key is None or to_key is None or from_key > to_key:
+        raise LiveBrowserError("recent_registrations_response_invalid")
+
+    petitions: dict[str, Mapping[str, object]] = {}
+    checked = 0
+    for code in sorted(targets):
+        ensure_authenticated()
+        petition = _get_petition_by_tracking_code(page, code)
+        if str(petition.get("No") or "").strip() != code:
+            raise LiveBrowserError("tracked_petition_number_mismatch")
+        checked += 1
+        created = _portal_date_key(petition.get("CreateDateTime"))
+        if created is None:
+            raise LiveBrowserError("recent_registration_date_invalid")
+        if from_key <= created <= to_key:
+            petitions[code] = petition
+    _report(
+        progress,
+        f"بازخوانی یک ماه اخیر پایان یافت؛ بررسی‌شده: {checked}، "
+        f"تطبیق‌یافته: {len(petitions)}.",
+    )
+    if callback is not None:
+        callback({
+            "received": len(petitions),
+            "checked": checked,
+            "matched": len(petitions),
+            "unmatched": checked - len(petitions),
+            "petitions": petitions,
+        })
+
+
+def _portal_date_key(value: object) -> tuple[int, int, int] | None:
+    normalized = _normalize_recipient_identity(value)
+    match = re.search(r"(?<!\d)(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?!\d)", normalized)
+    if match is None:
+        return None
+    year, month, day = map(int, match.groups())
+    if not 1 <= month <= 12 or not 1 <= day <= 31:
+        return None
+    return year, month, day
 
 
 def _get_uploaded_attachment_count(page: object, petition_no: str) -> int:

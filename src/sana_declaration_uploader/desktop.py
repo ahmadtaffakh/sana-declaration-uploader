@@ -12,7 +12,7 @@ from queue import Queue
 import sys
 from threading import Event
 import traceback
-from typing import Callable
+from typing import Callable, Mapping
 
 from PySide6.QtCore import QObject, QEventLoop, QSize, Qt, QThread, QUrl, Signal, Slot
 from PySide6.QtGui import (
@@ -65,6 +65,7 @@ from .live_browser import (
     run_live_upload_batch,
 )
 from .api_test_flow import run_live_setpetitiondata_batch
+from .config import lookup_directory
 from .petition_api import load_setpetitiondata_template
 from .lookups import (
     LookupResolutionError,
@@ -826,6 +827,7 @@ class RegistrationHistoryWidget(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.review_callback: Callable[[dict[str, object]], None] | None = None
+        self.recent_refresh_callback: Callable[[], None] | None = None
         self.search = QLineEdit()
         self.search.setPlaceholderText(
             "جستجو در شماره اظهارنامه مرتبط، کد ملی، نام، نام خانوادگی، "
@@ -853,18 +855,30 @@ class RegistrationHistoryWidget(QWidget):
         self.review_button.setAccessibleName(
             "بررسی خواندنی اظهارنامه انتخاب‌شده از ثنا"
         )
+        self.recent_refresh_button = QPushButton("بازخوانی ثبت‌های یک ماه اخیر")
+        self.recent_refresh_button.setObjectName("SecondaryButton")
+        self.recent_refresh_button.setToolTip(
+            "ثبت‌های یک ماه اخیر را فقط به‌صورت خواندنی از ثنا می‌خواند و "
+            "فیلدهای خالی سوابق محلیِ دارای کد رهگیری یکسان را تکمیل می‌کند."
+        )
+        self.recent_refresh_button.setAccessibleName(
+            "بازخوانی خواندنی ثبت‌های یک ماه اخیر از ثنا"
+        )
         self.message = QLabel()
         self.message.setObjectName("Guidance")
+        self.message.setWordWrap(True)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         search_row = QHBoxLayout()
         search_row.addWidget(self.search, 1)
+        search_row.addWidget(self.recent_refresh_button)
         search_row.addWidget(self.review_button)
         layout.addLayout(search_row)
         layout.addWidget(self.table)
         layout.addWidget(self.message)
         self.search.textChanged.connect(self._apply_filter)
         self.review_button.clicked.connect(self._review_selected)
+        self.recent_refresh_button.clicked.connect(self._refresh_recent)
         self.refresh()
 
     def refresh(self) -> None:
@@ -941,6 +955,10 @@ class RegistrationHistoryWidget(QWidget):
             return
         if self.review_callback is not None:
             self.review_callback(record)
+
+    def _refresh_recent(self) -> None:
+        if self.recent_refresh_callback is not None:
+            self.recent_refresh_callback()
 
 
 class FileSelectionPage(QWizardPage):
@@ -1359,7 +1377,7 @@ class PreprocessingPage(QWizardPage):
         self.table = QTableWidget(0, len(self.HEADERS))
         self.table.setHorizontalHeaderLabels(self.HEADERS)
         _configure_table(self.table)
-        self._lookup_dir = Path(__file__).resolve().parents[2] / "lookups"
+        self._lookup_dir = lookup_directory()
         self.table.itemChanged.connect(self._location_changed)
 
         remove_widget, remove_button = _table_icon_action(
@@ -2370,6 +2388,10 @@ class LoginPage(QWizardPage):
         ):
             field.textChanged.connect(lambda: self.completeChanged.emit())
             field.editingFinished.connect(self._save_credentials)
+        self.otp.textChanged.connect(lambda: self._save_credentials())
+        self.remember_credentials.toggled.connect(
+            lambda: self._save_credentials()
+        )
 
     def _refresh_api_template_status(self) -> None:
         path = _setpetitiondata_template_path()
@@ -2741,6 +2763,7 @@ class RecipientWizard(QWizard):
     final_confirmation_requested = Signal(object, object)
     operation_status_changed = Signal(object)
     petition_reviewed = Signal(object)
+    recent_registrations_refreshed = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -2759,6 +2782,12 @@ class RecipientWizard(QWizard):
         )
         self.login_page.registration_report.review_callback = (
             self._start_petition_review
+        )
+        self.files_page.registration_report.recent_refresh_callback = (
+            self._start_recent_registration_refresh
+        )
+        self.login_page.registration_report.recent_refresh_callback = (
+            self._start_recent_registration_refresh
         )
         self._api_browser_close_event: Event | None = None
         self._api_browser_ready = False
@@ -2784,7 +2813,7 @@ class RecipientWizard(QWizard):
         self.login_page_id = self.addPage(self.login_page)
         self._loaded_paths: tuple[Path, ...] = ()
         self._preprocess_source: tuple[RecipientCandidate, ...] = ()
-        self._lookup_dir = Path(__file__).resolve().parents[2] / "lookups"
+        self._lookup_dir = lookup_directory()
         self._background_thread: QThread | None = None
         self._background_worker: _BackgroundWorker | None = None
         self._background_dialog: QProgressDialog | None = None
@@ -2808,6 +2837,9 @@ class RecipientWizard(QWizard):
             self.login_page.update_operation_status
         )
         self.petition_reviewed.connect(self._petition_review_received)
+        self.recent_registrations_refreshed.connect(
+            self._recent_registration_refresh_received
+        )
         self.setButtonLayout([
             QWizard.WizardButton.BackButton,
             QWizard.WizardButton.NextButton,
@@ -2976,8 +3008,65 @@ class RecipientWizard(QWizard):
         self._set_background_controls_enabled(True)
 
     def _show_registration_history(self) -> None:
+        self._refresh_operation_status_from_saved_results()
         self.files_page.registration_report.refresh()
         self.login_page.show_registration_history()
+
+    def _refresh_operation_status_from_saved_results(self) -> None:
+        drafts = tuple(self._api_drafts or ())
+        if not drafts:
+            return
+        source_counts: dict[Path, int] = {}
+        for draft in drafts:
+            if draft.source_path is not None:
+                source = draft.source_path.resolve()
+                source_counts[source] = source_counts.get(source, 0) + 1
+        for draft in drafts:
+            if draft.source_path is None:
+                continue
+            try:
+                saved = read_saved_result(
+                    draft.source_dir,
+                    draft.source_path,
+                    source_recipient_ordinal=draft.source_recipient_ordinal,
+                    source_recipient_count=source_counts[draft.source_path.resolve()],
+                )
+            except ResultPersistenceError:
+                continue
+            code = str((saved or {}).get("tracking_code") or "").strip()
+            if code and code != "رسید نامعتبر":
+                event = {
+                    "source_path": str(draft.source_path.resolve()),
+                    "source_recipient_ordinal": draft.source_recipient_ordinal,
+                    "stage": "petition",
+                    "state": "success",
+                    "tracking_code": code,
+                }
+                self.login_page.update_operation_status(event)
+            count = (saved or {}).get("attachment_count")
+            if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                checked_at = str(
+                    (saved or {}).get("attachment_count_checked_at") or ""
+                )
+                if draft.attachments:
+                    self.login_page.update_operation_status({
+                        "source_path": str(draft.source_path.resolve()),
+                        "source_recipient_ordinal": draft.source_recipient_ordinal,
+                        "stage": "attachment",
+                        "state": "success",
+                        "tracking_code": code,
+                        "completed": len(draft.attachments),
+                        "total": len(draft.attachments),
+                    })
+                self.login_page.update_operation_status({
+                    "source_path": str(draft.source_path.resolve()),
+                    "source_recipient_ordinal": draft.source_recipient_ordinal,
+                    "stage": "attachment_count",
+                    "state": "success",
+                    "tracking_code": code,
+                    "attachment_count": count,
+                    "attachment_count_checked_at": checked_at,
+                })
 
     def _set_background_controls_enabled(self, enabled: bool) -> None:
         for role in (
@@ -2992,6 +3081,8 @@ class RecipientWizard(QWizard):
         self.login_page.refresh_counts_button.setEnabled(enabled)
         self.files_page.registration_report.review_button.setEnabled(enabled)
         self.login_page.registration_report.review_button.setEnabled(enabled)
+        self.files_page.registration_report.recent_refresh_button.setEnabled(enabled)
+        self.login_page.registration_report.recent_refresh_button.setEnabled(enabled)
         close_enabled = enabled and self._api_browser_ready
         self.login_page.close_browser_button.setEnabled(close_enabled)
         self.login_page.close_browser_button.setVisible(close_enabled)
@@ -3016,6 +3107,12 @@ class RecipientWizard(QWizard):
         self.login_page.refresh_counts_button.setEnabled(allow_requests)
         self.files_page.registration_report.review_button.setEnabled(allow_requests)
         self.login_page.registration_report.review_button.setEnabled(allow_requests)
+        self.files_page.registration_report.recent_refresh_button.setEnabled(
+            allow_requests
+        )
+        self.login_page.registration_report.recent_refresh_button.setEnabled(
+            allow_requests
+        )
         self.login_page.close_browser_button.setEnabled(True)
         self.login_page.close_browser_button.setVisible(True)
         self.login_page.stop_button.setEnabled(False)
@@ -3322,9 +3419,192 @@ class RecipientWizard(QWizard):
         self.login_page.refresh_counts_button.setEnabled(False)
         self.files_page.registration_report.review_button.setEnabled(False)
         self.login_page.registration_report.review_button.setEnabled(False)
+        self.files_page.registration_report.recent_refresh_button.setEnabled(False)
+        self.login_page.registration_report.recent_refresh_button.setEnabled(False)
         self.login_page.append_output(
             "درخواست بستن مرورگر ثبت شد؛ تا بسته‌شدن آن درخواست تازه پذیرفته نمی‌شود.",
             level="system",
+        )
+
+    def _start_recent_registration_refresh(self) -> None:
+        try:
+            records = registration_history()
+        except ResultPersistenceError as exc:
+            QMessageBox.warning(self, "خواندن گزارش ناموفق", str(exc))
+            return
+        records_by_code: dict[str, list[dict[str, object]]] = {}
+        for record in records:
+            code = str(record.get("tracking_code") or "").strip()
+            if code and code != "رسید نامعتبر":
+                records_by_code.setdefault(code, []).append(record)
+        tracking_codes = tuple(
+            code for code, matches in records_by_code.items()
+            if len(matches) == 1
+        )
+        if not tracking_codes:
+            QMessageBox.information(
+                self, "گزارش خالی",
+                "سابقهٔ محلی دارای کد رهگیری یکتا برای بازخوانی وجود ندارد.",
+            )
+            return
+        credentials = self.login_page._credentials()
+        if not self._api_session_active() and not all((
+            credentials.national_code, credentials.password,
+            credentials.legal_identity, credentials.otp,
+        )):
+            QMessageBox.warning(
+                self, "اطلاعات ورود ناقص",
+                "برای نشست تازه، مشخصات ورود و OTP را در صفحهٔ آخر کامل کنید؛ "
+                "سپس بازخوانی را دوباره اجرا کنید.",
+            )
+            return
+        self.login_page._save_credentials()
+        request = {
+            "kind": "refresh_recent_registrations",
+            "tracking_codes": tracking_codes,
+            "credentials": credentials,
+            "on_recent_registration_refresh": (
+                self._emit_recent_registration_refresh
+            ),
+        }
+        if self._api_request_queue is not None:
+            if (
+                self._api_browser_close_event is None
+                or self._api_browser_close_event.is_set()
+            ):
+                QMessageBox.information(
+                    self, "نشست در حال بسته‌شدن",
+                    "پس از بسته‌شدن مرورگر، بازخوانی را دوباره انجام دهید.",
+                )
+                return
+            self._api_browser_ready = False
+            self._set_background_controls_enabled(False)
+            self._api_request_queue.put(request)
+            self.login_page.append_output(
+                "بازخوانی خواندنی ثبت‌های یک ماه اخیر به نشست فعلی صف شد.",
+                level="system",
+            )
+            return
+
+        self.login_page.start_log()
+        close_browser_event = Event()
+        request_queue: Queue = Queue()
+        self._api_browser_close_event = close_browser_event
+        self._api_request_queue = request_queue
+        self._api_browser_ready = False
+        report = self.login_page.append_output
+        report(
+            "بازخوانی خواندنی ثبت‌های یک ماه اخیر آغاز شد؛ هیچ ثبت یا "
+            "آپلودی انجام نمی‌شود.",
+            level="system",
+        )
+
+        def task(progress: Callable[[str], None]) -> object:
+            def reauth_credentials_provider(
+                current: LoginCredentials,
+            ) -> LoginCredentials | None:
+                response: Queue = Queue(maxsize=1)
+                self.otp_requested.emit(response)
+                otp = response.get()
+                return replace(current, otp=otp) if otp else None
+
+            return run_live_setpetitiondata_batch(
+                (), credentials, lambda: True, {},
+                _setpetitiondata_request_text_path(),
+                lookup_dir=self._lookup_dir,
+                progress=progress,
+                pending_requests=request_queue,
+                reauth_credentials_provider=reauth_credentials_provider,
+                close_browser_event=close_browser_event,
+                recent_registration_codes=tracking_codes,
+                on_recent_registration_refresh=(
+                    self._emit_recent_registration_refresh
+                ),
+            )
+
+        def failed(exc: Exception, details: str) -> None:
+            report(f"بازخوانی ثبت‌های یک ماه اخیر متوقف شد: {exc}", level="error")
+            report(details, level="debug")
+            QMessageBox.warning(self, "بازخوانی از ثنا ناموفق", str(exc))
+
+        self._start_background(
+            "در حال بازخوانی ثبت‌های یک ماه اخیر...",
+            task,
+            lambda _result: report("بازخوانی پایان یافت.", level="success"),
+            failed,
+            lambda message: report(message, level="progress"),
+        )
+
+    def _emit_recent_registration_refresh(
+        self, payload: Mapping[str, object]
+    ) -> None:
+        self.recent_registrations_refreshed.emit(dict(payload))
+
+    @Slot(object)
+    def _recent_registration_refresh_received(self, payload: object) -> None:
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("petitions"), dict
+        ):
+            QMessageBox.warning(self, "پاسخ نامعتبر", "پاسخ بازخوانی معتبر نیست.")
+            return
+        try:
+            records = registration_history()
+            records_by_code: dict[str, list[dict[str, object]]] = {}
+            for record in records:
+                code = str(record.get("tracking_code") or "").strip()
+                records_by_code.setdefault(code, []).append(record)
+            updated = 0
+            for code, petition in payload["petitions"].items():
+                matches = records_by_code.get(str(code), [])
+                if len(matches) != 1 or not isinstance(petition, dict):
+                    continue
+                record = matches[0]
+                fields = _petition_review_fields(petition, record)
+                field_map = {
+                    "related_declaration_number": "related_declaration_number",
+                    "recipient_national_id": "national_id",
+                    "recipient_first_name": "first_name",
+                    "recipient_last_name": "last_name",
+                }
+                if not any(
+                    not str(record.get(local_key) or "").strip()
+                    and str(fields.get(remote_key) or "").strip()
+                    for remote_key, local_key in field_map.items()
+                ):
+                    continue
+                changed = backfill_registration_report_fields(
+                    Path(str(record["source_path"])),
+                    int(record["source_recipient_ordinal"]),
+                    fields,
+                    tracking_code=str(code),
+                )
+                if changed != 1:
+                    raise ResultPersistenceError("verified_registration_not_found")
+                updated += 1
+        except (KeyError, TypeError, ValueError, ResultPersistenceError) as exc:
+            QMessageBox.warning(
+                self, "به‌روزرسانی گزارش ناموفق",
+                f"اطلاعات ثنا دریافت شد اما ذخیرهٔ گزارش کامل نشد: {exc}",
+            )
+            return
+        self.files_page.registration_report.refresh()
+        self.login_page.registration_report.refresh()
+        received = int(payload.get("received") or 0)
+        checked = int(payload.get("checked") or received)
+        matched = int(payload.get("matched") or 0)
+        unmatched = int(payload.get("unmatched") or 0)
+        self.login_page.append_output(
+            f"بازخوانی یک ماه اخیر تکمیل شد؛ بررسی‌شده: {checked}، "
+            f"بازیابی‌شده در بازه: {received}، "
+            f"تطبیق‌یافته: {matched}، به‌روزشده: {updated}، "
+            f"تطبیق‌نیافته: {unmatched}.",
+            level="success",
+        )
+        QMessageBox.information(
+            self, "بازخوانی گزارش ثبت",
+            f"بررسی‌شده: {checked}\nبازیابی‌شده در بازه: {received}\n"
+            f"تطبیق‌یافته: {matched}\n"
+            f"به‌روزشده: {updated}\nتطبیق‌نیافته: {unmatched}",
         )
 
     def _start_petition_review(self, record: dict[str, object]) -> None:
