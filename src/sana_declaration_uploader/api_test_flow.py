@@ -55,6 +55,10 @@ GET_PETITION_DOCUMENTS_URL = (
     "https://person.adliran.ir/Offices/GetJssPetitonDocument"
 )
 GET_PORTAL_DATETIME_URL = "https://person.adliran.ir/Offices/GetDateTime"
+READY_FOR_PAYMENT_URL = (
+    "https://person.adliran.ir/Offices/SetPetitionToReadyForPaymentState"
+)
+GET_PERSON_SIGNATURE_URL = "https://person.adliran.ir/Offices/GetPersonDataSign"
 StatusCallback = Callable[[dict[str, object]], None]
 
 
@@ -117,6 +121,7 @@ def run_live_setpetitiondata_batch(
     on_recent_registration_refresh: Callable[
         [Mapping[str, object]], None
     ] | None = None,
+    complete_after_attachments: bool = False,
 ) -> tuple[SetPetitionDataResult, ...] | None:
     """Submit rows sequentially; advance only after a verified tracking code."""
 
@@ -184,6 +189,7 @@ def run_live_setpetitiondata_batch(
                     page, registration_drafts, petition_payloads,
                     ensure_authenticated,
                     progress, status, on_result, request_text_path,
+                    current_credentials[0] if complete_after_attachments else None,
                 )
                 if registration_drafts else ()
             )
@@ -199,6 +205,7 @@ def run_live_setpetitiondata_batch(
                 _attach_existing_petitions(
                     page, attachment_requests, ensure_authenticated, progress,
                     request_text_path, status,
+                    current_credentials[0] if complete_after_attachments else None,
                 )
             if count_refresh:
                 _refresh_attachment_counts(
@@ -267,6 +274,7 @@ def run_live_setpetitiondata_batch(
                         page, queued["requests"] + reconciled,
                         ensure_authenticated, progress,
                         request_text_path, status,
+                        current_credentials[0] if complete_after_attachments else None,
                     )
                     continue
                 queued_drafts, queued_credentials, queued_template, queued_path, \
@@ -286,6 +294,7 @@ def run_live_setpetitiondata_batch(
                 queued_results = _submit_petition_payloads(
                     page, queued_drafts, queued_payloads, ensure_authenticated,
                     progress, status, on_result, queued_path,
+                    current_credentials[0] if complete_after_attachments else None,
                 )
                 all_results.extend(queued_results)
             return tuple(all_results)
@@ -568,6 +577,7 @@ def _submit_petition_payloads(
     status: StatusCallback | None,
     on_result: Callable[[DeclarationDraft, SetPetitionDataResult], None] | None,
     request_text_path: Path,
+    signature_credentials: LoginCredentials | None = None,
 ) -> tuple[SetPetitionDataResult, ...]:
     results = []
     for index, petition_data in enumerate(petition_payloads, start=1):
@@ -678,6 +688,10 @@ def _submit_petition_payloads(
             page, draft, result.tracking_code, index, len(drafts), progress,
             status,
         )
+        if draft.attachments and signature_credentials is not None:
+            _complete_after_attachments(
+                page, result, signature_credentials, index, len(drafts), progress,
+            )
     return tuple(results)
 
 
@@ -688,6 +702,7 @@ def _attach_existing_petitions(
     progress: ProgressCallback | None,
     request_text_path: Path,
     status: StatusCallback | None = None,
+    signature_credentials: LoginCredentials | None = None,
 ) -> None:
     source_counts: dict[Path, int] = {}
     for draft, _tracking_code in requests:
@@ -812,6 +827,127 @@ def _attach_existing_petitions(
             page, draft, tracking_code, index, len(requests), progress,
             status,
         )
+        if signature_credentials is not None:
+            _complete_after_attachments(
+                page, result, signature_credentials, index, len(requests), progress,
+            )
+
+
+def _complete_after_attachments(
+    page: object,
+    result: SetPetitionDataResult,
+    credentials: LoginCredentials,
+    index: int,
+    total: int,
+    progress: ProgressCallback | None,
+) -> None:
+    """Make the petition ready, then add only the person's SANA signature."""
+
+    national_code = credentials.national_code.strip()
+    if not national_code:
+        raise LiveBrowserError("signature_identity_missing")
+    prefix = f"[ردیف {index} از {total}]"
+    ready = _run_logged_stage(
+        progress,
+        f"{prefix} آمادگی برای پرداخت",
+        lambda: _post_portal_action_once(
+            page,
+            READY_FOR_PAYMENT_URL,
+            {
+                "petitionNo": result.tracking_code,
+                "petitionType": 3,
+                "masterJudgeUnitId": None,
+                "specialPermissionTypeCode": "",
+                "forceReadyPayment": True,
+            },
+            "ready_for_payment",
+        ),
+    )
+    if (
+        str(ready.get("No") or "").strip() != result.tracking_code
+        or ready.get("State") != 2
+        or str(ready.get("Id") or "").strip() != result.petition_id
+    ):
+        raise LiveBrowserError("ready_for_payment_response_invalid")
+
+    person_signature = _run_logged_stage(
+        progress,
+        f"{prefix} درج امضای ثنا",
+        lambda: _post_portal_action_once(
+            page,
+            GET_PERSON_SIGNATURE_URL,
+            {
+                "petitionNo": result.tracking_code,
+                "nationalityCode": national_code,
+            },
+            "person_signature",
+        ),
+    )
+    _validate_signature_document(
+        person_signature, result.petition_id, "person_signature_response_invalid"
+    )
+    _report(
+        progress,
+        f"{prefix} آمادگی برای پرداخت و درج امضای شخص تکمیل شد.",
+    )
+
+
+def _post_portal_action_once(
+    page: object,
+    url: str,
+    payload: Mapping[str, object],
+    operation: str,
+) -> dict[str, object]:
+    try:
+        response = page.evaluate(
+            """async ({ url, payload }) => {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'accept': 'application/json, text/plain, */*',
+                        'content-type': 'application/json;charset=UTF-8',
+                        'x-requested-with': 'XMLHttpRequest',
+                    },
+                    body: JSON.stringify(payload),
+                });
+                return { status: response.status, text: await response.text() };
+            }""",
+            {"url": url, "payload": dict(payload)},
+        )
+    except Exception:
+        raise LiveBrowserError(f"{operation}_transport_ambiguous") from None
+    if not isinstance(response, dict):
+        raise LiveBrowserError(f"{operation}_response_unreadable")
+    status = response.get("status")
+    if not isinstance(status, int) or not 200 <= status < 300:
+        detail = f":http_status={status}" if isinstance(status, int) else ""
+        raise LiveBrowserError(f"{operation}_http_failed{detail}")
+    text = response.get("text")
+    if not isinstance(text, str):
+        raise LiveBrowserError(f"{operation}_response_unreadable")
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError):
+        raise LiveBrowserError(f"{operation}_response_invalid") from None
+    if not isinstance(value, dict):
+        raise LiveBrowserError(f"{operation}_response_invalid")
+    return value
+
+
+def _validate_signature_document(
+    value: Mapping[str, object], petition_id: str, error: str
+) -> None:
+    files = value.get("TheJSSPetitionDocumentFileList")
+    if (
+        str(value.get("JSSPetitionId") or "").strip() != petition_id
+        or not str(value.get("Id") or "").strip()
+        or not isinstance(files, list)
+        or len(files) != 1
+        or not isinstance(files[0], dict)
+        or not str(files[0].get("Id") or "").strip()
+    ):
+        raise LiveBrowserError(error)
 
 
 def _get_petition_by_tracking_code(

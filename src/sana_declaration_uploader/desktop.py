@@ -2268,16 +2268,17 @@ class LoginPage(QWizardPage):
         guidance.setWordWrap(True)
 
         self.api_test_button = QPushButton(
-            "ثبت موقت اظهارنامه‌ها و افزودن پیوست‌ها"
+            "ثبت اظهارنامه، افزودن پیوست و امضای شخص"
         )
         self.api_test_button.setObjectName("PrimaryButton")
         self.api_test_button.setToolTip(
-            "اظهارنامه‌های آماده را موقت ثبت می‌کند و امضای نهایی ندارد. "
+            "اظهارنامه‌های آماده را ثبت می‌کند؛ پس از تأیید پیوست، آمادگی "
+            "برای پرداخت و فقط امضای شخص در ثنا را یک‌بار اجرا می‌کند. "
             "تا وقتی مرورگر باز است از همان نشست استفاده می‌شود؛ اگر نشست "
             "تمام شود، برای ورود دوباره OTP تازه می‌پرسد."
         )
         self.api_test_button.setAccessibleName(
-            "ثبت موقت اظهارنامه‌ها و افزودن پیوست‌ها"
+            "ثبت اظهارنامه، افزودن پیوست، آمادگی برای پرداخت و امضا"
         )
         self.api_test_button.clicked.connect(self._test_api_registration)
         self.attach_existing_button = QPushButton(
@@ -3271,14 +3272,15 @@ class RecipientWizard(QWizard):
             return
         answer = QMessageBox.question(
             self,
-            "تأیید ثبت موقت و پیوست",
+            "تأیید ثبت، پیوست و امضای شخص",
             f"برای حداکثر {len(operation_drafts)} ردیف، SetPetitionData به‌ترتیب "
             "و هر ردیف "
             "فقط یک‌بار فراخوانی می‌شود. پس از دریافت کد رهگیری، پیوست‌های "
             "همان ردیف به همان اظهارنامه افزوده می‌شوند. در خطا یا پاسخ مبهم، "
             "ادامه متوقف می‌شود؛ پیش از اقدام دوباره باید وضعیت بررسی شود. "
             "سوابق قدیمی ابتدا از ثنا تطبیق داده می‌شوند و دوباره ثبت نخواهند "
-            "شد. امضای نهایی انجام نمی‌شود.",
+            "شد. پس از تأیید پیوست، آمادگی برای پرداخت و فقط امضای شخص در "
+            "ثنا هر کدام یک‌بار اجرا می‌شوند؛ کامبوباکس‌ها خالی می‌مانند.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -3328,9 +3330,9 @@ class RecipientWizard(QWizard):
         self.login_page.close_browser_button.setVisible(False)
         report = self.login_page.append_output
         report(
-            f"بررسی و ثبت موقت برای {len(operation_drafts)} ردیف آغاز شد؛ "
+            f"بررسی و ثبت برای {len(operation_drafts)} ردیف آغاز شد؛ "
             "پیوست هر ردیف پس از دریافت کد رهگیری به همان اظهارنامه افزوده "
-            "می‌شود؛ امضای نهایی اجرا نمی‌شود.",
+            "می‌شود؛ سپس آمادگی برای پرداخت و فقط امضای شخص اجرا می‌شود.",
             level="system",
         )
 
@@ -3358,6 +3360,7 @@ class RecipientWizard(QWizard):
                 reauth_credentials_provider=reauth_credentials_provider,
                 close_browser_event=close_browser_event,
                 legacy_registration=legacy_drafts,
+                complete_after_attachments=True,
             )
 
         def succeeded(result: object) -> None:
@@ -3367,17 +3370,20 @@ class RecipientWizard(QWizard):
                 return
             session_drafts = self._api_drafts or list(drafts)
             attachment_count = sum(len(draft.attachments) for draft in session_drafts)
+            completed_count = sum(bool(draft.attachments) for draft in session_drafts)
             report(
-                f"ثبت موقت و پیوست تمام شد؛ موفق: {len(results)} ردیف؛ "
-                f"پیوست تأییدشده: {attachment_count} فایل.",
+                f"ثبت، پیوست و امضای شخص تمام شد؛ موفق: {len(results)} ردیف؛ "
+                f"پیوست تأییدشده: {attachment_count} فایل؛ امضای شخص: "
+                f"{completed_count} ردیف.",
                 level="success",
             )
             QMessageBox.information(
                 self,
-                "ثبت موقت و پیوست موفق",
+                "ثبت، پیوست و امضای شخص موفق",
                 f"{len(results)} ردیف با موفقیت ثبت شد و {attachment_count} "
                 "پیوست تأیید شد. کد رهگیری و جزئیات مراحل در لاگ نمایش داده "
-                "شده است. امضای نهایی انجام نشده است.",
+                f"شده است. آمادگی برای پرداخت و امضای شخص برای {completed_count} "
+                "ردیف دارای پیوست تکمیل شده است.",
             )
 
         def failed(exc: Exception, details: str) -> None:
@@ -3520,6 +3526,7 @@ class RecipientWizard(QWizard):
                 on_recent_registration_refresh=(
                     self._emit_recent_registration_refresh
                 ),
+                complete_after_attachments=True,
             )
 
         def failed(exc: Exception, details: str) -> None:
@@ -3682,6 +3689,7 @@ class RecipientWizard(QWizard):
                 close_browser_event=close_browser_event,
                 petition_reviews=(tracking_code,),
                 on_petition_review=self._emit_petition_review,
+                complete_after_attachments=True,
             )
 
         def succeeded(_result: object) -> None:
@@ -3899,6 +3907,7 @@ class RecipientWizard(QWizard):
                 reauth_credentials_provider=reauth_credentials_provider,
                 close_browser_event=close_browser_event,
                 count_refresh=request_tuple,
+                complete_after_attachments=True,
             )
 
         def succeeded(_result: object) -> None:
@@ -3996,7 +4005,9 @@ class RecipientWizard(QWizard):
             f"برای حداکثر {operation_count} اظهارنامه، {attachment_count} پیوست "
             "افزوده می‌شود. سوابق قدیمی چندمخاطبی ابتدا با اطلاعات ثنا تطبیق "
             "داده می‌شوند؛ SetPetitionData و ثبت دوباره اجرا نمی‌شود. "
-            "در صورت خطا یا پاسخ مبهم، اجرا متوقف می‌شود.",
+            "پس از تأیید پیوست، آمادگی برای پرداخت و فقط امضای شخص در ثنا "
+            "هر کدام یک‌بار اجرا می‌شوند. در صورت خطا یا پاسخ مبهم، اجرا "
+            "متوقف می‌شود.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -4035,7 +4046,7 @@ class RecipientWizard(QWizard):
             })
             self.login_page.append_output(
                 f"درخواست افزودن {attachment_count} پیوست به نشست فعلی صف شد؛ "
-                "اظهارنامه دوباره ثبت نمی‌شود.",
+                "اظهارنامه دوباره ثبت نمی‌شود و پس از پیوست فقط امضای شخص اجرا می‌شود.",
                 level="system",
             )
             return
@@ -4054,7 +4065,7 @@ class RecipientWizard(QWizard):
         report = self.login_page.append_output
         report(
             f"افزودن حداکثر {attachment_count} پیوست به {operation_count} اظهارنامه آغاز شد؛ "
-            "ثبت مجدد اظهارنامه اجرا نمی‌شود.",
+            "ثبت مجدد اظهارنامه اجرا نمی‌شود؛ سپس آمادگی برای پرداخت و فقط امضای شخص اجرا می‌شود.",
             level="system",
         )
 
@@ -4078,6 +4089,7 @@ class RecipientWizard(QWizard):
                 close_browser_event=close_browser_event,
                 attachment_only=request_tuple,
                 legacy_attachment_only=legacy_tuple,
+                complete_after_attachments=True,
             )
 
         def succeeded(_result: object) -> None:

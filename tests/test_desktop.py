@@ -913,7 +913,7 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertFalse(hasattr(page, "test_login_button"))
         self.assertEqual(
             page.api_test_button.text(),
-            "ثبت موقت اظهارنامه‌ها و افزودن پیوست‌ها",
+            "ثبت اظهارنامه، افزودن پیوست و امضای شخص",
         )
         self.assertEqual(page.api_test_button.objectName(), "PrimaryButton")
         self.assertTrue(page.api_test_button.toolTip())

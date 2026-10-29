@@ -16,6 +16,69 @@ from sana_declaration_uploader.petition_api import SetPetitionDataResult
 
 
 class DirectSetPetitionDataFlowTests(unittest.TestCase):
+    def test_completes_observed_post_attachment_actions_once_in_order(self):
+        tracking_code = "1" * 16
+        petition_id = "P" * 32
+        signature_document = {
+            "JSSPetitionId": petition_id,
+            "Id": "document-id",
+            "TheJSSPetitionDocumentFileList": [{"Id": "file-id"}],
+        }
+        page = Mock()
+        page.evaluate.side_effect = [
+            {
+                "status": 200,
+                "text": json.dumps({
+                    "No": tracking_code,
+                    "State": 2,
+                    "Id": petition_id,
+                }),
+            },
+            {"status": 200, "text": json.dumps(signature_document)},
+        ]
+
+        api_test_flow._complete_after_attachments(
+            page,
+            SetPetitionDataResult(tracking_code, "12", petition_id),
+            LoginCredentials("1" * 10, "password", "2" * 11, "otp"),
+            1,
+            1,
+            None,
+        )
+
+        self.assertEqual(page.evaluate.call_count, 2)
+        requests = [item.args[1] for item in page.evaluate.call_args_list]
+        self.assertEqual(
+            [item["url"] for item in requests],
+            [
+                api_test_flow.READY_FOR_PAYMENT_URL,
+                api_test_flow.GET_PERSON_SIGNATURE_URL,
+            ],
+        )
+        self.assertTrue(requests[0]["payload"]["forceReadyPayment"])
+        self.assertIsNone(requests[0]["payload"]["masterJudgeUnitId"])
+        self.assertEqual(requests[0]["payload"]["specialPermissionTypeCode"], "")
+        self.assertEqual(requests[1]["payload"]["nationalityCode"], "1" * 10)
+
+    def test_post_attachment_http_failure_is_not_retried(self):
+        page = Mock()
+        page.evaluate.return_value = {"status": 500, "text": ""}
+
+        with self.assertRaisesRegex(
+            api_test_flow.LiveBrowserError,
+            "ready_for_payment_http_failed:http_status=500",
+        ):
+            api_test_flow._complete_after_attachments(
+                page,
+                SetPetitionDataResult("1" * 16, "12", "P" * 32),
+                LoginCredentials("1" * 10, "password", "2" * 11, "otp"),
+                1,
+                1,
+                None,
+            )
+
+        page.evaluate.assert_called_once()
+
     def test_recent_registration_refresh_uses_server_month_and_tracking_codes(self):
         callback = Mock()
         with (
