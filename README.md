@@ -101,3 +101,17 @@ sana-declaration-uploader login-check
 `_internal` جدا شود. Google Chrome باید روی ویندوز نصب باشد، چون ورود و
 درخواست‌های ثنا در نشست Playwright همان مرورگر اجرا می‌شوند. موفقیت تست‌های
 محلی یا اجرای اولیهٔ EXE، اثبات موفقیت عملیات زندهٔ ثنا نیست.
+
+برای ساخت بسته با Python 3.12 ابتدا وابستگی‌های بسته‌بندی را نصب و سپس اسکریپت
+مخصوص ویندوز را اجرا کنید:
+
+```powershell
+python -m pip install -e ".[gui,browser,package]"
+.\tools\build_windows.ps1
+```
+
+خروجی آزمایشی در `build\dist-release` ساخته می‌شود و نسخهٔ موجود در `dist`
+را بازنویسی نمی‌کند. اسکریپت PATH را محدود می‌کند و spec نیز اگر DLLای از
+`codex-runtimes` وارد تحلیل PyInstaller شده باشد، build را متوقف می‌کند. پس
+از ساخت، صرفاً بازماندن process کافی نیست؛ باید بارگذاری واقعی `QtCore.pyd`،
+`Qt6Core.dll` و `Qt6Widgets.dll` کنترل شود.
