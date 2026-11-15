@@ -55,6 +55,9 @@ GET_PETITION_DOCUMENTS_URL = (
     "https://person.adliran.ir/Offices/GetJssPetitonDocument"
 )
 GET_PORTAL_DATETIME_URL = "https://person.adliran.ir/Offices/GetDateTime"
+GET_PETITION_LIST_URL = (
+    "https://person.adliran.ir/Offices/GetPetitionListOnReport"
+)
 READY_FOR_PAYMENT_URL = (
     "https://person.adliran.ir/Offices/SetPetitionToReadyForPaymentState"
 )
@@ -118,6 +121,7 @@ def run_live_setpetitiondata_batch(
         [str, Mapping[str, object]], None
     ] | None = None,
     recent_registration_codes: tuple[str, ...] = (),
+    recent_registration_months: int | None = None,
     on_recent_registration_refresh: Callable[
         [Mapping[str, object]], None
     ] | None = None,
@@ -135,7 +139,7 @@ def run_live_setpetitiondata_batch(
     if not (
         drafts or attachment_only or legacy_registration
         or legacy_attachment_only or count_refresh or petition_reviews
-        or recent_registration_codes
+        or recent_registration_codes or recent_registration_months is not None
     ):
         raise LiveBrowserError("set_petition_data_recipients_missing")
     with sync_playwright() as playwright:
@@ -216,10 +220,11 @@ def run_live_setpetitiondata_batch(
                     page, petition_reviews, ensure_authenticated, progress,
                     on_petition_review,
                 )
-            if recent_registration_codes:
+            if recent_registration_months is not None:
                 _refresh_recent_registrations(
                     page, recent_registration_codes, ensure_authenticated,
                     progress, on_recent_registration_refresh,
+                    months=recent_registration_months,
                 )
             all_results = list(results)
             while pending_requests is not None and not close_browser_event.is_set():
@@ -259,6 +264,7 @@ def run_live_setpetitiondata_batch(
                             "on_recent_registration_refresh",
                             on_recent_registration_refresh,
                         ),
+                        months=int(queued["months"]),
                     )
                     continue
                 if isinstance(queued, dict) and queued.get("kind") == "attach_existing":
@@ -1005,6 +1011,10 @@ def _review_petitions(
         )
         if str(petition.get("No") or "").strip() != code:
             raise LiveBrowserError("tracked_petition_number_mismatch")
+        petition = dict(petition)
+        petition["JSSPetitionDocumentCount"] = _get_uploaded_attachment_count(
+            page, code
+        )
         if on_petition_review is not None:
             on_petition_review(code, petition)
 
@@ -1054,17 +1064,23 @@ def _refresh_recent_registrations(
     ensure_authenticated: Callable[[], None],
     progress: ProgressCallback | None,
     callback: Callable[[Mapping[str, object]], None] | None,
+    *,
+    months: int,
 ) -> None:
-    """Read the portal's last-month workflow and return matching declarations."""
+    """Read the observed paginated report and return only exact local matches."""
 
     targets = {str(code).strip() for code in tracking_codes if str(code).strip()}
-    if not targets:
-        raise LiveBrowserError("recent_registrations_tracking_codes_missing")
+    date_field = {
+        1: "OneMonthLaterDate",
+        3: "ThreeMonthLaterDate",
+    }.get(months)
+    if date_field is None:
+        raise LiveBrowserError("recent_registrations_period_invalid")
     ensure_authenticated()
     date_info = _portal_json_request(page, GET_PORTAL_DATETIME_URL)
     if not isinstance(date_info, Mapping):
         raise LiveBrowserError("recent_registrations_response_invalid")
-    from_date = str(date_info.get("OneMonthLaterDate") or "").strip()
+    from_date = str(date_info.get(date_field) or "").strip()
     to_date = str(date_info.get("TodayDate") or "").strip()
     if not from_date or not to_date:
         raise LiveBrowserError("recent_registrations_response_invalid")
@@ -1073,32 +1089,162 @@ def _refresh_recent_registrations(
     if from_key is None or to_key is None or from_key > to_key:
         raise LiveBrowserError("recent_registrations_response_invalid")
 
+    report = _recent_registration_report(from_date, to_date)
+    listed_codes: set[str] = set()
+    listed_petitions: dict[str, Mapping[str, object]] = {}
+    matched_codes: set[str] = set()
+    expected_total: int | None = None
+    page_number = 0
+    while True:
+        ensure_authenticated()
+        response = _portal_json_request(
+            page,
+            GET_PETITION_LIST_URL,
+            payload={
+                "reportData": json.dumps(
+                    report, ensure_ascii=False, separators=(",", ":")
+                ),
+                "fromPage": page_number,
+            },
+        )
+        if not isinstance(response, Mapping):
+            raise LiveBrowserError("recent_registrations_response_invalid")
+        rows = response.get("ObjectList")
+        total = response.get("TotalRecords")
+        returned_page = response.get("PageNo")
+        if (
+            not isinstance(rows, list)
+            or isinstance(total, bool)
+            or not isinstance(total, int)
+            or total < 0
+            or isinstance(returned_page, bool)
+            or not isinstance(returned_page, int)
+            or returned_page != page_number
+        ):
+            raise LiveBrowserError("recent_registrations_response_invalid")
+        if expected_total is None:
+            expected_total = total
+        elif total != expected_total:
+            raise LiveBrowserError("recent_registrations_pagination_inconsistent")
+        if not rows:
+            if len(listed_codes) != total:
+                raise LiveBrowserError("recent_registrations_pagination_incomplete")
+            break
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise LiveBrowserError("recent_registrations_response_invalid")
+            code = str(row.get("No") or "").strip()
+            if not re.fullmatch(r"\d{16}", code):
+                raise LiveBrowserError("recent_registration_tracking_code_invalid")
+            if code in listed_codes:
+                raise LiveBrowserError("recent_registrations_page_repeated")
+            created = _portal_date_key(row.get("CreateDateTime"))
+            if created is None or not from_key <= created <= to_key:
+                raise LiveBrowserError("recent_registration_date_invalid")
+            listed_codes.add(code)
+            listed_petitions[code] = dict(row)
+            if code in targets:
+                matched_codes.add(code)
+        if len(listed_codes) > total:
+            raise LiveBrowserError("recent_registrations_pagination_inconsistent")
+        if len(listed_codes) == total:
+            break
+        page_number += 1
+        if page_number > total:
+            raise LiveBrowserError("recent_registrations_pagination_incomplete")
+
     petitions: dict[str, Mapping[str, object]] = {}
-    checked = 0
-    for code in sorted(targets):
+    for code in sorted(matched_codes):
         ensure_authenticated()
         petition = _get_petition_by_tracking_code(page, code)
         if str(petition.get("No") or "").strip() != code:
             raise LiveBrowserError("tracked_petition_number_mismatch")
-        checked += 1
-        created = _portal_date_key(petition.get("CreateDateTime"))
-        if created is None:
-            raise LiveBrowserError("recent_registration_date_invalid")
-        if from_key <= created <= to_key:
-            petitions[code] = petition
+        petitions[code] = petition
     _report(
         progress,
-        f"بازخوانی یک ماه اخیر پایان یافت؛ بررسی‌شده: {checked}، "
-        f"تطبیق‌یافته: {len(petitions)}.",
+        f"بازخوانی {months} ماه اخیر پایان یافت؛ دریافت‌شده: "
+        f"{len(listed_codes)}، تطبیق‌یافته: {len(petitions)}.",
     )
     if callback is not None:
         callback({
-            "received": len(petitions),
-            "checked": checked,
+            "months": months,
+            "received": len(listed_codes),
+            "checked": len(listed_codes),
             "matched": len(petitions),
-            "unmatched": checked - len(petitions),
+            "unmatched": len(listed_codes) - len(petitions),
             "petitions": petitions,
+            "registrations": listed_petitions,
         })
+
+
+def _recent_registration_report(
+    from_date: str, to_date: str
+) -> dict[str, object]:
+    """Build the report payload observed in the portal's report controller."""
+
+    return {
+        "isJSSFinalPetition": False,
+        "isJSSLawyerContractSelfSign": False,
+        "isJSSLawyerContractSelfLawyer": False,
+        "isJSSLawyerContractSelfPerson": False,
+        "isJSSLawyerContractSelfSuperLawyer": False,
+        "isJSSLawyerContractSelfCancelLawyer": False,
+        "saveFromDate": from_date,
+        "saveToDate": to_date,
+        "sendFromDate": "",
+        "sendToDate": "",
+        "returnFromDate": "",
+        "returnToDate": "",
+        "lastModifiedFromDate": "",
+        "lastModifiedToDate": "",
+        "sendOfficeTitle": "",
+        "sendOfficeCode": "",
+        "sendOfficeId": "",
+        "sendUnitTitle": "",
+        "sendUnitCode": "",
+        "sendUnitId": "",
+        "petitionTypeCodes": "",
+        "billTypeCodes": "",
+        "specialPermissionTypeIds": "",
+        "petitionTypes": "",
+        "accusationTypeId": "",
+        "actionSubjectId": "",
+        "declarationSubjectId": "",
+        "declarationNo": "",
+        "creatorNationalityCode": "",
+        "name": "",
+        "family": "",
+        "nationalityCode": "",
+        "vakilNo": "",
+        "posNo": "",
+        "fromPage": 0,
+        "state": "0",
+        "returnReason": "0",
+        "roleType": "0",
+        "orderBy": "PosNo",
+        "groupBy": "5",
+        "objectStateId": "",
+        "reportName": "JSSPetitionByJSSUnit",
+        "totalRecords": 0,
+        "currentPage": 1,
+        "itemsPerPage": "20",
+        "pageSize": "20",
+        "allPages": 1,
+        "theJSSBillReportResultList": [],
+        "theJSSClearanceCertResultList": [],
+        "theJSSPetitionReportResultList": [],
+        "theJSSDeclarationReportResultList": [],
+        "theRepostTempList": [],
+        "theAllReportlist": [],
+        "theAllBillReportlist": [],
+        "theAllLawyerContractReportlist": [],
+        "theJSSBillType": {},
+        "theJSSPetitionType": {},
+        "theJSSPetitionRelief": {},
+        "theJSSSpecialPermissionType": {},
+        "theAllEdocumentReportlist": [],
+        "theAllLawyerTaxReportlist": [],
+    }
 
 
 def _portal_date_key(value: object) -> tuple[int, int, int] | None:

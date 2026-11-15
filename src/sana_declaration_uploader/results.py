@@ -6,6 +6,7 @@ from datetime import datetime
 from contextlib import contextmanager
 import json
 from pathlib import Path
+import re
 import sqlite3
 import sys
 from typing import Mapping
@@ -58,6 +59,7 @@ def _connect(filename: str = RESULTS_FILENAME):
                 attachment_count INTEGER,
                 attachment_count_checked_at TEXT NOT NULL DEFAULT '',
                 attachment_context TEXT,
+                origin TEXT NOT NULL DEFAULT 'local',
                 UNIQUE(
                     source_path, source_recipient_ordinal,
                     tracking_code, registered_at
@@ -65,6 +67,16 @@ def _connect(filename: str = RESULTS_FILENAME):
             )
             """
         )
+        columns = {
+            str(row[1]) for row in connection.execute(
+                "PRAGMA table_info(registrations)"
+            )
+        }
+        if "origin" not in columns:
+            connection.execute(
+                "ALTER TABLE registrations "
+                "ADD COLUMN origin TEXT NOT NULL DEFAULT 'local'"
+            )
         connection.execute(
             """CREATE INDEX IF NOT EXISTS registrations_source_idx
                ON registrations(source_path, source_recipient_ordinal, id DESC)"""
@@ -198,7 +210,7 @@ def _insert_registration(
     ordinal: int,
     registration: Mapping[str, object],
     fields: Mapping[str, str] | None = None,
-) -> None:
+) -> int:
     tracking_code = str(registration.get("tracking_code", "")).strip()
     registered_at = str(registration.get("registered_at", "")).strip()
     if not tracking_code or not registered_at:
@@ -213,13 +225,16 @@ def _insert_registration(
     count = registration.get("attachment_count")
     if isinstance(count, bool) or not isinstance(count, int) or count < 0:
         count = None
-    connection.execute(
+    origin = str(registration.get("origin", "local") or "local").strip()
+    if origin not in ("local", "sana"):
+        raise ResultPersistenceError("registration_origin_invalid")
+    cursor = connection.execute(
         """INSERT OR IGNORE INTO registrations (
                source_path, source_file, source_recipient_ordinal,
                tracking_code, registered_at, related_declaration_number,
                national_id, first_name, last_name, attachment_count,
-               attachment_count_checked_at, attachment_context
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               attachment_count_checked_at, attachment_context, origin
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             source, source_file, ordinal, tracking_code, registered_at,
             str(values.get("related_declaration_number", "")).strip(),
@@ -229,8 +244,10 @@ def _insert_registration(
             count,
             str(registration.get("attachment_count_checked_at", "")).strip(),
             context_json,
+            origin,
         ),
     )
+    return int(cursor.rowcount)
 
 
 def _import_legacy_for_recipient(
@@ -468,6 +485,56 @@ def save_attachment_count(
     return _database_path(filename)
 
 
+def import_sana_registration(petition: Mapping[str, object]) -> int:
+    """Insert one previously unknown, verified SANA registration once."""
+
+    tracking_code = str(petition.get("No") or "").strip()
+    registered_at = str(petition.get("CreateDateTime") or "").strip()
+    if not re.fullmatch(r"\d{16}", tracking_code):
+        raise ResultPersistenceError("tracking_code_invalid")
+    if not registered_at:
+        raise ResultPersistenceError("registered_at_missing")
+    people = petition.get("theJSSPetitionPerson")
+    recipients = [
+        person for person in people
+        if isinstance(person, Mapping) and str(person.get("RoleType")) == "2"
+    ] if isinstance(people, list) else []
+    recipient = recipients[0] if len(recipients) == 1 else {}
+    fields = {
+        "related_declaration_number": str(
+            petition.get("RelatedNo") or ""
+        ).strip(),
+        "recipient_national_id": str(
+            recipient.get("NationalityCode") or ""
+        ).strip(),
+        "recipient_first_name": str(recipient.get("Name") or "").strip(),
+        "recipient_last_name": str(recipient.get("Family") or "").strip(),
+    }
+    source = str(
+        (history_database_path().resolve().parent / "__sana__" /
+         f"{tracking_code}.remote").resolve()
+    )
+    with _connect() as connection:
+        existing = connection.execute(
+            "SELECT COUNT(*) FROM registrations WHERE tracking_code = ?",
+            (tracking_code,),
+        ).fetchone()[0]
+        if existing:
+            return 0
+        return _insert_registration(
+            connection,
+            source=source,
+            source_file="دریافت‌شده از ثنا",
+            ordinal=1,
+            registration={
+                "tracking_code": tracking_code,
+                "registered_at": registered_at,
+                "origin": "sana",
+            },
+            fields=fields,
+        )
+
+
 def registration_history() -> tuple[dict[str, object], ...]:
     """Return all centrally stored registrations, newest first."""
 
@@ -475,7 +542,8 @@ def registration_history() -> tuple[dict[str, object], ...]:
         rows = connection.execute(
             """SELECT source_path, source_file, source_recipient_ordinal,
                       tracking_code, registered_at, related_declaration_number,
-                      national_id, first_name, last_name, attachment_count
+                      national_id, first_name, last_name, attachment_count,
+                      origin
                FROM registrations
                ORDER BY registered_at DESC, id DESC"""
         ).fetchall()
@@ -489,7 +557,8 @@ def registrations_missing_report_fields() -> tuple[tuple[Path, int], ...]:
         rows = connection.execute(
             """SELECT source_path, source_recipient_ordinal
                FROM registrations
-               WHERE trim(first_name) = '' OR trim(last_name) = ''
+               WHERE origin = 'local'
+                 AND (trim(first_name) = '' OR trim(last_name) = '')
                GROUP BY source_path, source_recipient_ordinal"""
         ).fetchall()
     return tuple((Path(row[0]), int(row[1])) for row in rows)

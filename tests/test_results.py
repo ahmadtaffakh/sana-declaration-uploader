@@ -1,6 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
+import sqlite3
 import unittest
 from unittest.mock import patch
 
@@ -9,6 +10,7 @@ from sana_declaration_uploader.results import (
     backfill_registration_report_fields,
     ResultPersistenceError,
     existing_results,
+    import_sana_registration,
     migrate_legacy_registration,
     read_legacy_tracking_codes,
     read_saved_attachment_context,
@@ -32,6 +34,79 @@ class ResultPersistenceTests(unittest.TestCase):
     def tearDown(self):
         self.database_patch.stop()
         self.database_dir.cleanup()
+
+    def test_imports_unknown_sana_registration_once_and_marks_origin(self):
+        petition = {
+            "No": "2" * 16,
+            "CreateDateTime": "1405/07/01 10:20:30",
+            "RelatedNo": "R-2",
+            "theJSSPetitionPerson": [{
+                "RoleType": 2,
+                "NationalityCode": "001",
+                "Name": "نام",
+                "Family": "خانوادگی",
+            }],
+        }
+
+        self.assertEqual(import_sana_registration(petition), 1)
+        self.assertEqual(import_sana_registration(petition), 0)
+
+        row = registration_history()[0]
+        self.assertEqual(row["tracking_code"], "2" * 16)
+        self.assertEqual(row["origin"], "sana")
+        self.assertEqual(row["source_file"], "دریافت‌شده از ثنا")
+        self.assertEqual(row["national_id"], "001")
+
+    def test_does_not_guess_identity_for_ambiguous_sana_recipients(self):
+        petition = {
+            "No": "3" * 16,
+            "CreateDateTime": "1405/07/01 10:20:30",
+            "theJSSPetitionPerson": [
+                {"RoleType": 2, "Name": "اول", "Family": "نمونه"},
+                {"RoleType": 2, "Name": "دوم", "Family": "نمونه"},
+            ],
+        }
+
+        self.assertEqual(import_sana_registration(petition), 1)
+
+        row = registration_history()[0]
+        self.assertEqual(row["first_name"], "")
+        self.assertEqual(row["last_name"], "")
+
+    def test_migrates_existing_database_origin_to_local(self):
+        connection = sqlite3.connect(self.database_path)
+        try:
+            connection.execute(
+                """CREATE TABLE registrations (
+                       id INTEGER PRIMARY KEY AUTOINCREMENT,
+                       source_path TEXT NOT NULL,
+                       source_file TEXT NOT NULL,
+                       source_recipient_ordinal INTEGER NOT NULL,
+                       tracking_code TEXT NOT NULL,
+                       registered_at TEXT NOT NULL,
+                       related_declaration_number TEXT NOT NULL DEFAULT '',
+                       national_id TEXT NOT NULL DEFAULT '',
+                       first_name TEXT NOT NULL DEFAULT '',
+                       last_name TEXT NOT NULL DEFAULT '',
+                       attachment_count INTEGER,
+                       attachment_count_checked_at TEXT NOT NULL DEFAULT '',
+                       attachment_context TEXT,
+                       UNIQUE(source_path, source_recipient_ordinal,
+                              tracking_code, registered_at)
+                   )"""
+            )
+            connection.execute(
+                """INSERT INTO registrations (
+                       source_path, source_file, source_recipient_ordinal,
+                       tracking_code, registered_at
+                   ) VALUES (?, ?, ?, ?, ?)""",
+                ("old.docx", "old.docx", 1, "T-OLD", "old"),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        self.assertEqual(registration_history()[0]["origin"], "local")
 
     def test_migrates_legacy_codes_to_each_recipient_key(self):
         with TemporaryDirectory() as directory:

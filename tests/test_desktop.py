@@ -122,6 +122,31 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertFalse(report.table.isRowHidden(1))
             self.assertTrue(report.table.isRowHidden(0))
 
+    def test_registration_history_shows_time_and_sorts_by_it(self) -> None:
+        rows = (
+            {
+                "registered_at": "2026-10-16T08:05:06+03:30",
+                "tracking_code": "T-EARLY",
+            },
+            {
+                "registered_at": "2026-10-16T18:15:16+03:30",
+                "tracking_code": "T-LATE",
+            },
+        )
+        with patch(
+            "sana_declaration_uploader.desktop.registration_history",
+            return_value=rows,
+        ):
+            report = RecipientWizard().files_page.registration_report
+
+        self.assertEqual(report.table.item(0, 5).text(), "T-LATE")
+        self.assertEqual(
+            report.table.item(0, 0).text(), "1405/07/24 18:15:16"
+        )
+        self.assertEqual(
+            report.table.item(1, 0).text(), "1405/07/24 08:05:06"
+        )
+
     def test_completed_operation_can_show_refreshed_history(self) -> None:
         with TemporaryDirectory() as directory:
             source = Path(directory)
@@ -176,7 +201,10 @@ class RecipientWizardTests(unittest.TestCase):
 
         report.recent_refresh_button.click()
 
-        callback.assert_called_once_with()
+        callback.assert_called_once_with(1)
+        report.recent_period_combo.setCurrentIndex(1)
+        report.recent_refresh_button.click()
+        self.assertEqual(callback.call_args_list[-1].args, (3,))
         self.assertIn("فیلدهای خالی", report.recent_refresh_button.toolTip())
 
     def test_recent_refresh_fills_only_missing_report_fields(self) -> None:
@@ -193,9 +221,11 @@ class RecipientWizardTests(unittest.TestCase):
             )
             wizard = RecipientWizard()
             payload = {
-                "received": 1,
+                "months": 3,
+                "received": 2,
+                "checked": 2,
                 "matched": 1,
-                "unmatched": 0,
+                "unmatched": 1,
                 "petitions": {
                     "T-MONTH": {
                         "No": "T-MONTH",
@@ -206,18 +236,42 @@ class RecipientWizardTests(unittest.TestCase):
                             "Name": "نام ثنا",
                             "Family": "خانوادگی",
                         }],
-                    }
+                    },
+                },
+                "registrations": {
+                    "T-MONTH": {
+                        "No": "T-MONTH",
+                        "CreateDateTime": "1405/07/01 09:00:00",
+                    },
+                    "2222222222222222": {
+                        "No": "2222222222222222",
+                        "CreateDateTime": "1405/07/02 10:00:00",
+                        "RelatedNo": "R-UNKNOWN",
+                    },
                 },
             }
 
             with patch.object(QMessageBox, "information"):
                 wizard._recent_registration_refresh_received(payload)
 
-            record = registration_history()[0]
+            records = {
+                record["tracking_code"]: record
+                for record in registration_history()
+            }
+            record = records["T-MONTH"]
             self.assertEqual(record["first_name"], "نام موجود")
             self.assertEqual(record["last_name"], "خانوادگی")
             self.assertEqual(record["national_id"], "001")
             self.assertEqual(record["related_declaration_number"], "R-1")
+            self.assertEqual(len(records), 2)
+            self.assertEqual(records["2222222222222222"]["origin"], "sana")
+            report = wizard.files_page.registration_report
+            source_column = report.HEADERS.index("منبع")
+            source_labels = {
+                report.table.item(row, source_column).text()
+                for row in range(report.table.rowCount())
+            }
+            self.assertIn("دریافت‌شده از ثنا", source_labels)
 
     def test_petition_review_fields_use_unique_matching_recipient(self) -> None:
         petition = {
@@ -588,6 +642,33 @@ class RecipientWizardTests(unittest.TestCase):
             "T-UPDATED",
         )
 
+    def test_blue_action_shows_and_scrolls_to_first_ready_row(self) -> None:
+        page = RecipientWizard().login_page
+        old_draft = DeclarationDraft(
+            Path("."), {}, source_path=Path("old.docx")
+        )
+        ready_drafts = (
+            DeclarationDraft(Path("."), {}, source_path=Path("ready-one.docx")),
+            DeclarationDraft(Path("."), {}, source_path=Path("ready-two.docx")),
+        )
+        page.set_operation_drafts((old_draft,), reset=True)
+        page.set_operation_drafts(ready_drafts, reset=False)
+        page.output_tabs.setCurrentWidget(page.python_output)
+
+        with (
+            patch.object(page.status_table, "scrollToItem") as scroll,
+            patch.object(page.status_table, "setFocus") as focus,
+        ):
+            page.show_ready_operation_rows(ready_drafts)
+
+        self.assertIs(page.output_tabs.currentWidget(), page.status_table)
+        self.assertEqual(page.status_table.currentRow(), 1)
+        scroll.assert_called_once_with(
+            page.status_table.item(1, 0),
+            QAbstractItemView.ScrollHint.PositionAtTop,
+        )
+        focus.assert_called_once_with(Qt.FocusReason.OtherFocusReason)
+
     def test_first_status_tab_refreshes_from_saved_registration_result(self) -> None:
         with TemporaryDirectory() as directory:
             source_dir = Path(directory)
@@ -925,8 +1006,7 @@ class RecipientWizardTests(unittest.TestCase):
         )
         self.assertEqual(page.refresh_counts_button.objectName(), "SecondaryButton")
         self.assertIn("هیچ ثبت یا آپلودی", page.refresh_counts_button.toolTip())
-        self.assertNotIn("API", page.api_template_button.text())
-        self.assertTrue(page.api_template_button.toolTip())
+        self.assertFalse(hasattr(page, "api_template_button"))
         self.assertEqual(page.close_browser_button.text(), "بستن نشست ثنا")
         self.assertEqual(page.close_browser_button.objectName(), "SessionButton")
         self.assertTrue(page.close_browser_button.toolTip())
@@ -941,7 +1021,6 @@ class RecipientWizardTests(unittest.TestCase):
             page.api_test_button,
             page.attach_existing_button,
             page.refresh_counts_button,
-            page.api_template_button,
             page.close_browser_button,
             page.exit_button,
             page.stop_button,
@@ -951,7 +1030,6 @@ class RecipientWizardTests(unittest.TestCase):
             page.api_test_button,
             page.attach_existing_button,
             page.refresh_counts_button,
-            page.api_template_button,
             page.exit_button,
         )
         self.assertEqual(len({button.geometry().y() for button in visible_buttons}), 1)
@@ -967,18 +1045,6 @@ class RecipientWizardTests(unittest.TestCase):
             [],
         )
         wizard.close()
-
-    def test_last_page_reports_invalid_template_instead_of_ready(self) -> None:
-        page = RecipientWizard().login_page
-
-        with patch(
-            "sana_declaration_uploader.desktop.load_setpetitiondata_template",
-            side_effect=RuntimeError("set_petition_data_template_invalid"),
-        ):
-            page._refresh_api_template_status()
-
-        self.assertIn("نامعتبر", page.api_template_button.toolTip())
-        self.assertNotIn("آماده است", page.api_template_button.toolTip())
 
     def test_last_page_places_all_credential_fields_on_one_row(self) -> None:
         wizard = RecipientWizard()

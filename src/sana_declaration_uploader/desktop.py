@@ -83,6 +83,7 @@ from .results import (
     ResultPersistenceError,
     RESULTS_FILENAME,
     existing_results,
+    import_sana_registration,
     read_saved_result,
     registration_history,
     registrations_missing_report_fields,
@@ -614,14 +615,17 @@ def _jalali_to_gregorian(year: int, month: int, day: int) -> date:
     return date(gregorian_year, gregorian_month, gregorian_day)
 
 
-def _registration_date_display(value: str) -> str:
+def _registration_date_display(value: str, *, include_time: bool = False) -> str:
     if not value:
         return "نامشخص"
     try:
-        registered = datetime.fromisoformat(value).date()
+        registered = datetime.fromisoformat(value)
     except ValueError:
         return "نامشخص"
-    year, month, day = registered.year, registered.month, registered.day
+    registered_date = registered.date()
+    year, month, day = (
+        registered_date.year, registered_date.month, registered_date.day
+    )
     month_days = (0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
     adjusted_year = year + (1 if month > 2 else 0)
     days = (
@@ -638,7 +642,10 @@ def _registration_date_display(value: str) -> str:
         days = (days - 1) % 365
     jalali_month = 1 + days // 31 if days < 186 else 7 + (days - 186) // 30
     jalali_day = 1 + days % 31 if days < 186 else 1 + (days - 186) % 30
-    return f"{jalali_year:04d}/{jalali_month:02d}/{jalali_day:02d}"
+    display = f"{jalali_year:04d}/{jalali_month:02d}/{jalali_day:02d}"
+    if include_time:
+        display += f" {registered:%H:%M:%S}"
+    return display
 
 
 def _days_since_related_date(value: str, *, today: date | None = None) -> int | None:
@@ -812,6 +819,7 @@ class RegistrationHistoryWidget(QWidget):
         "نام",
         "نام خانوادگی",
         "کد رهگیری",
+        "منبع",
         "فایل Word",
     )
     FIELDS = (
@@ -821,17 +829,21 @@ class RegistrationHistoryWidget(QWidget):
         "first_name",
         "last_name",
         "tracking_code",
+        "origin",
         "source_file",
     )
 
     def __init__(self) -> None:
         super().__init__()
         self.review_callback: Callable[[dict[str, object]], None] | None = None
-        self.recent_refresh_callback: Callable[[], None] | None = None
+        self.recent_refresh_callback: Callable[[int], None] | None = None
         self.search = QLineEdit()
         self.search.setPlaceholderText(
             "جستجو در شماره اظهارنامه مرتبط، کد ملی، نام، نام خانوادگی، "
             "کد رهگیری یا تاریخ"
+        )
+        self.search.setToolTip(
+            "بخشی از نام، کد ملی، کد رهگیری یا تاریخ را بنویسید تا ردیف‌های مرتبط نمایش داده شوند."
         )
         self.search.setAccessibleName("جستجو در گزارش اظهارنامه‌های ثبت‌شده")
         self.table = QTableWidget(0, len(self.HEADERS))
@@ -849,17 +861,25 @@ class RegistrationHistoryWidget(QWidget):
         self.review_button = QPushButton("بررسی از ثنا")
         self.review_button.setObjectName("SecondaryButton")
         self.review_button.setToolTip(
-            "اطلاعات ردیف انتخاب‌شده را فقط برای بازبینی از ثنا می‌خواند و "
-            "فیلدهای خالی گزارش را تکمیل می‌کند."
+            "ابتدا یک ردیف را انتخاب کنید. اطلاعات همان اظهارنامه و تعداد واقعی ضمائم "
+            "از ثنا خوانده می‌شود و فقط فیلدهای خالی گزارش تکمیل می‌شوند. "
+            "هیچ ثبت یا ارسالی انجام نمی‌شود."
         )
         self.review_button.setAccessibleName(
             "بررسی خواندنی اظهارنامه انتخاب‌شده از ثنا"
         )
-        self.recent_refresh_button = QPushButton("بازخوانی ثبت‌های یک ماه اخیر")
+        self.recent_period_combo = QComboBox()
+        self.recent_period_combo.addItem("یک ماه اخیر", 1)
+        self.recent_period_combo.addItem("سه ماه اخیر", 3)
+        self.recent_period_combo.setToolTip(
+            "بازه‌ای را انتخاب کنید که فهرست ثبت‌های ثنا از آن خوانده شود."
+        )
+        self.recent_refresh_button = QPushButton("بازخوانی ثبت‌های ثنا")
         self.recent_refresh_button.setObjectName("SecondaryButton")
         self.recent_refresh_button.setToolTip(
-            "ثبت‌های یک ماه اخیر را فقط به‌صورت خواندنی از ثنا می‌خواند و "
-            "فیلدهای خالی سوابق محلیِ دارای کد رهگیری یکسان را تکمیل می‌کند."
+            "ثبت‌های بازهٔ انتخاب‌شده را از ثنا می‌خواند. فیلدهای خالی سابقه‌های "
+            "شناخته‌شده تکمیل و موارد جدید با علامت «دریافت‌شده از ثنا» ذخیره می‌شوند. "
+            "هیچ ثبت یا ارسالی انجام نمی‌شود."
         )
         self.recent_refresh_button.setAccessibleName(
             "بازخوانی خواندنی ثبت‌های یک ماه اخیر از ثنا"
@@ -871,6 +891,7 @@ class RegistrationHistoryWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         search_row = QHBoxLayout()
         search_row.addWidget(self.search, 1)
+        search_row.addWidget(self.recent_period_combo)
         search_row.addWidget(self.recent_refresh_button)
         search_row.addWidget(self.review_button)
         layout.addLayout(search_row)
@@ -895,9 +916,14 @@ class RegistrationHistoryWidget(QWidget):
             row = self.table.rowCount()
             self.table.insertRow(row)
             raw_values = tuple(record.get(field, "") for field in self.FIELDS)
+            origin = str(record.get("origin") or "local")
             display_values = (
-                _registration_date_display(str(raw_values[0])),
-                *raw_values[1:],
+                _registration_date_display(
+                    str(raw_values[0]), include_time=True
+                ),
+                *raw_values[1:6],
+                "دریافت‌شده از ثنا" if origin == "sana" else "فایل محلی",
+                raw_values[7],
             )
             for column, value in enumerate(display_values):
                 item = QTableWidgetItem(str(value or ""))
@@ -907,8 +933,14 @@ class RegistrationHistoryWidget(QWidget):
                         int(Qt.ItemDataRole.UserRole) + 1,
                         json.dumps(dict(record), ensure_ascii=False, default=str),
                     )
+                if column == self.HEADERS.index("منبع") and origin == "sana":
+                    item.setForeground(QColor("#1769AA"))
+                    item.setToolTip(
+                        "این سابقه از فهرست ثنا دریافت شده و به فایل Word حدس زده نشده است."
+                    )
                 self.table.setItem(row, column, item)
         self.table.setSortingEnabled(True)
+        self.table.sortItems(0, Qt.SortOrder.DescendingOrder)
         self.message.setText(f"تعداد سوابق ثبت‌شده: {len(rows)}")
         self._apply_filter(self.search.text())
 
@@ -958,7 +990,9 @@ class RegistrationHistoryWidget(QWidget):
 
     def _refresh_recent(self) -> None:
         if self.recent_refresh_callback is not None:
-            self.recent_refresh_callback()
+            self.recent_refresh_callback(
+                int(self.recent_period_combo.currentData())
+            )
 
 
 class FileSelectionPage(QWizardPage):
@@ -986,6 +1020,14 @@ class FileSelectionPage(QWizardPage):
         remove_button = QPushButton("حذف انتخاب‌شده")
         add_button.setObjectName("SecondaryButton")
         remove_button.setObjectName("OutlineDangerButton")
+        add_button.setToolTip(
+            "یک یا چند فایل Word، PDF متنی یا TXT را از رایانه انتخاب می‌کند. "
+            "در این مرحله چیزی در ثنا ثبت نمی‌شود."
+        )
+        remove_button.setToolTip(
+            "فایل انتخاب‌شده را فقط از فهرست برنامه برمی‌دارد؛ "
+            "فایل اصلی از رایانه پاک نمی‌شود."
+        )
         add_button.clicked.connect(self._choose_files)
         remove_button.clicked.connect(self._remove_selected)
 
@@ -1151,6 +1193,13 @@ class RecipientReviewPage(QWizardPage):
         remove_button = QPushButton("حذف ردیف")
         add_button.setObjectName("SecondaryButton")
         remove_button.setObjectName("OutlineDangerButton")
+        add_button.setToolTip(
+            "یک ردیف خالی برای واردکردن دستی مشخصات یک شخص اضافه می‌کند."
+        )
+        remove_button.setToolTip(
+            "ردیف‌های انتخاب‌شده را از این نوبت کار حذف می‌کند؛ "
+            "فایل اصلی و سابقه‌های قبلی پاک نمی‌شوند."
+        )
         add_button.clicked.connect(lambda: self.add_candidate(None))
         remove_button.clicked.connect(self._remove_selected)
         buttons = QHBoxLayout()
@@ -1702,6 +1751,10 @@ class DeclarationContentPage(QWizardPage):
         self.shared_checkbox = QCheckBox(
             "موضوع و شرح برای همهٔ اشخاص مشترک است"
         )
+        self.shared_checkbox.setToolTip(
+            "اگر موضوع و شرح همه یکسان است، این تیک را روشن بگذارید. "
+            "اگر متفاوت است، تیک را بردارید و هر شخص را جدا انتخاب کنید."
+        )
         self.shared_checkbox.setChecked(
             self._attachment_defaults.get("shared_description", "true").lower()
             != "false"
@@ -1709,21 +1762,35 @@ class DeclarationContentPage(QWizardPage):
         self.shared_attachments_checkbox = QCheckBox(
             "فایل‌ها و مشخصات پیوست برای همهٔ اشخاص مشترک است"
         )
+        self.shared_attachments_checkbox.setToolTip(
+            "اگر همان پیوست‌ها برای همه است، این تیک را روشن بگذارید. "
+            "برای پیوست متفاوت، تیک را بردارید و فایل هر شخص را جدا وارد کنید."
+        )
         self.shared_attachments_checkbox.setChecked(
             self._attachment_defaults.get("shared_attachments", "true").lower()
             == "true"
         )
         self.recipient_combo = QComboBox()
+        self.recipient_combo.setToolTip(
+            "وقتی اطلاعات مشترک نیست، شخص موردنظر را انتخاب کنید؛ "
+            "کادرهای پایین برای همان شخص هستند."
+        )
         self.active_recipient_label = QLabel()
         self.active_recipient_label.setStyleSheet(
             "color: #1769AA; font-weight: 600; padding: 4px;"
         )
         self.subject = QLineEdit(self._declaration_defaults["subject"])
         self.subject.setPlaceholderText("موضوع دقیق اظهارنامه را وارد کنید")
+        self.subject.setToolTip(
+            "موضوعی را بنویسید که باید در اظهارنامه ثبت شود و پیش از ادامه آن را بازبینی کنید."
+        )
         self.description = QTextEdit()
         self.description.setPlainText(self._declaration_defaults["description"])
         self.description.setPlaceholderText(
             "شرح اظهارنامه را کامل و دقیق وارد کنید. این متن قبل از ثبت قابل بازبینی است."
+        )
+        self.description.setToolTip(
+            "متن کامل اظهارنامه را وارد یا اصلاح کنید. همین متن برای مخاطب فعال استفاده می‌شود."
         )
         self.description.setMinimumHeight(480)
         self.attachment_list = QListWidget()
@@ -1734,18 +1801,30 @@ class DeclarationContentPage(QWizardPage):
         if self.attachment_kind.findText(saved_attachment_kind) < 0:
             self.attachment_kind.addItem(saved_attachment_kind)
         self.attachment_kind.setCurrentText(saved_attachment_kind)
+        self.attachment_kind.setToolTip(
+            "نوع مدرک را انتخاب کنید. این نوع باید با فهرست مجاز همان اظهارنامه در ثنا برابر باشد."
+        )
         self.attachment_number = QLineEdit(
             self._attachment_defaults["attachment_number"]
         )
         self.attachment_number.setPlaceholderText("شماره مدرک")
+        self.attachment_number.setToolTip(
+            "شماره‌ای را وارد کنید که باید برای پیوست در ثنا نمایش داده شود."
+        )
         self.attachment_date = QLineEdit(
             self._attachment_defaults["attachment_date"]
         )
         self.attachment_date.setPlaceholderText("نمونه: ۱۴۰۵/۰۷/۲۰")
+        self.attachment_date.setToolTip(
+            "تاریخ مدرک را به شکل سال/ماه/روز وارد کنید؛ نمونه: ۱۴۰۵/۰۷/۲۰."
+        )
         self.attachment_title = QLineEdit(
             self._attachment_defaults["attachment_title"]
         )
         self.attachment_title.setPlaceholderText("عنوانی که در اظهارنامه نمایش داده می‌شود")
+        self.attachment_title.setToolTip(
+            "عنوان دقیق مدرک را بنویسید. برنامه همین عنوان را با نوع‌های مجاز ثنا تطبیق می‌دهد."
+        )
         for editor in (
             self.attachment_title, self.attachment_number, self.attachment_date
         ):
@@ -1758,6 +1837,13 @@ class DeclarationContentPage(QWizardPage):
         remove_button = QPushButton("حذف پیوست انتخاب‌شده")
         add_button.setObjectName("SecondaryButton")
         remove_button.setObjectName("OutlineDangerButton")
+        add_button.setToolTip(
+            "فایل‌ها را به فهرست پیوست‌های مخاطب فعال اضافه می‌کند. "
+            "این کار هنوز چیزی به ثنا نمی‌فرستد."
+        )
+        remove_button.setToolTip(
+            "پیوست انتخاب‌شده را فقط از این نوبت کار حذف می‌کند؛ فایل اصلی پاک نمی‌شود."
+        )
         add_button.clicked.connect(self._choose_attachments)
         remove_button.clicked.connect(self._remove_attachments)
         attachment_buttons = QHBoxLayout()
@@ -2232,10 +2318,24 @@ class LoginPage(QWizardPage):
         self.otp = QLineEdit(saved.get("otp", ""))
         self.otp.setEchoMode(QLineEdit.EchoMode.Password)
         self.otp.setPlaceholderText("برای ورود مجدد در صورت پایان نشست")
+        self.national_code.setToolTip(
+            "کد ملی یا شناسه‌ای را وارد کنید که با آن وارد حساب ثنا می‌شوید."
+        )
+        self.password.setToolTip("رمز عبور حساب ثنا را وارد کنید.")
+        self.legal_identity.setToolTip(
+            "شناسهٔ شخص حقوقی مربوط به همین حساب و پرونده را وارد کنید."
+        )
+        self.otp.setToolTip(
+            "رمز موقت معتبر را وارد کنید. اگر نشست منقضی شود، برنامه OTP تازه می‌خواهد."
+        )
         self.remember_credentials = QCheckBox(
             "تمام مشخصات ورود، شامل رمز عبور و OTP، در این دستگاه ذخیره شود"
         )
         self.remember_credentials.setChecked(True)
+        self.remember_credentials.setToolTip(
+            "روشن: همهٔ اطلاعات ورود به‌صورت خوانا روی همین دستگاه ذخیره می‌شوند.\n"
+            "خاموش: اطلاعات ذخیره‌شده پاک می‌شوند. در رایانهٔ مشترک خاموشش کنید."
+        )
 
         self.credentials_group = QGroupBox("مشخصات ورود")
         credentials_layout = QVBoxLayout(self.credentials_group)
@@ -2272,10 +2372,10 @@ class LoginPage(QWizardPage):
         )
         self.api_test_button.setObjectName("PrimaryButton")
         self.api_test_button.setToolTip(
-            "اظهارنامه‌های آماده را ثبت می‌کند؛ پس از تأیید پیوست، آمادگی "
-            "برای پرداخت و فقط امضای شخص در ثنا را یک‌بار اجرا می‌کند. "
-            "تا وقتی مرورگر باز است از همان نشست استفاده می‌شود؛ اگر نشست "
-            "تمام شود، برای ورود دوباره OTP تازه می‌پرسد."
+            "کار اصلی برنامه: ردیف‌های آماده و بدون کد رهگیری را به‌ترتیب پردازش می‌کند.\n"
+            "اظهارنامه هر ردیف فقط یک‌بار ثبت و سپس پیوست‌هایش اضافه می‌شوند.\n"
+            "ردیف دارای پیوست برای پرداخت آماده و فقط با امضای شخص امضا می‌شود.\n"
+            "پرداخت وجه و ارسال نهایی انجام نمی‌شود و پیش از شروع تأیید می‌گیرید."
         )
         self.api_test_button.setAccessibleName(
             "ثبت اظهارنامه، افزودن پیوست، آمادگی برای پرداخت و امضا"
@@ -2286,8 +2386,8 @@ class LoginPage(QWizardPage):
         )
         self.attach_existing_button.setObjectName("SuccessButton")
         self.attach_existing_button.setToolTip(
-            "کد رهگیری‌های ذخیره‌شده را جستجو می‌کند و فایل‌های انتخاب‌شده را "
-            "به همان اظهارنامه‌ها می‌افزاید؛ اظهارنامه دوباره ثبت نمی‌شود."
+            "فقط برای ردیف دارای کد رهگیری معتبر و پیوست است.\n"
+            "پیوست‌ها را به همان اظهارنامه اضافه می‌کند و اظهارنامه را دوباره ثبت نمی‌کند."
         )
         self.attach_existing_button.setAccessibleName(
             "افزودن پیوست بدون ثبت دوباره اظهارنامه"
@@ -2296,8 +2396,8 @@ class LoginPage(QWizardPage):
         self.refresh_counts_button = QPushButton("بازخوانی تعداد ضمائم")
         self.refresh_counts_button.setObjectName("SecondaryButton")
         self.refresh_counts_button.setToolTip(
-            "فقط اظهارنامه‌های دارای کد رهگیری را از ثنا می‌خواند و تعداد "
-            "ضمائم را در جدول و فایل JSON به‌روز می‌کند؛ هیچ ثبت یا آپلودی ندارد."
+            "تعداد واقعی پیوست‌های ردیف‌های دارای کد رهگیری را از ثنا می‌خواند.\n"
+            "این کار فقط خواندنی است و هیچ ثبت یا آپلودی انجام نمی‌دهد."
         )
         self.refresh_counts_button.setAccessibleName(
             "بازخوانی خواندنی تعداد ضمائم از ثنا"
@@ -2308,14 +2408,14 @@ class LoginPage(QWizardPage):
         self.close_browser_button.setEnabled(False)
         self.close_browser_button.setVisible(False)
         self.close_browser_button.setToolTip(
-            "مرورگر و نشست ثنا را می‌بندد. برای درخواست بعدی باید دوباره وارد شوید."
+            "نشست فعلی ثنا و مرورگر را می‌بندد؛ برای کار بعدی باید دوباره وارد شوید."
         )
         self.close_browser_button.setAccessibleName("بستن مرورگر ثنا")
         self.close_browser_button.clicked.connect(self._close_api_browser)
         self.exit_button = QPushButton("خروج از برنامه")
         self.exit_button.setObjectName("ExitButton")
         self.exit_button.setToolTip(
-            "نشست مرورگر ثنا و برنامه را بدون نمایش پیام تأیید می‌بندد."
+            "نشست ثنا، مرورگر و برنامه را بدون نمایش پیام تأیید دیگری می‌بندد."
         )
         self.exit_button.setAccessibleName("بستن مرورگر ثنا و خروج از برنامه")
         self.exit_button.clicked.connect(self._exit_application)
@@ -2323,7 +2423,7 @@ class LoginPage(QWizardPage):
         self.stop_button.setEnabled(False)
         self.stop_button.setVisible(False)
         self.stop_button.setToolTip(
-            "بعد از تمام‌شدن ردیف در حال اجرا متوقف می‌کند؛ همان ردیف دوباره فرستاده نمی‌شود."
+            "ردیف در حال اجرا را قطع نمی‌کند؛ پس از پایان همان ردیف و پیش از ردیف بعدی متوقف می‌شود."
         )
         self.stop_button.setAccessibleName("توقف پس از ردیف جاری")
         self.stop_button.setStyleSheet(
@@ -2332,16 +2432,10 @@ class LoginPage(QWizardPage):
             "QPushButton:disabled { background:#D8A6A3; color:#F7EEEE; }"
         )
         self.stop_button.clicked.connect(self._request_stop)
-        self.api_template_button = QPushButton("انتخاب یا تغییر قالب فنی ثبت")
-        self.api_template_button.setAccessibleName("انتخاب فایل قالب فنی ثبت")
-        self.api_template_button.clicked.connect(self._choose_api_template)
-        self._refresh_api_template_status()
-
         self.action_row = QHBoxLayout()
         self.action_row.addWidget(self.api_test_button, 3)
         self.action_row.addWidget(self.attach_existing_button, 3)
         self.action_row.addWidget(self.refresh_counts_button, 2)
-        self.action_row.addWidget(self.api_template_button, 2)
         self.action_row.addWidget(self.close_browser_button, 1)
         self.action_row.addWidget(self.exit_button, 1)
         self.action_row.addWidget(self.stop_button, 1)
@@ -2392,22 +2486,6 @@ class LoginPage(QWizardPage):
         self.otp.textChanged.connect(lambda: self._save_credentials())
         self.remember_credentials.toggled.connect(
             lambda: self._save_credentials()
-        )
-
-    def _refresh_api_template_status(self) -> None:
-        path = _setpetitiondata_template_path()
-        if not path.is_file():
-            status = "قالب فنی ثبت را یک‌بار انتخاب کنید."
-        else:
-            try:
-                load_setpetitiondata_template(path)
-            except (OSError, ValueError, RuntimeError):
-                status = "قالب فنی ثبت نامعتبر است؛ آن را دوباره انتخاب کنید."
-            else:
-                status = "قالب فنی ثبت آماده است."
-        self.api_template_button.setToolTip(
-            "فایل قالب فنی ثبت را انتخاب می‌کند؛ این انتخاب برای اجراهای بعدی "
-            f"حفظ می‌شود.\n{status}"
         )
 
     def _request_stop(self) -> None:
@@ -2478,6 +2556,25 @@ class LoginPage(QWizardPage):
                     self._set_status_item(item, value)
                 else:
                     item.setText(value)
+
+    def show_ready_operation_rows(
+        self, drafts: tuple[DeclarationDraft, ...]
+    ) -> None:
+        """Show the first row in the operation that is about to run."""
+        self.output_tabs.setCurrentWidget(self.status_table)
+        if not drafts:
+            return
+        row = self._operation_rows.get(self._draft_status_key(drafts[0]))
+        if row is None:
+            return
+        item = self.status_table.item(row, 0)
+        if item is None:
+            return
+        self.status_table.setCurrentCell(row, 0)
+        self.status_table.scrollToItem(
+            item, QAbstractItemView.ScrollHint.PositionAtTop
+        )
+        self.status_table.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def update_operation_status(self, event: object) -> None:
         if not isinstance(event, dict):
@@ -2559,36 +2656,6 @@ class LoginPage(QWizardPage):
         item.setToolTip(
             f"آخرین بررسی ثنا: {checked_at}"
             if checked_at else "تعداد واقعی تأییدشده توسط ثنا"
-        )
-
-    def _choose_api_template(self) -> None:
-        source, _ = QFileDialog.getOpenFileName(
-            self,
-            "انتخاب payload نمونه SetPetitionData",
-            str(Path.home()),
-            "JSON یا متن درخواست (*.json *.txt);;همه فایل‌ها (*.*)",
-        )
-        if not source:
-            return
-        try:
-            template = load_setpetitiondata_template(Path(source))
-            target = _setpetitiondata_template_path()
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(
-                json.dumps(template, ensure_ascii=False, separators=(",", ":")),
-                encoding="utf-8",
-            )
-        except (OSError, ValueError, RuntimeError) as exc:
-            QMessageBox.warning(
-                self, "قالب نامعتبر", f"قالب ذخیره نشد: {exc}"
-            )
-            return
-        self._refresh_api_template_status()
-        QMessageBox.information(
-            self,
-            "قالب ذخیره شد",
-            "قالب در تنظیمات محلی همین دستگاه ذخیره شد؛ اطلاعات مخاطب، شرح و "
-            "کدهای مکان هنگام اجرا جایگزین می‌شوند.",
         )
 
     def isComplete(self) -> bool:
@@ -3209,8 +3276,8 @@ class RecipientWizard(QWizard):
             )
         except (OSError, ValueError, RuntimeError) as exc:
             message = (
-                "قالب فنی ثبت نامعتبر است؛ از بخش تنظیمات پیشرفته قالب صحیح "
-                "را دوباره انتخاب کنید."
+                "قالب داخلی ثبت در دسترس نیست یا معتبر نیست؛ با پشتیبانی "
+                "برنامه تماس بگیرید."
                 if str(exc) == "set_petition_data_template_invalid"
                 else str(exc)
             )
@@ -3291,6 +3358,7 @@ class RecipientWizard(QWizard):
             operation_drafts,
             reset=self._api_request_queue is None,
         )
+        self.login_page.show_ready_operation_rows(operation_drafts)
         if self._api_request_queue is not None:
             if (
                 self._api_browser_close_event is None
@@ -3399,8 +3467,8 @@ class RecipientWizard(QWizard):
                 level="debug",
             )
             message = (
-                "قالب فنی ثبت با ساختار موردنیاز سازگار نیست؛ قالب صحیح را "
-                "از بخش تنظیمات پیشرفته دوباره انتخاب کنید."
+                "قالب داخلی ثبت با ساختار موردنیاز سازگار نیست؛ با پشتیبانی "
+                "برنامه تماس بگیرید."
                 if str(exc) == "set_petition_data_template_invalid"
                 else str(exc)
             )
@@ -3432,7 +3500,10 @@ class RecipientWizard(QWizard):
             level="system",
         )
 
-    def _start_recent_registration_refresh(self) -> None:
+    def _start_recent_registration_refresh(self, months: int) -> None:
+        if months not in (1, 3):
+            QMessageBox.warning(self, "بازه نامعتبر", "بازهٔ بازخوانی معتبر نیست.")
+            return
         try:
             records = registration_history()
         except ResultPersistenceError as exc:
@@ -3447,12 +3518,6 @@ class RecipientWizard(QWizard):
             code for code, matches in records_by_code.items()
             if len(matches) == 1
         )
-        if not tracking_codes:
-            QMessageBox.information(
-                self, "گزارش خالی",
-                "سابقهٔ محلی دارای کد رهگیری یکتا برای بازخوانی وجود ندارد.",
-            )
-            return
         credentials = self.login_page._credentials()
         if not self._api_session_active() and not all((
             credentials.national_code, credentials.password,
@@ -3468,6 +3533,7 @@ class RecipientWizard(QWizard):
         request = {
             "kind": "refresh_recent_registrations",
             "tracking_codes": tracking_codes,
+            "months": months,
             "credentials": credentials,
             "on_recent_registration_refresh": (
                 self._emit_recent_registration_refresh
@@ -3487,7 +3553,7 @@ class RecipientWizard(QWizard):
             self._set_background_controls_enabled(False)
             self._api_request_queue.put(request)
             self.login_page.append_output(
-                "بازخوانی خواندنی ثبت‌های یک ماه اخیر به نشست فعلی صف شد.",
+                f"بازخوانی خواندنی ثبت‌های {months} ماه اخیر به نشست فعلی صف شد.",
                 level="system",
             )
             return
@@ -3500,7 +3566,7 @@ class RecipientWizard(QWizard):
         self._api_browser_ready = False
         report = self.login_page.append_output
         report(
-            "بازخوانی خواندنی ثبت‌های یک ماه اخیر آغاز شد؛ هیچ ثبت یا "
+            f"بازخوانی خواندنی ثبت‌های {months} ماه اخیر آغاز شد؛ هیچ ثبت یا "
             "آپلودی انجام نمی‌شود.",
             level="system",
         )
@@ -3523,6 +3589,7 @@ class RecipientWizard(QWizard):
                 reauth_credentials_provider=reauth_credentials_provider,
                 close_browser_event=close_browser_event,
                 recent_registration_codes=tracking_codes,
+                recent_registration_months=months,
                 on_recent_registration_refresh=(
                     self._emit_recent_registration_refresh
                 ),
@@ -3535,7 +3602,7 @@ class RecipientWizard(QWizard):
             QMessageBox.warning(self, "بازخوانی از ثنا ناموفق", str(exc))
 
         self._start_background(
-            "در حال بازخوانی ثبت‌های یک ماه اخیر...",
+            f"در حال بازخوانی ثبت‌های {months} ماه اخیر...",
             task,
             lambda _result: report("بازخوانی پایان یافت.", level="success"),
             failed,
@@ -3551,7 +3618,7 @@ class RecipientWizard(QWizard):
     def _recent_registration_refresh_received(self, payload: object) -> None:
         if not isinstance(payload, dict) or not isinstance(
             payload.get("petitions"), dict
-        ):
+        ) or not isinstance(payload.get("registrations"), dict):
             QMessageBox.warning(self, "پاسخ نامعتبر", "پاسخ بازخوانی معتبر نیست.")
             return
         try:
@@ -3588,6 +3655,11 @@ class RecipientWizard(QWizard):
                 if changed != 1:
                     raise ResultPersistenceError("verified_registration_not_found")
                 updated += 1
+            imported = 0
+            for code, petition in payload["registrations"].items():
+                if records_by_code.get(str(code)) or not isinstance(petition, dict):
+                    continue
+                imported += import_sana_registration(petition)
         except (KeyError, TypeError, ValueError, ResultPersistenceError) as exc:
             QMessageBox.warning(
                 self, "به‌روزرسانی گزارش ناموفق",
@@ -3600,18 +3672,21 @@ class RecipientWizard(QWizard):
         checked = int(payload.get("checked") or received)
         matched = int(payload.get("matched") or 0)
         unmatched = int(payload.get("unmatched") or 0)
+        months = int(payload.get("months") or 1)
         self.login_page.append_output(
-            f"بازخوانی یک ماه اخیر تکمیل شد؛ بررسی‌شده: {checked}، "
+            f"بازخوانی {months} ماه اخیر تکمیل شد؛ دریافت‌شده: {checked}، "
             f"بازیابی‌شده در بازه: {received}، "
             f"تطبیق‌یافته: {matched}، به‌روزشده: {updated}، "
-            f"تطبیق‌نیافته: {unmatched}.",
+            f"جدید از ثنا: {imported}، تطبیق‌نیافته: {unmatched}.",
             level="success",
         )
         QMessageBox.information(
             self, "بازخوانی گزارش ثبت",
-            f"بررسی‌شده: {checked}\nبازیابی‌شده در بازه: {received}\n"
+            f"بازه: {months} ماه اخیر\nدریافت‌شده: {checked}\n"
+            f"بازیابی‌شده در بازه: {received}\n"
             f"تطبیق‌یافته: {matched}\n"
-            f"به‌روزشده: {updated}\nتطبیق‌نیافته: {unmatched}",
+            f"به‌روزشده: {updated}\nجدید از ثنا: {imported}\n"
+            f"تطبیق‌نیافته: {unmatched}",
         )
 
     def _start_petition_review(self, record: dict[str, object]) -> None:
