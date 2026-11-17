@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 from queue import Queue
+import re
 import sys
 from threading import Event
 import traceback
@@ -618,6 +619,34 @@ def _jalali_to_gregorian(year: int, month: int, day: int) -> date:
 def _registration_date_display(value: str, *, include_time: bool = False) -> str:
     if not value:
         return "نامشخص"
+    portal_value = value.translate(_PERSIAN_DIGITS).strip()
+    portal_match = re.fullmatch(
+        r"(\d{4})/(\d{1,2})/(\d{1,2})"
+        r"(?:[- T](\d{1,2}):(\d{2})(?::(\d{2}))?)?",
+        portal_value,
+    )
+    if portal_match is not None:
+        year, month, day = (int(part) for part in portal_match.groups()[:3])
+        hour = int(portal_match.group(4) or 0)
+        minute = int(portal_match.group(5) or 0)
+        second = int(portal_match.group(6) or 0)
+        if (
+            year < 1200
+            or not 1 <= month <= 12
+            or not 1 <= day <= 31
+            or not 0 <= hour <= 23
+            or not 0 <= minute <= 59
+            or not 0 <= second <= 59
+        ):
+            return "نامشخص"
+        try:
+            _jalali_to_gregorian(year, month, day)
+        except ValueError:
+            return "نامشخص"
+        display = f"{year:04d}/{month:02d}/{day:02d}"
+        if include_time and portal_match.group(4) is not None:
+            display += f" {hour:02d}:{minute:02d}:{second:02d}"
+        return display
     try:
         registered = datetime.fromisoformat(value)
     except ValueError:
@@ -2998,19 +3027,19 @@ class RecipientWizard(QWizard):
     @Slot(str)
     def _background_progressed(self, message: str) -> None:
         if message == "__api_browser_failed__":
-            self._api_browser_ready = True
+            self._api_browser_ready = False
             self._api_request_queue = None
             self.preprocessing_page.refresh_registration_results()
             self.review_page.refresh_registration_results()
             self.files_page.refresh_registration_results()
             self._show_registration_history()
             self.login_page.append_output(
-                "درخواست ثبت موقت ناموفق شد؛ مرورگر برای بررسی باز می‌ماند. "
-                "درخواست تازه تا بستن مرورگر پذیرفته نمی‌شود.",
+                "درخواست ناموفق شد؛ نشست مرورگر خودکار بسته می‌شود و پس از "
+                "آن می‌توانید دوباره تلاش کنید.",
                 level="error",
             )
-            self._finish_background_ui()
-            self._set_api_session_controls_enabled(allow_requests=False)
+            if self._api_browser_close_event is not None:
+                self._api_browser_close_event.set()
             return
         if message == "__api_browser_ready_to_close__":
             self._api_browser_ready = True

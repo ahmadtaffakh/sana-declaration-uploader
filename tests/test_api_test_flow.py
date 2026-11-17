@@ -112,7 +112,14 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
             ) as request,
             patch.object(
                 api_test_flow, "_get_petition_by_tracking_code",
-                return_value={"No": matched_code},
+                side_effect=lambda _page, code: {
+                    "No": code,
+                    "theJSSPetitionPerson": [{
+                        "RoleType": 2,
+                        "Name": f"name-{code[0]}",
+                        "Family": f"family-{code[0]}",
+                    }],
+                },
             ) as details,
         ):
             api_test_flow._refresh_recent_registrations(
@@ -132,7 +139,10 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         report = json.loads(first_page.kwargs["payload"]["reportData"])
         self.assertEqual(report["saveFromDate"], "1405/04/30")
         self.assertEqual(report["saveToDate"], "1405/07/30")
-        details.assert_called_once_with(ANY, matched_code)
+        self.assertEqual(
+            details.call_args_list,
+            [call(ANY, code) for code in (matched_code, *unknown_codes)],
+        )
         summary = callback.call_args.args[0]
         self.assertEqual(summary["months"], 3)
         self.assertEqual(summary["received"], 3)
@@ -144,6 +154,51 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
             set(summary["registrations"]),
             {matched_code, *unknown_codes},
         )
+        self.assertEqual(
+            summary["registrations"][unknown_codes[0]][
+                "theJSSPetitionPerson"
+            ][0]["Name"],
+            "name-2",
+        )
+        self.assertEqual(
+            summary["registrations"][unknown_codes[0]]["CreateDateTime"],
+            "1405/05/02",
+        )
+
+    def test_recent_registration_refresh_rejects_mismatched_unknown_detail(self):
+        listed_code = "2" * 16
+        with (
+            patch.object(
+                api_test_flow,
+                "_portal_json_request",
+                side_effect=[
+                    {
+                        "OneMonthLaterDate": "1405/06/30",
+                        "TodayDate": "1405/07/30",
+                    },
+                    {
+                        "ObjectList": [{
+                            "No": listed_code,
+                            "CreateDateTime": "1405/07/01",
+                        }],
+                        "TotalRecords": 1,
+                        "PageNo": 0,
+                    },
+                ],
+            ),
+            patch.object(
+                api_test_flow,
+                "_get_petition_by_tracking_code",
+                return_value={"No": "3" * 16},
+            ),
+            self.assertRaisesRegex(
+                api_test_flow.LiveBrowserError,
+                "tracked_petition_number_mismatch",
+            ),
+        ):
+            api_test_flow._refresh_recent_registrations(
+                Mock(), (), Mock(), None, Mock(), months=1
+            )
 
     def test_recent_registration_refresh_stops_on_missing_portal_date(self):
         with (

@@ -1153,13 +1153,19 @@ def _refresh_recent_registrations(
         if page_number > total:
             raise LiveBrowserError("recent_registrations_pagination_incomplete")
 
-    petitions: dict[str, Mapping[str, object]] = {}
-    for code in sorted(matched_codes):
+    detailed_registrations: dict[str, Mapping[str, object]] = {}
+    for code in sorted(listed_codes):
         ensure_authenticated()
         petition = _get_petition_by_tracking_code(page, code)
         if str(petition.get("No") or "").strip() != code:
             raise LiveBrowserError("tracked_petition_number_mismatch")
-        petitions[code] = petition
+        detailed_registrations[code] = {
+            **listed_petitions[code],
+            **petition,
+        }
+    petitions = {
+        code: detailed_registrations[code] for code in matched_codes
+    }
     _report(
         progress,
         f"بازخوانی {months} ماه اخیر پایان یافت؛ دریافت‌شده: "
@@ -1173,7 +1179,7 @@ def _refresh_recent_registrations(
             "matched": len(petitions),
             "unmatched": len(listed_codes) - len(petitions),
             "petitions": petitions,
-            "registrations": listed_petitions,
+            "registrations": detailed_registrations,
         })
 
 

@@ -37,6 +37,7 @@ from sana_declaration_uploader.desktop import (
     _load_login_settings,
     _load_saved_attachment_paths,
     _petition_review_fields,
+    _registration_date_display,
     _save_attachment_settings,
     _save_declaration_settings,
     _save_last_source_directory,
@@ -247,6 +248,12 @@ class RecipientWizardTests(unittest.TestCase):
                         "No": "2222222222222222",
                         "CreateDateTime": "1405/07/02 10:00:00",
                         "RelatedNo": "R-UNKNOWN",
+                        "theJSSPetitionPerson": [{
+                            "RoleType": 2,
+                            "NationalityCode": "002",
+                            "Name": "نام جدید",
+                            "Family": "خانوادگی جدید",
+                        }],
                     },
                 },
             }
@@ -265,6 +272,10 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertEqual(record["related_declaration_number"], "R-1")
             self.assertEqual(len(records), 2)
             self.assertEqual(records["2222222222222222"]["origin"], "sana")
+            self.assertEqual(records["2222222222222222"]["first_name"], "نام جدید")
+            self.assertEqual(
+                records["2222222222222222"]["last_name"], "خانوادگی جدید"
+            )
             report = wizard.files_page.registration_report
             source_column = report.HEADERS.index("منبع")
             source_labels = {
@@ -272,6 +283,62 @@ class RecipientWizardTests(unittest.TestCase):
                 for row in range(report.table.rowCount())
             }
             self.assertIn("دریافت‌شده از ثنا", source_labels)
+
+    def test_registration_date_display_accepts_observed_sana_jalali_format(self) -> None:
+        self.assertEqual(
+            _registration_date_display("1405/07/02-10:15", include_time=True),
+            "1405/07/02 10:15:00",
+        )
+        self.assertEqual(
+            _registration_date_display("۱۴۰۵/۰۷/۰۲ ۱۰:۱۵:۳۰", include_time=True),
+            "1405/07/02 10:15:30",
+        )
+
+    def test_api_session_controls_restore_sana_fetch_buttons(self) -> None:
+        wizard = RecipientWizard()
+        wizard._set_background_controls_enabled(False)
+
+        self.assertFalse(
+            wizard.files_page.registration_report.recent_refresh_button.isEnabled()
+        )
+        self.assertFalse(
+            wizard.login_page.registration_report.review_button.isEnabled()
+        )
+
+        wizard._api_browser_ready = True
+        wizard._set_api_session_controls_enabled()
+
+        self.assertTrue(
+            wizard.files_page.registration_report.recent_refresh_button.isEnabled()
+        )
+        self.assertTrue(
+            wizard.login_page.registration_report.review_button.isEnabled()
+        )
+
+    def test_api_failure_closes_session_and_restores_fetch_buttons(self) -> None:
+        wizard = RecipientWizard()
+        close_event = Event()
+        wizard._api_browser_close_event = close_event
+        wizard._api_request_queue = Queue()
+        wizard._background_thread = object()
+        wizard._set_background_controls_enabled(False)
+
+        wizard._background_progressed("__api_browser_failed__")
+
+        self.assertTrue(close_event.is_set())
+        self.assertIsNone(wizard._api_request_queue)
+        self.assertFalse(
+            wizard.files_page.registration_report.recent_refresh_button.isEnabled()
+        )
+
+        wizard._background_thread_finished()
+
+        self.assertTrue(
+            wizard.files_page.registration_report.recent_refresh_button.isEnabled()
+        )
+        self.assertTrue(
+            wizard.login_page.registration_report.review_button.isEnabled()
+        )
 
     def test_petition_review_fields_use_unique_matching_recipient(self) -> None:
         petition = {
