@@ -15,7 +15,17 @@ from threading import Event
 import traceback
 from typing import Callable, Mapping
 
-from PySide6.QtCore import QObject, QEventLoop, QSize, Qt, QThread, QUrl, Signal, Slot
+from PySide6.QtCore import (
+    QMimeData,
+    QObject,
+    QEventLoop,
+    QSize,
+    Qt,
+    QThread,
+    QUrl,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -23,7 +33,9 @@ from PySide6.QtGui import (
     QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
+    QKeySequence,
     QPalette,
+    QShortcut,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -2483,8 +2495,15 @@ class LoginPage(QWizardPage):
             QAbstractItemView.EditTrigger.NoEditTriggers
         )
         self.status_table.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection
+            QAbstractItemView.SelectionMode.ExtendedSelection
         )
+        self.copy_status_shortcut = QShortcut(
+            QKeySequence.StandardKey.Copy, self.status_table
+        )
+        self.copy_status_shortcut.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self.copy_status_shortcut.activated.connect(self._copy_selected_status_rows)
         status_header = self.status_table.horizontalHeader()
         status_header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         status_header.setSectionResizeMode(
@@ -2501,10 +2520,21 @@ class LoginPage(QWizardPage):
         self._log_run_id = ""
         self._log_sequence = 0
 
+        self.copy_status_button = QPushButton("کپی ردیف‌های انتخاب‌شده")
+        self.copy_status_button.setObjectName("SecondaryButton")
+        self.copy_status_button.setToolTip(
+            "ردیف‌های انتخاب‌شده را همراه عنوان ستون‌ها برای چسباندن در Excel یا Word کپی می‌کند."
+        )
+        self.copy_status_button.clicked.connect(self._copy_selected_status_rows)
+        status_tools = QHBoxLayout()
+        status_tools.addStretch()
+        status_tools.addWidget(self.copy_status_button)
+
         layout = QVBoxLayout(self)
         layout.addWidget(guidance)
         layout.addWidget(self.credentials_group)
         layout.addLayout(self.action_row)
+        layout.addLayout(status_tools)
         layout.addWidget(self.output_tabs, 1)
 
         for field in (
@@ -2520,6 +2550,37 @@ class LoginPage(QWizardPage):
     def _request_stop(self) -> None:
         if self.stop_callback is not None:
             self.stop_callback()
+
+    def _copy_selected_status_rows(self) -> None:
+        rows = sorted({index.row() for index in self.status_table.selectedIndexes()})
+        if not rows:
+            return
+
+        def cell_text(row: int, column: int) -> str:
+            item = self.status_table.item(row, column)
+            value = item.text() if item is not None else ""
+            return " ".join(value.replace("\t", " ").splitlines())
+
+        headers = list(self.STATUS_HEADERS)
+        values = [
+            [cell_text(row, column) for column in range(len(headers))]
+            for row in rows
+        ]
+        plain_text = "\n".join(
+            "\t".join(row) for row in (headers, *values)
+        )
+        html_rows = "".join(
+            "<tr>" + "".join(
+                f"<{tag}>{escape(value)}</{tag}>" for value in row
+            ) + "</tr>"
+            for tag, row in (("th", headers), *(("td", row) for row in values))
+        )
+        mime_data = QMimeData()
+        mime_data.setText(plain_text)
+        mime_data.setHtml(
+            f'<table dir="rtl" border="1" cellspacing="0">{html_rows}</table>'
+        )
+        QApplication.clipboard().setMimeData(mime_data)
 
     def show_registration_history(self) -> None:
         self.registration_report.refresh()

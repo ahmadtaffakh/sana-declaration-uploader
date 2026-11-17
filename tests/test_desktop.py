@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QTableWidgetSelectionRange,
     QWizard,
 )
 
@@ -674,6 +675,55 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertEqual(page.output_tabs.tabText(1), "گزارش ثبت")
         self.assertEqual(
             page.output_tabs.tabText(2), "گزارش فنی — دارای خطا"
+        )
+
+    def test_last_page_copies_selected_status_rows_for_excel_and_word(self) -> None:
+        page = RecipientWizard().login_page
+        drafts = (
+            DeclarationDraft(
+                Path("."),
+                {
+                    "recipient_first_name": "علی",
+                    "recipient_last_name": "احمدی",
+                    "declaration_subject": "موضوع اول",
+                },
+                source_path=Path("first.docx"),
+            ),
+            DeclarationDraft(
+                Path("."),
+                {
+                    "recipient_first_name": "رضا",
+                    "recipient_last_name": "کریمی",
+                    "declaration_subject": "موضوع دوم",
+                },
+                source_path=Path("second.docx"),
+            ),
+        )
+        page.set_operation_drafts(drafts, reset=True)
+        page.status_table.setRangeSelected(
+            QTableWidgetSelectionRange(
+                0, 0, 1, page.status_table.columnCount() - 1
+            ),
+            True,
+        )
+
+        page._copy_selected_status_rows()
+
+        mime_data = QApplication.clipboard().mimeData()
+        lines = mime_data.text().splitlines()
+        self.assertEqual(lines[0].split("\t"), list(page.STATUS_HEADERS))
+        self.assertIn("علی احمدی", lines[1])
+        self.assertIn("رضا کریمی", lines[2])
+        self.assertTrue(mime_data.hasHtml())
+        self.assertIn('<table dir="rtl"', mime_data.html())
+        self.assertIn("<th>نام مخاطب</th>", mime_data.html())
+        self.assertEqual(
+            page.status_table.selectionMode(),
+            QAbstractItemView.SelectionMode.ExtendedSelection,
+        )
+        self.assertEqual(
+            page.copy_status_shortcut.context(),
+            Qt.ShortcutContext.WidgetWithChildrenShortcut,
         )
 
     def test_refreshing_existing_status_row_does_not_reinsert_items(self) -> None:
