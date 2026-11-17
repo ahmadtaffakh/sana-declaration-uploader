@@ -56,6 +56,7 @@ def _connect(filename: str = RESULTS_FILENAME):
                 national_id TEXT NOT NULL DEFAULT '',
                 first_name TEXT NOT NULL DEFAULT '',
                 last_name TEXT NOT NULL DEFAULT '',
+                sana_recipients TEXT NOT NULL DEFAULT '',
                 attachment_count INTEGER,
                 attachment_count_checked_at TEXT NOT NULL DEFAULT '',
                 attachment_context TEXT,
@@ -76,6 +77,11 @@ def _connect(filename: str = RESULTS_FILENAME):
             connection.execute(
                 "ALTER TABLE registrations "
                 "ADD COLUMN origin TEXT NOT NULL DEFAULT 'local'"
+            )
+        if "sana_recipients" not in columns:
+            connection.execute(
+                "ALTER TABLE registrations "
+                "ADD COLUMN sana_recipients TEXT NOT NULL DEFAULT ''"
             )
         connection.execute(
             """CREATE INDEX IF NOT EXISTS registrations_source_idx
@@ -232,15 +238,17 @@ def _insert_registration(
         """INSERT OR IGNORE INTO registrations (
                source_path, source_file, source_recipient_ordinal,
                tracking_code, registered_at, related_declaration_number,
-               national_id, first_name, last_name, attachment_count,
+               national_id, first_name, last_name, sana_recipients,
+               attachment_count,
                attachment_count_checked_at, attachment_context, origin
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             source, source_file, ordinal, tracking_code, registered_at,
             str(values.get("related_declaration_number", "")).strip(),
             str(values.get("recipient_national_id", "")).strip(),
             str(values.get("recipient_first_name", "")).strip(),
             str(values.get("recipient_last_name", "")).strip(),
+            str(values.get("sana_recipients", "")).strip(),
             count,
             str(registration.get("attachment_count_checked_at", "")).strip(),
             context_json,
@@ -441,6 +449,10 @@ def save_verified_result(
     }
     if attachment_context is not None:
         registration["attachment_context"] = dict(attachment_context)
+    local_fields = {
+        key: value for key, value in draft.fields.items()
+        if key != "sana_recipients"
+    }
     with _connect(filename) as connection:
         _insert_registration(
             connection,
@@ -448,7 +460,7 @@ def save_verified_result(
             source_file=draft.source_path.name,
             ordinal=draft.source_recipient_ordinal,
             registration=registration,
-            fields=draft.fields,
+            fields=local_fields,
         )
     return _database_path(filename)
 
@@ -485,6 +497,25 @@ def save_attachment_count(
     return _database_path(filename)
 
 
+def sana_recipient_names(petition: Mapping[str, object]) -> str:
+    """Return all reported addressee names without assigning one as canonical."""
+
+    people = petition.get("theJSSPetitionPerson")
+    recipients = [
+        person for person in people
+        if isinstance(person, Mapping) and str(person.get("RoleType")) == "2"
+    ] if isinstance(people, list) else []
+    names = []
+    for recipient in recipients:
+        name = " ".join(filter(None, (
+            str(recipient.get("Name") or "").strip(),
+            str(recipient.get("Family") or "").strip(),
+        )))
+        if name and name not in names:
+            names.append(name)
+    return "، ".join(names)
+
+
 def import_sana_registration(petition: Mapping[str, object]) -> int:
     """Insert one previously unknown, verified SANA registration once."""
 
@@ -509,6 +540,7 @@ def import_sana_registration(petition: Mapping[str, object]) -> int:
         ).strip(),
         "recipient_first_name": str(recipient.get("Name") or "").strip(),
         "recipient_last_name": str(recipient.get("Family") or "").strip(),
+        "sana_recipients": sana_recipient_names(petition),
     }
     source = str(
         (history_database_path().resolve().parent / "__sana__" /
@@ -542,7 +574,8 @@ def registration_history() -> tuple[dict[str, object], ...]:
         rows = connection.execute(
             """SELECT source_path, source_file, source_recipient_ordinal,
                       tracking_code, registered_at, related_declaration_number,
-                      national_id, first_name, last_name, attachment_count,
+                       national_id, first_name, last_name, sana_recipients,
+                       attachment_count,
                       origin
                FROM registrations
                ORDER BY registered_at DESC, id DESC"""
@@ -580,6 +613,7 @@ def backfill_registration_report_fields(
         str(fields.get("recipient_national_id", "")).strip(),
         str(fields.get("recipient_first_name", "")).strip(),
         str(fields.get("recipient_last_name", "")).strip(),
+        str(fields.get("sana_recipients", "")).strip(),
     )
     tracking = str(tracking_code or "").strip()
     where = "source_path = ? AND source_recipient_ordinal = ?"
@@ -604,7 +638,9 @@ def backfill_registration_report_fields(
                    first_name = CASE WHEN trim(first_name) = '' THEN ?
                        ELSE first_name END,
                    last_name = CASE WHEN trim(last_name) = '' THEN ?
-                       ELSE last_name END
+                        ELSE last_name END,
+                    sana_recipients = CASE WHEN trim(sana_recipients) = '' THEN ?
+                        ELSE sana_recipients END
                WHERE {where}""",
             parameters,
         )

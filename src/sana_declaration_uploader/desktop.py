@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date, datetime
+import ctypes
+from ctypes import wintypes
 from html import escape
 import json
 import os
@@ -100,6 +102,7 @@ from .results import (
     read_saved_result,
     registration_history,
     registrations_missing_report_fields,
+    sana_recipient_names,
     save_verified_result,
 )
 
@@ -371,6 +374,144 @@ def _setpetitiondata_template_path() -> Path:
 
 def _setpetitiondata_request_text_path() -> Path:
     return _settings_dir() / "setpetitiondata-request.txt"
+
+
+def _ensure_setpetitiondata_template() -> Path:
+    """Validate the local template and recover it from a prior local request."""
+
+    target = _setpetitiondata_template_path()
+    try:
+        load_setpetitiondata_template(target)
+        return target
+    except (OSError, ValueError, RuntimeError):
+        pass
+
+    candidates = sorted(
+        target.parent.glob("setpetitiondata-request*.txt"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    ) if target.parent.is_dir() else []
+    candidates = [
+        path for path in candidates
+        if ".console." not in path.name and ".curl" not in path.name
+    ]
+    for candidate in candidates:
+        try:
+            template = load_setpetitiondata_template(candidate)
+        except (OSError, ValueError, RuntimeError):
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(template, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.replace(temporary, target)
+        return target
+    raise RuntimeError("set_petition_data_template_invalid")
+
+
+def _iter_windows_process_paths() -> list[tuple[int, Path]]:
+    """Return readable process image paths without invoking another shell."""
+
+    if os.name != "nt":
+        return []
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = (
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        )
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = (
+        wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)
+    )
+    kernel32.Process32NextW.argtypes = (
+        wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)
+    )
+    kernel32.OpenProcess.argtypes = (
+        wintypes.DWORD, wintypes.BOOL, wintypes.DWORD
+    )
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = (
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+    invalid_handle = ctypes.c_void_p(-1).value
+    if snapshot == invalid_handle:
+        return []
+    result: list[tuple[int, Path]] = []
+    entry = PROCESSENTRY32W()
+    entry.dwSize = ctypes.sizeof(entry)
+    try:
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            pid = int(entry.th32ProcessID)
+            handle = kernel32.OpenProcess(0x1000, False, pid)
+            if handle:
+                try:
+                    size = wintypes.DWORD(32768)
+                    buffer = ctypes.create_unicode_buffer(size.value)
+                    if kernel32.QueryFullProcessImageNameW(
+                        handle, 0, buffer, ctypes.byref(size)
+                    ):
+                        result.append((pid, Path(buffer.value)))
+                finally:
+                    kernel32.CloseHandle(handle)
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return result
+
+
+def _terminate_windows_process(pid: int) -> bool:
+    if os.name != "nt":
+        return False
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (
+        wintypes.DWORD, wintypes.BOOL, wintypes.DWORD
+    )
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel32.OpenProcess(0x0001 | 0x00100000, False, pid)
+    if not handle:
+        return False
+    try:
+        return bool(kernel32.TerminateProcess(handle, 0))
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _close_previous_packaged_instances() -> tuple[int, ...]:
+    """Close older packaged instances with the exact application image name."""
+
+    if not getattr(sys, "frozen", False) or os.name != "nt":
+        return ()
+    current_pid = os.getpid()
+    image_name = Path(sys.executable).name.casefold()
+    if image_name != "sanadeclarationuploader.exe":
+        return ()
+    closed = []
+    for pid, path in _iter_windows_process_paths():
+        if pid == current_pid or path.name.casefold() != image_name:
+            continue
+        if _terminate_windows_process(pid):
+            closed.append(pid)
+    return tuple(closed)
 
 
 def _load_default_settings(
@@ -777,6 +918,7 @@ def _petition_review_fields(
         ).strip(),
         "recipient_first_name": str((recipient or {}).get("Name") or "").strip(),
         "recipient_last_name": str((recipient or {}).get("Family") or "").strip(),
+        "sana_recipients": sana_recipient_names(petition),
     }
 
 
@@ -860,6 +1002,7 @@ class RegistrationHistoryWidget(QWidget):
         "نام",
         "نام خانوادگی",
         "کد رهگیری",
+        "مخاطبان ثنا",
         "منبع",
         "فایل Word",
     )
@@ -870,6 +1013,7 @@ class RegistrationHistoryWidget(QWidget):
         "first_name",
         "last_name",
         "tracking_code",
+        "sana_recipients",
         "origin",
         "source_file",
     )
@@ -962,9 +1106,9 @@ class RegistrationHistoryWidget(QWidget):
                 _registration_date_display(
                     str(raw_values[0]), include_time=True
                 ),
-                *raw_values[1:6],
+                *raw_values[1:7],
                 "دریافت‌شده از ثنا" if origin == "sana" else "فایل محلی",
-                raw_values[7],
+                raw_values[8],
             )
             for column, value in enumerate(display_values):
                 item = QTableWidgetItem(str(value or ""))
@@ -2541,8 +2685,8 @@ class LoginPage(QWizardPage):
             self.national_code, self.password, self.legal_identity, self.otp
         ):
             field.textChanged.connect(lambda: self.completeChanged.emit())
+            field.textChanged.connect(lambda: self._save_credentials())
             field.editingFinished.connect(self._save_credentials)
-        self.otp.textChanged.connect(lambda: self._save_credentials())
         self.remember_credentials.toggled.connect(
             lambda: self._save_credentials()
         )
@@ -3087,6 +3231,19 @@ class RecipientWizard(QWizard):
 
     @Slot(str)
     def _background_progressed(self, message: str) -> None:
+        if message.startswith("__petition_review_failed__:"):
+            _event, tracking_code, error = message.split(":", 2)
+            self._petition_review_records.pop(tracking_code, None)
+            if error == "tracked_petition_lookup_http_error:http_status=500":
+                warning = (
+                    "این کد رهگیری مربوط به «اعتراض به قرار دادسرا» می‌باشد و "
+                    "قابل بازیابی در این فرم نیست."
+                )
+            else:
+                warning = f"بازیابی این ردیف از ثنا ناموفق بود: {error}"
+            self.login_page.append_output(warning, level="warning")
+            QMessageBox.warning(self, "بازیابی ردیف ناموفق", warning)
+            return
         if message == "__api_browser_failed__":
             self._api_browser_ready = False
             self._api_request_queue = None
@@ -3236,11 +3393,11 @@ class RecipientWizard(QWizard):
             self.button(role).setEnabled(enabled)
         self.login_page.api_test_button.setEnabled(enabled)
         self.login_page.attach_existing_button.setEnabled(enabled)
-        self.login_page.refresh_counts_button.setEnabled(enabled)
-        self.files_page.registration_report.review_button.setEnabled(enabled)
-        self.login_page.registration_report.review_button.setEnabled(enabled)
-        self.files_page.registration_report.recent_refresh_button.setEnabled(enabled)
-        self.login_page.registration_report.recent_refresh_button.setEnabled(enabled)
+        self.login_page.refresh_counts_button.setEnabled(True)
+        self.files_page.registration_report.review_button.setEnabled(True)
+        self.login_page.registration_report.review_button.setEnabled(True)
+        self.files_page.registration_report.recent_refresh_button.setEnabled(True)
+        self.login_page.registration_report.recent_refresh_button.setEnabled(True)
         close_enabled = enabled and self._api_browser_ready
         self.login_page.close_browser_button.setEnabled(close_enabled)
         self.login_page.close_browser_button.setVisible(close_enabled)
@@ -3262,15 +3419,11 @@ class RecipientWizard(QWizard):
         self.button(QWizard.WizardButton.CancelButton).setEnabled(False)
         self.login_page.api_test_button.setEnabled(allow_requests)
         self.login_page.attach_existing_button.setEnabled(allow_requests)
-        self.login_page.refresh_counts_button.setEnabled(allow_requests)
-        self.files_page.registration_report.review_button.setEnabled(allow_requests)
-        self.login_page.registration_report.review_button.setEnabled(allow_requests)
-        self.files_page.registration_report.recent_refresh_button.setEnabled(
-            allow_requests
-        )
-        self.login_page.registration_report.recent_refresh_button.setEnabled(
-            allow_requests
-        )
+        self.login_page.refresh_counts_button.setEnabled(True)
+        self.files_page.registration_report.review_button.setEnabled(True)
+        self.login_page.registration_report.review_button.setEnabled(True)
+        self.files_page.registration_report.recent_refresh_button.setEnabled(True)
+        self.login_page.registration_report.recent_refresh_button.setEnabled(True)
         self.login_page.close_browser_button.setEnabled(True)
         self.login_page.close_browser_button.setVisible(True)
         self.login_page.stop_button.setEnabled(False)
@@ -3580,11 +3733,11 @@ class RecipientWizard(QWizard):
         self.login_page.close_browser_button.setVisible(False)
         self.login_page.api_test_button.setEnabled(False)
         self.login_page.attach_existing_button.setEnabled(False)
-        self.login_page.refresh_counts_button.setEnabled(False)
-        self.files_page.registration_report.review_button.setEnabled(False)
-        self.login_page.registration_report.review_button.setEnabled(False)
-        self.files_page.registration_report.recent_refresh_button.setEnabled(False)
-        self.login_page.registration_report.recent_refresh_button.setEnabled(False)
+        self.login_page.refresh_counts_button.setEnabled(True)
+        self.files_page.registration_report.review_button.setEnabled(True)
+        self.login_page.registration_report.review_button.setEnabled(True)
+        self.files_page.registration_report.recent_refresh_button.setEnabled(True)
+        self.login_page.registration_report.recent_refresh_button.setEnabled(True)
         self.login_page.append_output(
             "درخواست بستن مرورگر ثبت شد؛ تا بسته‌شدن آن درخواست تازه پذیرفته نمی‌شود.",
             level="system",
@@ -3694,7 +3847,7 @@ class RecipientWizard(QWizard):
         self._start_background(
             f"در حال بازخوانی ثبت‌های {months} ماه اخیر...",
             task,
-            lambda _result: report("بازخوانی پایان یافت.", level="success"),
+            lambda _result: report("فرآیند بازخوانی پایان یافت.", level="system"),
             failed,
             lambda message: report(message, level="progress"),
         )
@@ -3729,6 +3882,7 @@ class RecipientWizard(QWizard):
                     "recipient_national_id": "national_id",
                     "recipient_first_name": "first_name",
                     "recipient_last_name": "last_name",
+                    "sana_recipients": "sana_recipients",
                 }
                 if not any(
                     not str(record.get(local_key) or "").strip()
@@ -3762,22 +3916,34 @@ class RecipientWizard(QWizard):
         checked = int(payload.get("checked") or received)
         matched = int(payload.get("matched") or 0)
         unmatched = int(payload.get("unmatched") or 0)
+        detail_failed = int(payload.get("detail_failed") or 0)
         months = int(payload.get("months") or 1)
+        incomplete = detail_failed > 0
         self.login_page.append_output(
-            f"بازخوانی {months} ماه اخیر تکمیل شد؛ دریافت‌شده: {checked}، "
+            f"بازخوانی {months} ماه اخیر "
+            f"{'ناقص پایان یافت' if incomplete else 'تکمیل شد'}؛ "
+            f"دریافت‌شده: {checked}، "
             f"بازیابی‌شده در بازه: {received}، "
             f"تطبیق‌یافته: {matched}، به‌روزشده: {updated}، "
-            f"جدید از ثنا: {imported}، تطبیق‌نیافته: {unmatched}.",
-            level="success",
+            f"جدید از ثنا: {imported}، تطبیق‌نیافته: {unmatched}، "
+            f"جزئیات ناموفق: {detail_failed}.",
+            level="warning" if incomplete else "success",
         )
-        QMessageBox.information(
-            self, "بازخوانی گزارش ثبت",
+        message = (
             f"بازه: {months} ماه اخیر\nدریافت‌شده: {checked}\n"
             f"بازیابی‌شده در بازه: {received}\n"
             f"تطبیق‌یافته: {matched}\n"
             f"به‌روزشده: {updated}\nجدید از ثنا: {imported}\n"
-            f"تطبیق‌نیافته: {unmatched}",
+            f"تطبیق‌نیافته: {unmatched}\nجزئیات ناموفق: {detail_failed}"
         )
+        if incomplete:
+            QMessageBox.warning(
+                self,
+                "بازخوانی ناقص گزارش ثبت",
+                message + "\n\nبرای ردیف‌های دارای خطای ۵۰۰، نام حدس زده نشد.",
+            )
+        else:
+            QMessageBox.information(self, "بازخوانی گزارش ثبت", message)
 
     def _start_petition_review(self, record: dict[str, object]) -> None:
         tracking_code = str(record.get("tracking_code") or "").strip()
@@ -3864,7 +4030,14 @@ class RecipientWizard(QWizard):
             self._petition_review_records.pop(tracking_code, None)
             report(f"بررسی اظهارنامه متوقف شد: {exc}", level="error")
             report(details, level="debug")
-            QMessageBox.warning(self, "بررسی از ثنا ناموفق", str(exc))
+            message = (
+                "این کد رهگیری مربوط به «اعتراض به قرار دادسرا» می‌باشد و "
+                "قابل بازیابی در این فرم نیست."
+                if str(exc) ==
+                "tracked_petition_lookup_http_error:http_status=500"
+                else str(exc)
+            )
+            QMessageBox.warning(self, "بررسی از ثنا ناموفق", message)
 
         self._start_background(
             "در حال خواندن اظهارنامه از ثنا...",
@@ -3904,12 +4077,14 @@ class RecipientWizard(QWizard):
                 ("recipient_national_id", "کد ملی"),
                 ("recipient_first_name", "نام"),
                 ("recipient_last_name", "نام خانوادگی"),
+                ("sana_recipients", "مخاطبان ثنا"),
             )
             if not str(record.get({
                 "related_declaration_number": "related_declaration_number",
                 "recipient_national_id": "national_id",
                 "recipient_first_name": "first_name",
                 "recipient_last_name": "last_name",
+                "sana_recipients": "sana_recipients",
             }[key]) or "").strip() and fields[key]
         ]
         try:
@@ -4643,8 +4818,19 @@ class RecipientWizard(QWizard):
 
 
 def main() -> int:
+    _close_previous_packaged_instances()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("SANA Declaration Uploader")
+    try:
+        _ensure_setpetitiondata_template()
+    except (OSError, ValueError, RuntimeError):
+        QMessageBox.critical(
+            None,
+            "قالب فنی ثبت آماده نیست",
+            "قالب داخلی ثبت در دسترس نیست یا معتبر نیست؛ با پشتیبانی "
+            "برنامه تماس بگیرید.",
+        )
+        return 1
     wizard = RecipientWizard()
     wizard.show()
     return app.exec()

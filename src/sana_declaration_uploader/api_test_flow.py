@@ -216,15 +216,24 @@ def run_live_setpetitiondata_batch(
                     page, count_refresh, ensure_authenticated, progress, status,
                 )
             if petition_reviews:
-                _review_petitions(
-                    page, petition_reviews, ensure_authenticated, progress,
-                    on_petition_review,
+                _run_session_read(
+                    progress,
+                    "بررسی خواندنی اظهارنامه",
+                    lambda: _review_petitions(
+                        page, petition_reviews, ensure_authenticated, progress,
+                        on_petition_review,
+                        failure_event="__petition_review_failed__",
+                    ),
                 )
             if recent_registration_months is not None:
-                _refresh_recent_registrations(
-                    page, recent_registration_codes, ensure_authenticated,
-                    progress, on_recent_registration_refresh,
-                    months=recent_registration_months,
+                _run_session_read(
+                    progress,
+                    "بازخوانی ثبت‌های ثنا",
+                    lambda: _refresh_recent_registrations(
+                        page, recent_registration_codes, ensure_authenticated,
+                        progress, on_recent_registration_refresh,
+                        months=recent_registration_months,
+                    ),
                 )
             all_results = list(results)
             while pending_requests is not None and not close_browser_event.is_set():
@@ -246,10 +255,15 @@ def run_live_setpetitiondata_batch(
                     continue
                 if isinstance(queued, dict) and queued.get("kind") == "review_petition":
                     current_credentials[0] = queued["credentials"]
-                    _review_petitions(
-                        page, queued["tracking_codes"], ensure_authenticated,
+                    _run_session_read(
                         progress,
-                        queued.get("on_petition_review", on_petition_review),
+                        "بررسی خواندنی اظهارنامه",
+                        lambda: _review_petitions(
+                            page, queued["tracking_codes"], ensure_authenticated,
+                            progress,
+                            queued.get("on_petition_review", on_petition_review),
+                            failure_event="__petition_review_failed__",
+                        ),
                     )
                     continue
                 if (
@@ -257,14 +271,18 @@ def run_live_setpetitiondata_batch(
                     and queued.get("kind") == "refresh_recent_registrations"
                 ):
                     current_credentials[0] = queued["credentials"]
-                    _refresh_recent_registrations(
-                        page, queued["tracking_codes"], ensure_authenticated,
+                    _run_session_read(
                         progress,
-                        queued.get(
-                            "on_recent_registration_refresh",
-                            on_recent_registration_refresh,
+                        "بازخوانی ثبت‌های ثنا",
+                        lambda: _refresh_recent_registrations(
+                            page, queued["tracking_codes"], ensure_authenticated,
+                            progress,
+                            queued.get(
+                                "on_recent_registration_refresh",
+                                on_recent_registration_refresh,
+                            ),
+                            months=int(queued["months"]),
                         ),
-                        months=int(queued["months"]),
                     )
                     continue
                 if isinstance(queued, dict) and queued.get("kind") == "attach_existing":
@@ -318,6 +336,25 @@ def run_live_setpetitiondata_batch(
             finally:
                 context.close()
                 browser.close()
+
+
+def _run_session_read(
+    progress: ProgressCallback | None,
+    label: str,
+    action: Callable[[], object],
+) -> bool:
+    """Keep the browser session usable after one expected read-only failure."""
+
+    try:
+        action()
+    except LiveBrowserError as exc:
+        _report(
+            progress,
+            f"{label} ناموفق بود: {exc}؛ نشست مرورگر باز می‌ماند و درخواست "
+            "به‌صورت خودکار تکرار نمی‌شود.",
+        )
+        return False
+    return True
 
 
 def run_live_setpetitiondata_test(
@@ -980,7 +1017,10 @@ def _get_petition_by_tracking_code(
     except Exception as exc:
         raise LiveBrowserError("tracked_petition_lookup_failed") from exc
     if not isinstance(response, dict) or response.get("status") != 200:
-        raise LiveBrowserError("tracked_petition_lookup_http_error")
+        status = response.get("status") if isinstance(response, dict) else "unknown"
+        raise LiveBrowserError(
+            f"tracked_petition_lookup_http_error:http_status={status}"
+        )
     try:
         value = json.loads(str(response.get("text", "")))
     except (TypeError, ValueError) as exc:
@@ -998,17 +1038,24 @@ def _review_petitions(
     on_petition_review: Callable[
         [str, Mapping[str, object]], None
     ] | None,
+    *,
+    failure_event: str | None = None,
 ) -> None:
     """Read petitions once and return only responses matching their tracking code."""
 
     for tracking_code in tracking_codes:
         code = str(tracking_code).strip()
         ensure_authenticated()
-        petition = _run_logged_stage(
-            progress,
-            f"بررسی خواندنی اظهارنامه با کد رهگیری {code}",
-            lambda code=code: _get_petition_by_tracking_code(page, code),
-        )
+        try:
+            petition = _run_logged_stage(
+                progress,
+                f"بررسی خواندنی اظهارنامه با کد رهگیری {code}",
+                lambda code=code: _get_petition_by_tracking_code(page, code),
+            )
+        except LiveBrowserError as exc:
+            if failure_event is not None:
+                _report(progress, f"{failure_event}:{code}:{exc}")
+            raise
         if str(petition.get("No") or "").strip() != code:
             raise LiveBrowserError("tracked_petition_number_mismatch")
         petition = dict(petition)
@@ -1094,6 +1141,8 @@ def _refresh_recent_registrations(
     listed_petitions: dict[str, Mapping[str, object]] = {}
     matched_codes: set[str] = set()
     expected_total: int | None = None
+    listed_row_count = 0
+    seen_pages: set[tuple[tuple[str, int], ...]] = set()
     page_number = 0
     while True:
         ensure_authenticated()
@@ -1127,57 +1176,95 @@ def _refresh_recent_registrations(
         elif total != expected_total:
             raise LiveBrowserError("recent_registrations_pagination_inconsistent")
         if not rows:
-            if len(listed_codes) != total:
+            if listed_row_count != total:
                 raise LiveBrowserError("recent_registrations_pagination_incomplete")
             break
+        validated_rows: list[tuple[Mapping[str, object], str, int]] = []
         for row in rows:
             if not isinstance(row, Mapping):
                 raise LiveBrowserError("recent_registrations_response_invalid")
             code = str(row.get("No") or "").strip()
             if not re.fullmatch(r"\d{16}", code):
                 raise LiveBrowserError("recent_registration_tracking_code_invalid")
-            if code in listed_codes:
-                raise LiveBrowserError("recent_registrations_page_repeated")
             created = _portal_date_key(row.get("CreateDateTime"))
             if created is None or not from_key <= created <= to_key:
                 raise LiveBrowserError("recent_registration_date_invalid")
+            validated_rows.append((row, code, created))
+        page_fingerprint = tuple(
+            (code, created) for _row, code, created in validated_rows
+        )
+        if page_fingerprint in seen_pages:
+            raise LiveBrowserError("recent_registrations_page_repeated")
+        seen_pages.add(page_fingerprint)
+        for row, code, created in validated_rows:
+            if code in listed_codes:
+                previous_created = _portal_date_key(
+                    listed_petitions[code].get("CreateDateTime")
+                )
+                if previous_created != created:
+                    raise LiveBrowserError(
+                        "recent_registrations_duplicate_inconsistent"
+                    )
+                listed_row_count += 1
+                continue
             listed_codes.add(code)
             listed_petitions[code] = dict(row)
             if code in targets:
                 matched_codes.add(code)
-        if len(listed_codes) > total:
+            listed_row_count += 1
+        if listed_row_count > total:
             raise LiveBrowserError("recent_registrations_pagination_inconsistent")
-        if len(listed_codes) == total:
+        if listed_row_count == total:
             break
         page_number += 1
         if page_number > total:
             raise LiveBrowserError("recent_registrations_pagination_incomplete")
 
     detailed_registrations: dict[str, Mapping[str, object]] = {}
-    for code in sorted(listed_codes):
+    detailed_codes: set[str] = set()
+    detail_failed = 0
+    ordered_codes = sorted(listed_codes)
+    for index, code in enumerate(ordered_codes, start=1):
         ensure_authenticated()
-        petition = _get_petition_by_tracking_code(page, code)
+        try:
+            petition = _get_petition_by_tracking_code(page, code)
+        except LiveBrowserError as exc:
+            if str(exc) != "tracked_petition_lookup_http_error:http_status=500":
+                raise
+            detail_failed += 1
+            detailed_registrations[code] = listed_petitions[code]
+            _report(
+                progress,
+                f"جزئیات ثبت {index} از {len(ordered_codes)} از ثنا با خطای "
+                "HTTP 500 دریافت نشد؛ درخواست تکرار نمی‌شود و سایر ثبت‌ها "
+                "بررسی می‌شوند.",
+            )
+            continue
         if str(petition.get("No") or "").strip() != code:
             raise LiveBrowserError("tracked_petition_number_mismatch")
         detailed_registrations[code] = {
             **listed_petitions[code],
             **petition,
         }
+        detailed_codes.add(code)
     petitions = {
-        code: detailed_registrations[code] for code in matched_codes
+        code: detailed_registrations[code]
+        for code in matched_codes if code in detailed_codes
     }
     _report(
         progress,
         f"بازخوانی {months} ماه اخیر پایان یافت؛ دریافت‌شده: "
-        f"{len(listed_codes)}، تطبیق‌یافته: {len(petitions)}.",
+        f"{len(listed_codes)}، تطبیق‌یافته: {len(petitions)}، "
+        f"جزئیات ناموفق: {detail_failed}.",
     )
     if callback is not None:
         callback({
             "months": months,
             "received": len(listed_codes),
-            "checked": len(listed_codes),
+            "checked": listed_row_count,
             "matched": len(petitions),
             "unmatched": len(listed_codes) - len(petitions),
+            "detail_failed": detail_failed,
             "petitions": petitions,
             "registrations": detailed_registrations,
         })
@@ -1209,10 +1296,10 @@ def _recent_registration_report(
         "sendUnitTitle": "",
         "sendUnitCode": "",
         "sendUnitId": "",
-        "petitionTypeCodes": "",
+        "petitionTypeCodes": "110",
         "billTypeCodes": "",
         "specialPermissionTypeIds": "",
-        "petitionTypes": "",
+        "petitionTypes": "3",
         "accusationTypeId": "",
         "actionSubjectId": "",
         "declarationSubjectId": "",

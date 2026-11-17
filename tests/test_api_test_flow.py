@@ -16,6 +16,27 @@ from sana_declaration_uploader.petition_api import SetPetitionDataResult
 
 
 class DirectSetPetitionDataFlowTests(unittest.TestCase):
+    def test_read_failure_keeps_session_available_without_retry(self):
+        progress = Mock()
+        action = Mock(side_effect=api_test_flow.LiveBrowserError("read_failed"))
+
+        completed = api_test_flow._run_session_read(
+            progress, "بررسی خواندنی", action
+        )
+
+        self.assertFalse(completed)
+        action.assert_called_once_with()
+        self.assertIn("نشست مرورگر باز می‌ماند", progress.call_args.args[0])
+        self.assertIn("تکرار نمی‌شود", progress.call_args.args[0])
+
+    def test_unexpected_read_failure_still_closes_fail_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "unexpected"):
+            api_test_flow._run_session_read(
+                None,
+                "بررسی خواندنی",
+                Mock(side_effect=RuntimeError("unexpected")),
+            )
+
     def test_completes_observed_post_attachment_actions_once_in_order(self):
         tracking_code = "1" * 16
         petition_id = "P" * 32
@@ -139,6 +160,8 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         report = json.loads(first_page.kwargs["payload"]["reportData"])
         self.assertEqual(report["saveFromDate"], "1405/04/30")
         self.assertEqual(report["saveToDate"], "1405/07/30")
+        self.assertEqual(report["petitionTypeCodes"], "110")
+        self.assertEqual(report["petitionTypes"], "3")
         self.assertEqual(
             details.call_args_list,
             [call(ANY, code) for code in (matched_code, *unknown_codes)],
@@ -200,6 +223,59 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
                 Mock(), (), Mock(), None, Mock(), months=1
             )
 
+    def test_recent_refresh_keeps_summary_and_continues_after_one_detail_500(self):
+        successful_code = "1" * 16
+        failed_code = "2" * 16
+        callback = Mock()
+        progress = Mock()
+        with (
+            patch.object(
+                api_test_flow,
+                "_portal_json_request",
+                side_effect=[
+                    {
+                        "OneMonthLaterDate": "1405/06/30",
+                        "TodayDate": "1405/07/30",
+                    },
+                    {
+                        "ObjectList": [
+                            {"No": successful_code, "CreateDateTime": "1405/07/01"},
+                            {"No": failed_code, "CreateDateTime": "1405/07/02"},
+                        ],
+                        "TotalRecords": 2,
+                        "PageNo": 0,
+                    },
+                ],
+            ),
+            patch.object(
+                api_test_flow,
+                "_get_petition_by_tracking_code",
+                side_effect=[
+                    {"No": successful_code, "theJSSPetitionPerson": []},
+                    api_test_flow.LiveBrowserError(
+                        "tracked_petition_lookup_http_error:http_status=500"
+                    ),
+                ],
+            ) as details,
+        ):
+            api_test_flow._refresh_recent_registrations(
+                Mock(), (successful_code, failed_code), Mock(), progress,
+                callback, months=1,
+            )
+
+        self.assertEqual(details.call_count, 2)
+        summary = callback.call_args.args[0]
+        self.assertEqual(summary["detail_failed"], 1)
+        self.assertEqual(set(summary["petitions"]), {successful_code})
+        self.assertEqual(
+            summary["registrations"][failed_code],
+            {"No": failed_code, "CreateDateTime": "1405/07/02"},
+        )
+        self.assertTrue(any(
+            "درخواست تکرار نمی‌شود" in call.args[0]
+            for call in progress.call_args_list
+        ))
+
     def test_recent_registration_refresh_stops_on_missing_portal_date(self):
         with (
             patch.object(
@@ -217,6 +293,125 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
             api_test_flow._refresh_recent_registrations(
                 Mock(), (), Mock(), None, Mock(), months=1
             )
+
+    def test_recent_refresh_coalesces_same_code_rows_on_one_page(self):
+        code = "1" * 16
+        callback = Mock()
+        with (
+            patch.object(
+                api_test_flow,
+                "_portal_json_request",
+                side_effect=[
+                    {
+                        "OneMonthLaterDate": "1405/06/30",
+                        "TodayDate": "1405/07/30",
+                    },
+                    {
+                        "ObjectList": [
+                            {"No": code, "CreateDateTime": "1405/07/01"},
+                            {"No": code, "CreateDateTime": "1405/07/01"},
+                        ],
+                        "TotalRecords": 2,
+                        "PageNo": 0,
+                    },
+                ],
+            ),
+            patch.object(
+                api_test_flow,
+                "_get_petition_by_tracking_code",
+                return_value={"No": code},
+            ) as details,
+        ):
+            api_test_flow._refresh_recent_registrations(
+                Mock(), (code,), Mock(), None, callback, months=1
+            )
+
+        details.assert_called_once_with(ANY, code)
+        summary = callback.call_args.args[0]
+        self.assertEqual(summary["received"], 1)
+        self.assertEqual(summary["checked"], 2)
+        self.assertEqual(set(summary["registrations"]), {code})
+
+    def test_recent_refresh_rejects_inconsistent_same_code_rows(self):
+        code = "1" * 16
+        with (
+            patch.object(
+                api_test_flow,
+                "_portal_json_request",
+                side_effect=[
+                    {
+                        "OneMonthLaterDate": "1405/06/30",
+                        "TodayDate": "1405/07/30",
+                    },
+                    {
+                        "ObjectList": [
+                            {"No": code, "CreateDateTime": "1405/07/01"},
+                            {"No": code, "CreateDateTime": "1405/07/02"},
+                        ],
+                        "TotalRecords": 2,
+                        "PageNo": 0,
+                    },
+                ],
+            ),
+            self.assertRaisesRegex(
+                api_test_flow.LiveBrowserError,
+                "recent_registrations_duplicate_inconsistent",
+            ),
+        ):
+            api_test_flow._refresh_recent_registrations(
+                Mock(), (), Mock(), None, Mock(), months=1
+            )
+
+    def test_recent_refresh_allows_same_declaration_across_page_boundary(self):
+        first_code = "1" * 16
+        shared_code = "2" * 16
+        last_code = "3" * 16
+        callback = Mock()
+        with (
+            patch.object(
+                api_test_flow,
+                "_portal_json_request",
+                side_effect=[
+                    {
+                        "OneMonthLaterDate": "1405/06/30",
+                        "TodayDate": "1405/07/30",
+                    },
+                    {
+                        "ObjectList": [
+                            {"No": first_code, "CreateDateTime": "1405/07/01"},
+                            {"No": shared_code, "CreateDateTime": "1405/07/02"},
+                        ],
+                        "TotalRecords": 4,
+                        "PageNo": 0,
+                    },
+                    {
+                        "ObjectList": [
+                            {"No": shared_code, "CreateDateTime": "1405/07/02"},
+                            {"No": last_code, "CreateDateTime": "1405/07/03"},
+                        ],
+                        "TotalRecords": 4,
+                        "PageNo": 1,
+                    },
+                ],
+            ),
+            patch.object(
+                api_test_flow,
+                "_get_petition_by_tracking_code",
+                side_effect=lambda _page, code: {"No": code},
+            ) as details,
+        ):
+            api_test_flow._refresh_recent_registrations(
+                Mock(), (), Mock(), None, callback, months=1
+            )
+
+        self.assertEqual(details.call_count, 3)
+        summary = callback.call_args.args[0]
+        self.assertEqual(summary["received"], 3)
+        self.assertEqual(summary["checked"], 4)
+        self.assertEqual(
+            set(summary["registrations"]),
+            {first_code, shared_code, last_code},
+        )
 
     def test_recent_registration_refresh_stops_on_repeated_page_row(self):
         code = "1" * 16
@@ -278,6 +473,48 @@ class DirectSetPetitionDataFlowTests(unittest.TestCase):
         reviewed = callback.call_args.args[1]
         self.assertEqual(reviewed["JSSPetitionDocumentCount"], 3)
         self.assertEqual(petition["JSSPetitionDocumentCount"], 0)
+
+    def test_review_petition_reports_row_failure_event_before_reraising(self):
+        code = "2" * 16
+        progress = Mock()
+        with (
+            patch.object(
+                api_test_flow,
+                "_get_petition_by_tracking_code",
+                side_effect=api_test_flow.LiveBrowserError(
+                    "tracked_petition_lookup_http_error:http_status=500"
+                ),
+            ),
+            self.assertRaisesRegex(
+                api_test_flow.LiveBrowserError,
+                "tracked_petition_lookup_http_error:http_status=500",
+            ),
+        ):
+            api_test_flow._review_petitions(
+                Mock(), (code,), Mock(), progress, None,
+                failure_event="__petition_review_failed__",
+            )
+
+        self.assertIn(
+            f"__petition_review_failed__:{code}:"
+            "tracked_petition_lookup_http_error:http_status=500",
+            [item.args[0] for item in progress.call_args_list],
+        )
+
+    def test_tracking_lookup_http_error_includes_status_without_response_body(self):
+        page = Mock()
+        page.evaluate.return_value = {
+            "status": 429,
+            "text": "sensitive response body",
+        }
+
+        with self.assertRaisesRegex(
+            api_test_flow.LiveBrowserError,
+            r"^tracked_petition_lookup_http_error:http_status=429$",
+        ) as error:
+            api_test_flow._get_petition_by_tracking_code(page, "1" * 16)
+
+        self.assertNotIn("sensitive", str(error.exception))
 
     def test_review_petition_rejects_mismatched_tracking_code(self):
         with (

@@ -31,7 +31,9 @@ from sana_declaration_uploader.desktop import (
     RecipientReviewPage,
     RecipientWizard,
     _build_desktop_drafts,
+    _close_previous_packaged_instances,
     _days_since_related_date,
+    _ensure_setpetitiondata_template,
     _load_attachment_settings,
     _load_declaration_settings,
     _load_last_source_directory,
@@ -60,6 +62,97 @@ from sana_declaration_uploader.results import (
     save_attachment_count,
     save_verified_result,
 )
+
+
+def _valid_registration_template() -> dict[str, object]:
+    return {
+        "Description": "",
+        "theJSSPetitionPerson": [
+            {"RoleType": 1},
+            {"RoleType": 2},
+        ],
+    }
+
+
+class DesktopStartupTests(unittest.TestCase):
+    def test_keeps_an_existing_valid_registration_template(self) -> None:
+        with TemporaryDirectory() as directory:
+            target = Path(directory) / "setpetitiondata-template.json"
+            original = json.dumps(_valid_registration_template())
+            target.write_text(original, encoding="utf-8")
+
+            with patch(
+                "sana_declaration_uploader.desktop._setpetitiondata_template_path",
+                return_value=target,
+            ):
+                result = _ensure_setpetitiondata_template()
+
+            self.assertEqual(result, target)
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+
+    def test_recovers_missing_template_from_latest_valid_local_request(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "setpetitiondata-template.json"
+            request = root / "setpetitiondata-request-row-001.txt"
+            request.write_text(
+                json.dumps({
+                    "data": json.dumps(_valid_registration_template()),
+                    "isAuthenticate": True,
+                }),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "sana_declaration_uploader.desktop._setpetitiondata_template_path",
+                return_value=target,
+            ):
+                result = _ensure_setpetitiondata_template()
+
+            self.assertEqual(result, target)
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8")),
+                _valid_registration_template(),
+            )
+
+    def test_fails_closed_when_no_valid_template_can_be_recovered(self) -> None:
+        with TemporaryDirectory() as directory:
+            target = Path(directory) / "setpetitiondata-template.json"
+            (target.parent / "setpetitiondata-request.txt").write_text(
+                "not json", encoding="utf-8"
+            )
+
+            with patch(
+                "sana_declaration_uploader.desktop._setpetitiondata_template_path",
+                return_value=target,
+            ), self.assertRaisesRegex(
+                RuntimeError, "set_petition_data_template_invalid"
+            ):
+                _ensure_setpetitiondata_template()
+
+    def test_closes_only_other_instances_with_the_same_packaged_image(self) -> None:
+        processes = [
+            (100, Path(r"C:\old\SanaDeclarationUploader.exe")),
+            (200, Path(r"C:\other\python.exe")),
+            (300, Path(r"C:\new\SanaDeclarationUploader.exe")),
+        ]
+        with patch.object(os, "name", "nt"), patch.object(
+            __import__("sys"), "frozen", True, create=True
+        ), patch.object(
+            __import__("sys"), "executable", r"C:\new\SanaDeclarationUploader.exe"
+        ), patch(
+            "sana_declaration_uploader.desktop.os.getpid", return_value=300
+        ), patch(
+            "sana_declaration_uploader.desktop._iter_windows_process_paths",
+            return_value=processes,
+        ), patch(
+            "sana_declaration_uploader.desktop._terminate_windows_process",
+            return_value=True,
+        ) as terminate:
+            closed = _close_previous_packaged_instances()
+
+        self.assertEqual(closed, (100,))
+        terminate.assert_called_once_with(100)
 
 
 class RecipientWizardTests(unittest.TestCase):
@@ -277,6 +370,10 @@ class RecipientWizardTests(unittest.TestCase):
             self.assertEqual(
                 records["2222222222222222"]["last_name"], "خانوادگی جدید"
             )
+            self.assertEqual(
+                records["2222222222222222"]["sana_recipients"],
+                "نام جدید خانوادگی جدید",
+            )
             report = wizard.files_page.registration_report
             source_column = report.HEADERS.index("منبع")
             source_labels = {
@@ -295,16 +392,88 @@ class RecipientWizardTests(unittest.TestCase):
             "1405/07/02 10:15:30",
         )
 
-    def test_api_session_controls_restore_sana_fetch_buttons(self) -> None:
+    def test_recent_refresh_displays_all_ambiguous_sana_recipients(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            source_path = source / "sample.docx"
+            save_verified_result(
+                DeclarationDraft(source, {}, source_path=source_path),
+                UploadResult("success", "T-MULTI"),
+            )
+            wizard = RecipientWizard()
+            petition = {
+                "No": "T-MULTI",
+                "theJSSPetitionPerson": [
+                    {"RoleType": 2, "Name": "اول", "Family": "نمونه"},
+                    {"RoleType": 2, "Name": "دوم", "Family": "نمونه"},
+                ],
+            }
+            payload = {
+                "months": 1,
+                "received": 1,
+                "checked": 1,
+                "matched": 1,
+                "unmatched": 0,
+                "detail_failed": 0,
+                "petitions": {"T-MULTI": petition},
+                "registrations": {"T-MULTI": petition},
+            }
+
+            with patch.object(QMessageBox, "information"):
+                wizard._recent_registration_refresh_received(payload)
+
+            record = registration_history()[0]
+            self.assertEqual(record["first_name"], "")
+            self.assertEqual(record["last_name"], "")
+            self.assertEqual(record["sana_recipients"], "اول نمونه، دوم نمونه")
+            report = wizard.files_page.registration_report
+            column = report.HEADERS.index("مخاطبان ثنا")
+            self.assertEqual(report.table.item(0, column).text(), "اول نمونه، دوم نمونه")
+
+    def test_recent_refresh_reports_detail_500_as_incomplete(self) -> None:
+        wizard = RecipientWizard()
+        payload = {
+            "months": 1,
+            "received": 1,
+            "checked": 1,
+            "matched": 0,
+            "unmatched": 1,
+            "detail_failed": 1,
+            "petitions": {},
+            "registrations": {
+                "2" * 16: {
+                    "No": "2" * 16,
+                    "CreateDateTime": "1405/07/02-10:00",
+                },
+            },
+        }
+
+        with (
+            patch.object(QMessageBox, "warning") as warning,
+            patch.object(QMessageBox, "information") as information,
+        ):
+            wizard._recent_registration_refresh_received(payload)
+
+        warning.assert_called_once()
+        self.assertIn("حدس زده نشد", warning.call_args.args[2])
+        information.assert_not_called()
+        imported = registration_history()[0]
+        self.assertEqual(imported["tracking_code"], "2" * 16)
+        self.assertEqual(imported["first_name"], "")
+
+    def test_sana_read_buttons_stay_enabled_during_background_work(self) -> None:
         wizard = RecipientWizard()
         wizard._set_background_controls_enabled(False)
 
-        self.assertFalse(
+        self.assertTrue(
             wizard.files_page.registration_report.recent_refresh_button.isEnabled()
         )
-        self.assertFalse(
+        self.assertTrue(
             wizard.login_page.registration_report.review_button.isEnabled()
         )
+        self.assertTrue(wizard.login_page.refresh_counts_button.isEnabled())
+        self.assertFalse(wizard.login_page.api_test_button.isEnabled())
+        self.assertFalse(wizard.login_page.attach_existing_button.isEnabled())
 
         wizard._api_browser_ready = True
         wizard._set_api_session_controls_enabled()
@@ -328,7 +497,7 @@ class RecipientWizardTests(unittest.TestCase):
 
         self.assertTrue(close_event.is_set())
         self.assertIsNone(wizard._api_request_queue)
-        self.assertFalse(
+        self.assertTrue(
             wizard.files_page.registration_report.recent_refresh_button.isEnabled()
         )
 
@@ -366,6 +535,46 @@ class RecipientWizardTests(unittest.TestCase):
         self.assertEqual(fields["recipient_national_id"], "002")
         self.assertEqual(fields["recipient_first_name"], "رضا")
         self.assertEqual(fields["recipient_last_name"], "نمونه")
+        self.assertEqual(fields["sana_recipients"], "علی نمونه، رضا نمونه")
+
+    def test_petition_review_explains_record_specific_http_500(self) -> None:
+        wizard = RecipientWizard()
+        record = {"tracking_code": "2" * 16}
+        with (
+            patch.object(wizard, "_api_session_active", return_value=True),
+            patch.object(wizard, "_start_background") as start_background,
+        ):
+            wizard._start_petition_review(record)
+
+        failed = start_background.call_args.args[3]
+        with patch.object(QMessageBox, "warning") as warning:
+            failed(
+                LiveBrowserError(
+                    "tracked_petition_lookup_http_error:http_status=500"
+                ),
+                "technical details",
+            )
+
+        warning.assert_called_once()
+        self.assertIn("اعتراض به قرار دادسرا", warning.call_args.args[2])
+        self.assertIn("قابل بازیابی در این فرم نیست", warning.call_args.args[2])
+
+    def test_queued_petition_review_500_shows_user_message(self) -> None:
+        wizard = RecipientWizard()
+        code = "2" * 16
+        wizard._petition_review_records[code] = {"tracking_code": code}
+
+        with patch.object(QMessageBox, "warning") as warning:
+            wizard._background_progressed(
+                f"__petition_review_failed__:{code}:"
+                "tracked_petition_lookup_http_error:http_status=500"
+            )
+
+        warning.assert_called_once()
+        self.assertEqual(warning.call_args.args[1], "بازیابی ردیف ناموفق")
+        self.assertIn("اعتراض به قرار دادسرا", warning.call_args.args[2])
+        self.assertIn("قابل بازیابی در این فرم نیست", warning.call_args.args[2])
+        self.assertNotIn(code, wizard._petition_review_records)
 
     def test_petition_review_fills_only_missing_history_fields(self) -> None:
         with TemporaryDirectory() as directory:
@@ -2538,7 +2747,7 @@ class RecipientWizardTests(unittest.TestCase):
             _save_login_settings("", "", "", "", remember=False, path=path)
             self.assertFalse(path.exists())
 
-    def test_changing_otp_immediately_preserves_it_in_login_settings(self) -> None:
+    def test_changing_login_fields_immediately_preserves_them(self) -> None:
         with (
             patch(
                 "sana_declaration_uploader.desktop._load_login_settings",
@@ -2554,7 +2763,8 @@ class RecipientWizardTests(unittest.TestCase):
             page.legal_identity.setText("legal")
             page.otp.setText("new-otp")
 
-        save.assert_called_once_with(
+        self.assertEqual(save.call_count, 4)
+        save.assert_called_with(
             "national", "password", "legal", "new-otp", remember=True
         )
 

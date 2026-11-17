@@ -57,6 +57,19 @@ class ResultPersistenceTests(unittest.TestCase):
         self.assertEqual(row["source_file"], "دریافت‌شده از ثنا")
         self.assertEqual(row["national_id"], "001")
 
+    def test_local_save_cannot_populate_sana_recipients(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory)
+            draft = DeclarationDraft(
+                source,
+                {"sana_recipients": "نباید ذخیره شود"},
+                source_path=source / "sample.docx",
+            )
+
+            save_verified_result(draft, UploadResult("success", "T-LOCAL"))
+
+        self.assertEqual(registration_history()[0]["sana_recipients"], "")
+
     def test_does_not_guess_identity_for_ambiguous_sana_recipients(self):
         petition = {
             "No": "3" * 16,
@@ -72,6 +85,7 @@ class ResultPersistenceTests(unittest.TestCase):
         row = registration_history()[0]
         self.assertEqual(row["first_name"], "")
         self.assertEqual(row["last_name"], "")
+        self.assertEqual(row["sana_recipients"], "اول نمونه، دوم نمونه")
 
     def test_migrates_existing_database_origin_to_local(self):
         connection = sqlite3.connect(self.database_path)
