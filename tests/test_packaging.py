@@ -12,6 +12,8 @@ class PackagingConfigurationTests(unittest.TestCase):
         self.assertIn("PROJECT_ROOT = Path(SPECPATH)", text)
         self.assertIn('"codex-runtimes"', text)
         self.assertNotIn(r"F:\sana-declaration-uploader", text)
+        self.assertIn("sana-declaration-uploader.png", text)
+        self.assertIn("sana-declaration-uploader.ico", text)
 
     def test_windows_build_uses_clean_path_and_staging_output(self):
         text = (ROOT / "tools" / "build_windows.ps1").read_text(encoding="utf-8")

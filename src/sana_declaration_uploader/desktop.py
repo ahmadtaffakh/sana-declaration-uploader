@@ -36,6 +36,7 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDropEvent,
     QKeySequence,
+    QIcon,
     QPalette,
     QShortcut,
 )
@@ -3515,7 +3516,7 @@ class RecipientWizard(QWizard):
     def _start_api_test(self, credentials: LoginCredentials) -> None:
         try:
             petition_template = load_setpetitiondata_template(
-                _setpetitiondata_template_path()
+                _ensure_setpetitiondata_template()
             )
         except (OSError, ValueError, RuntimeError) as exc:
             message = (
@@ -4821,19 +4822,23 @@ def main() -> int:
     _close_previous_packaged_instances()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("SANA Declaration Uploader")
-    try:
-        _ensure_setpetitiondata_template()
-    except (OSError, ValueError, RuntimeError):
-        QMessageBox.critical(
-            None,
-            "قالب فنی ثبت آماده نیست",
-            "قالب داخلی ثبت در دسترس نیست یا معتبر نیست؛ با پشتیبانی "
-            "برنامه تماس بگیرید.",
-        )
-        return 1
+    icon_path = _application_icon_path()
+    if icon_path.is_file():
+        app_icon = QIcon(str(icon_path))
+        app.setWindowIcon(app_icon)
+    else:
+        app_icon = QIcon()
     wizard = RecipientWizard()
+    if not app_icon.isNull():
+        wizard.setWindowIcon(app_icon)
     wizard.show()
     return app.exec()
+
+
+def _application_icon_path() -> Path:
+    """Return the bundled icon path for source and PyInstaller launches."""
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+    return bundle_root / "assets" / "sana-declaration-uploader.png"
 
 
 if __name__ == "__main__":

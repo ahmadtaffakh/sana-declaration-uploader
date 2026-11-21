@@ -33,6 +33,7 @@ from sana_declaration_uploader.desktop import (
     _build_desktop_drafts,
     _close_previous_packaged_instances,
     _days_since_related_date,
+    _application_icon_path,
     _ensure_setpetitiondata_template,
     _load_attachment_settings,
     _load_declaration_settings,
@@ -45,6 +46,7 @@ from sana_declaration_uploader.desktop import (
     _save_declaration_settings,
     _save_last_source_directory,
     _save_login_settings,
+    main,
 )
 from sana_declaration_uploader.config import lookup_directory
 from sana_declaration_uploader.live_browser import LiveBrowserError, LoginCredentials
@@ -75,6 +77,38 @@ def _valid_registration_template() -> dict[str, object]:
 
 
 class DesktopStartupTests(unittest.TestCase):
+    def test_starts_without_loading_registration_template(self) -> None:
+        app = Mock()
+        app.exec.return_value = 0
+        wizard = Mock()
+
+        with patch(
+            "sana_declaration_uploader.desktop._close_previous_packaged_instances"
+        ), patch.object(
+            QApplication, "instance", return_value=app
+        ), patch(
+            "sana_declaration_uploader.desktop.RecipientWizard",
+            return_value=wizard,
+        ), patch(
+            "sana_declaration_uploader.desktop._ensure_setpetitiondata_template"
+        ) as ensure_template, patch(
+            "sana_declaration_uploader.desktop.QIcon"
+        ) as icon_factory:
+            app_icon = Mock()
+            app_icon.isNull.return_value = False
+            icon_factory.return_value = app_icon
+            result = main()
+
+        self.assertEqual(result, 0)
+        ensure_template.assert_not_called()
+        app.setWindowIcon.assert_called_once()
+        self.assertFalse(app.setWindowIcon.call_args.args[0].isNull())
+        self.assertTrue(_application_icon_path().is_file())
+        wizard.setWindowIcon.assert_called_once_with(
+            app.setWindowIcon.call_args.args[0]
+        )
+        wizard.show.assert_called_once_with()
+
     def test_keeps_an_existing_valid_registration_template(self) -> None:
         with TemporaryDirectory() as directory:
             target = Path(directory) / "setpetitiondata-template.json"
